@@ -434,7 +434,7 @@ static void network(void) {
 static void system_menu(void) {
   for (;;) {
     header("System");
-    puts_u("Magenta 0.1 / Avalanche Kernel 0.3.0\n32-bit x86, BIOS and x86-64 "
+    puts_u("Magenta 0.1 / Avalanche Kernel 0.4.0\n64-bit x86-64, BIOS and x86-64 "
            "UEFI\n\nUptime: ");
     uint_u(status.ticks / 100);
     puts_u(" seconds\nManaged memory: ");
