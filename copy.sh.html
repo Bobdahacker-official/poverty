@@ -35,13 +35,14 @@
 
     start.addEventListener("click", () => {
       if (emulator) return;
-      if (typeof V86Starter !== "function") {
-        notice.textContent = "Copy.sh could not be loaded. Check your connection and allow copy.sh, then reload this page.";
+      if (typeof V86 !== "function") {
+        notice.textContent = "The bundled v86 emulator could not be loaded. Reload the page after GitHub Pages finishes deploying.";
         return;
       }
       start.disabled = true;
       start.textContent = "Starting…";
-      emulator = new V86Starter({
+      try {
+        emulator = new V86({
         wasm_path: "emulator/v86/v86.wasm",
         memory_size: 256 * 1024 * 1024,
         vga_memory_size: 8 * 1024 * 1024,
@@ -53,8 +54,13 @@
         autostart: true,
         disable_speaker: true,
         net_device: { type: "virtio", relay_url: "wss://relay.widgetry.org/" },
-      });
-      notice.textContent = "Magenta is booting. Click the display to send keyboard input. Disk changes remain in this browser session.";
+        });
+        notice.textContent = "Magenta is booting. Click the display to send keyboard input. Disk changes remain in this browser session.";
+      } catch (error) {
+        start.disabled = false;
+        start.textContent = "Start Magenta";
+        notice.textContent = "The emulator failed to start: " + (error && error.message ? error.message : error);
+      }
     });
   </script>
 </body>
