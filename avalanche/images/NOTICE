@@ -1,0 +1,13 @@
+Avalanche Kernel source and avalanche.elf are under ../LICENSE (MIT).
+avalanche.iso additionally contains unmodified GNU GRUB 2.12-9+deb13u2
+binaries from Debian, distributed under their respective licenses in
+GRUB-COPYRIGHT. Corresponding upstream source and Debian patches/build
+rules are included in grub-source/. GRUB is a separate bootloader, not
+part of the Avalanche kernel. The kernel MIT license does not relicense GRUB.
+
+This is an early x86 32-bit kernel, not a Linux-compatible distribution.
+The ISO includes BIOS and x86-64 UEFI bootloaders; Secure Boot signatures
+are not provided. Console input supports PS/2 and COM1 serial, not native
+USB. Files are volatile RAM files. There is no userspace, scheduler,
+persistent disk filesystem, network stack, or package manager.
+Images were compiled but have not been boot-tested.
