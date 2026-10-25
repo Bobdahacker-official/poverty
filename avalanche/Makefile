@@ -9,7 +9,7 @@ APP_ELFS = $(addprefix build/user/,$(addsuffix .elf,$(APPS)))
 all: build/avalanche.elf build/avalanche-data.img
 build build/user:
 	mkdir -p $@
-build/%.o: src/%.c include/avalanche.h include/system.h include/abi.h include/process.h include/magenta.h | build
+build/%.o: src/%.c include/avalanche.h include/system.h include/abi.h include/process.h include/magenta.h include/ext4.h | build
 	$(CC) $(CFLAGS) -c $< -o $@
 build/boot.o: src/boot.S | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@

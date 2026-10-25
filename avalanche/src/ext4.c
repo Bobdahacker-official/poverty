@@ -19,8 +19,9 @@ int ext4_mount(struct ext4_volume *v, unsigned disk, uint32_t start) {
   if (bytes(v, 1024, super, sizeof(super))) return -5;
   if (u16(super+56) != 0xef53 || u32(super+24) != 2) return -22;
   uint32_t incompatible = u32(super+96);
+  if (u16(super+58) != 1) return -117;
   /* Refuse dirty journals and layouts requiring a different block translator. */
-  if (incompatible & ~(2u | 0x40u | 0x80u | 0x200u)) return -95;
+  if (incompatible & ~(2u | 0x40u | 0x80u | 0x200u | 0x2000u)) return -95;
   v->blocks = u32(super+4);
   if (incompatible & 0x80) v->blocks |= (uint64_t)u32(super+0x150) << 32;
   v->inodes_per_group = u32(super+40);

@@ -426,7 +426,7 @@ static void command(char *line) {
   char *rest = line, *cmd = token(&rest);
   if (!*cmd)
     return;
-  if (eq(cmd, "ext4ls") || eq(cmd, "ext4cat")) {
+  if (eq(cmd, "ext4ls") || eq(cmd, "ext4cat") || eq(cmd, "ext4read")) {
     bool ok;
     unsigned disk = parse_uint(token(&rest), &ok);
     char *path = token(&rest);
@@ -438,9 +438,23 @@ static void command(char *line) {
       struct ext4_inode inode;
       r = ext4_lookup(&volume, path, &inode);
       if (!r && (inode.mode & 0xf000) != 0x8000) r = -22;
-      for (uint64_t offset = 0; !r && offset < inode.size;) {
+      uint64_t offset = 0, limit = inode.size;
+      if (!r && eq(cmd, "ext4read")) {
+        char *number = token(&rest);
+        if (!*number) r = -22;
+        while (*number && !r) {
+          unsigned digit = (unsigned)(*number++ - '0');
+          if (digit > 9 || offset > (UINT64_MAX-digit)/10) r = -22;
+          else offset = offset*10+digit;
+        }
+        uint32_t count = parse_uint(token(&rest), &ok);
+        if (!ok || count > 4096 || offset > UINT64_MAX-count) r = -22;
+        else if (offset+count < limit) limit = offset+count;
+      }
+      for (; !r && offset < limit;) {
         char data[512];
-        int n = ext4_read(&volume, &inode, offset, data, sizeof(data));
+        uint32_t count = limit-offset > sizeof(data) ? sizeof(data) : limit-offset;
+        int n = ext4_read(&volume, &inode, offset, data, count);
         if (n <= 0) { r = n ? n : -5; break; }
         for (int i = 0; i < n; i++) console_putc(data[i]);
         offset += n;
@@ -454,6 +468,7 @@ static void command(char *line) {
         "help version clear echo mem ticks date beep mouse devices ps\n"
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
         "ext4ls DISK /PATH  ext4cat DISK /PATH\n"
+        "ext4read DISK /PATH OFFSET COUNT  - up to 4096 bytes\n"
         "format DISK ERASE  - DESTROYS the selected disk's contents\n"
         "install           - copy built-in ELF applications into filesystem\n"
         "run NAME [ARGS]   - foreground program; spawn NAME [ARGS], wait PID, "
