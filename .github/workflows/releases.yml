@@ -1,0 +1,28 @@
+name: Publish commit releases
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: commit-releases
+  cancel-in-progress: false
+
+jobs:
+  releases:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish historical and current releases
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const publish = require('./.github/scripts/publish-releases.cjs');
+            await publish({ github, context, core });
