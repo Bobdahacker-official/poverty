@@ -1,4 +1,4 @@
-Avalanche Kernel 0.3.0 source, user applications, avalanche.elf and the
+Avalanche Kernel 0.4.0 source, user applications, avalanche.elf and the
 Avalanche filesystem image are covered by ../LICENSE (MIT).
 
 avalanche.iso additionally contains unmodified GNU GRUB 2.12-9+deb13u2
@@ -22,7 +22,7 @@ set_tid_address, nanosleep, monotonic clocks, uname, terminal queries,
 and sched_yield. The linuxhello and linuxfork executables use Linux
 syscall numbers directly, without the Avalanche SDK. Unimplemented calls
 return -ENOSYS. This is not general Linux application/distribution or
-libc compatibility: no ELF64, interpreter, dynamic linker, threads,
+libc compatibility: no Linux ELF64, interpreter, dynamic linker, threads,
 shared mappings, signal handlers, process groups, pipes, Linux socket
 API, mounts, permissions model or full POSIX filesystem semantics.
 
@@ -44,13 +44,19 @@ kernel syscalls are serialized, while user code is timer-preempted.
 Filesystem: checksummed dual metadata banks and copy-on-write file slots,
 a flat namespace with 32 files of at most 64 KiB each, in its own MBR type
 0x7f partition. Without a recognized disk, files use volatile RAM. The
-supplied data image contains eight application executables. The physical
+supplied data image contains nine application executables. The physical
 allocator manages usable RAM below 128 MiB; user memory is bounded to
-8 MiB per process and twelve page tables. The x86 CPU must support PSE.
-The kernel is 32-bit; the UEFI loader targets x86-64 firmware. Secure Boot
+8 MiB per process and twelve page tables. The CPU must support x86-64 long mode.
+The kernel and native applications are 64-bit; the UEFI loader targets x86-64 firmware. Secure Boot
 signatures are not supplied. These remain development images.
 
-Validation performed in QEMU TCG: BIOS and OVMF UEFI boots; legacy ATA,
+The x86-64 conversion was compiled and packaged, but not boot/runtime tested
+at the user's request. Previous validation below applies ONLY to the old
+32-bit 0.3.0 release, not these images. Copy.sh v86 lacks long mode.
+Native ELF64 uses low-4-GiB user addresses and the existing bounded service
+ABI. Linux ELF32 uses compatibility mode; no Linux x86-64 syscall ABI.
+
+Historical validation performed in QEMU TCG: BIOS and OVMF UEFI boots; legacy ATA,
 AHCI and VirtIO disk access; RTL8139, E1000 and VirtIO network traffic;
 DHCP, ICMP and controlled local HTTP; persistence across VM restarts;
 overlapping CPU-bound workers; eight-process admission and limit handling;

@@ -83,7 +83,7 @@ static bool bank_valid(unsigned d, unsigned bank) {
     return false;
   for (unsigned k = 0; k < 4; k++)
     if (!disk_read(d, base_lba + bank * 5 + 1 + k,
-                   (uint8_t *)banks[bank] + k * 512))
+                   (uint8_t *)(uintptr_t)banks[bank] + k * 512))
       return false;
   if (crc32(banks[bank], sizeof(directory)) != s->dir_crc)
     return false;
@@ -164,7 +164,7 @@ int fs_format(unsigned disk) {
   for (unsigned bank = 0; bank < 2; bank++) {
     for (unsigned k = 0; k < 4; k++)
       if (!disk_write(disk, start + bank * 5 + 1 + k,
-                      (uint8_t *)candidate + k * 512))
+                      (uint8_t *)(uintptr_t)candidate + k * 512))
         return -2;
     struct super s;
     memset(&s, 0, sizeof(s));
@@ -197,7 +197,7 @@ int fs_read(const char *name, void *buffer, uint32_t capacity) {
   int size = fs_size(name);
   if (size < 0)
     return -1;
-  if ((uint32_t)size > capacity)
+  if ((uintptr_t)size > capacity)
     return -2;
   uint8_t *out = buffer;
   if (mounted < 0) {

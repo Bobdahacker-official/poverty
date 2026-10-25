@@ -43,7 +43,7 @@ create_virtualbox_machine() {
     copy_media "$machine_dir"
     vdi="$machine_dir/magenta-data.vdi"
     VBoxManage convertfromraw "$machine_dir/magenta-data.img" "$vdi" --format VDI
-    VBoxManage createvm --name "$machine_name" --ostype Other --basefolder "$machine_dir" --register
+    VBoxManage createvm --name "$machine_name" --ostype Other_64 --basefolder "$machine_dir" --register
     VBoxManage modifyvm "$machine_name" --memory 256 --cpus 1 --ioapic on --boot1 dvd --boot2 disk --boot3 none --boot4 none --nic1 nat --nictype1 82540EM --audio none --usb off
     VBoxManage storagectl "$machine_name" --name IDE --add ide --controller PIIX4
     VBoxManage storageattach "$machine_name" --storagectl IDE --port 0 --device 0 --type dvddrive --medium "$machine_dir/magenta.iso"

@@ -14,7 +14,7 @@ static void error(int result) {
 }
 static int input(const char *prompt, char *out, unsigned size) {
   puts_u(prompt);
-  int n = call(AV_READLINE, (uint32_t)out, size, 0);
+  int n = call(AV_READLINE, (uintptr_t)out, size, 0);
   if (n < 0) {
     error(n);
     puts_u("Magenta requires an available foreground terminal.\n");
@@ -35,7 +35,7 @@ static void header(const char *title) {
   puts_u(title);
   puts_u("\n============================================================\n");
   color(0);
-  if (call(AV_STATUS, (uint32_t)&status, 0, 0) < 0) {
+  if (call(AV_STATUS, (uintptr_t)&status, 0, 0) < 0) {
     puts_u("System status unavailable.\n");
     return;
   }
@@ -69,7 +69,7 @@ static void list_files(void) {
   unsigned count = 0;
   for (unsigned i = 0; i < 32; i++) {
     struct av_file_entry e;
-    int r = call(AV_FILE_ENTRY, i, (uint32_t)&e, 0);
+    int r = call(AV_FILE_ENTRY, i, (uintptr_t)&e, 0);
     if (r < 0) {
       error(r);
       return;
@@ -205,7 +205,7 @@ static void files(void) {
       }
     } else if (ueq(choice, "2")) {
       if (filename_u(name)) {
-        int n = call(AV_FILE_SIZE, (uint32_t)name, 0, 0);
+        int n = call(AV_FILE_SIZE, (uintptr_t)name, 0, 0);
         if (n >= 0) {
           puts_u("A file with that name already exists. Use Edit.\n");
         } else
@@ -220,7 +220,7 @@ static void files(void) {
         puts_u(name);
         puts_u("?\n");
         if (confirm("DELETE")) {
-          int r = call(AV_FILE_REMOVE, (uint32_t)name, 0, 0);
+          int r = call(AV_FILE_REMOVE, (uintptr_t)name, 0, 0);
           if (r < 0)
             error(r);
           else
@@ -234,7 +234,7 @@ static void files(void) {
 }
 static void launch(const char *name, const char *args, int foreground) {
   int pid =
-      call(AV_SPAWN, (uint32_t)name, (uint32_t)args, (unsigned)foreground);
+      call(AV_SPAWN, (uintptr_t)name, (uintptr_t)args, (unsigned)foreground);
   if (pid < 0) {
     error(pid);
     return;
@@ -245,7 +245,7 @@ static void launch(const char *name, const char *args, int foreground) {
   if (!foreground)
     return;
   uint32_t exit_status = 0;
-  int result = call(AV_WAIT, (unsigned)pid, (uint32_t)&exit_status, 0);
+  int result = call(AV_WAIT, (unsigned)pid, (uintptr_t)&exit_status, 0);
   if (result < 0)
     error(result);
   else if (exit_status & 127) {
@@ -311,7 +311,7 @@ static void processes(void) {
     }
     if (ueq(choice, "2")) {
       uint32_t exit_status = 0;
-      int r = call(AV_WAIT, pid, (uint32_t)&exit_status, 0);
+      int r = call(AV_WAIT, pid, (uintptr_t)&exit_status, 0);
       if (r < 0)
         error(r);
       else {
@@ -380,7 +380,7 @@ static void network(void) {
         if (!cfg[0] || (inv & (inv + 1))) {
           puts_u("Use a nonzero host address and a contiguous netmask.\n");
         } else {
-          int r = call(AV_NET_CONFIG, (uint32_t)cfg, 0, 0);
+          int r = call(AV_NET_CONFIG, (uintptr_t)cfg, 0, 0);
           if (r < 0)
             error(r);
           else
@@ -403,7 +403,7 @@ static void network(void) {
       char host[128];
       uint32_t ip;
       input("Hostname: ", host, sizeof(host));
-      int r = call(AV_DNS, (uint32_t)host, (uint32_t)&ip, 0);
+      int r = call(AV_DNS, (uintptr_t)host, (uintptr_t)&ip, 0);
       if (r < 0)
         error(r);
       else {

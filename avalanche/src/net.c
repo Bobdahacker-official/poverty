@@ -37,8 +37,8 @@ static uint16_t be16(const uint8_t *p) {
   return (uint16_t)((uint16_t)p[0] << 8) | p[1];
 }
 static uint32_t be32(const uint8_t *p) {
-  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
-         ((uint32_t)p[2] << 8) | p[3];
+  return ((uintptr_t)p[0] << 24) | ((uintptr_t)p[1] << 16) |
+         ((uintptr_t)p[2] << 8) | p[3];
 }
 static void put16(uint8_t *p, uint16_t n) {
   p[0] = n >> 8;
@@ -90,7 +90,7 @@ static bool ethernet_send(const void *frame, uint32_t n) {
     memset(tx_buffers[index], 0, size);
     memcpy(tx_buffers[index], frame, n);
     __asm__ volatile("" ::: "memory");
-    io_out32(rtl_port + 0x20 + index * 4, (uint32_t)tx_buffers[index]);
+    io_out32(rtl_port + 0x20 + index * 4, (uintptr_t)tx_buffers[index]);
     io_out32(rtl_port + 0x10 + index * 4, size);
   } else {
     unsigned index = tx_index % 8;
@@ -127,7 +127,7 @@ static bool rtl_init(const struct pci_device *d) {
   }
   for (unsigned i = 0; i < 6; i++)
     mac[i] = io_in8(rtl_port + i);
-  io_out32(rtl_port + 0x30, (uint32_t)rtl_rx);
+  io_out32(rtl_port + 0x30, (uintptr_t)rtl_rx);
   io_out16(rtl_port + 0x3c, 0);
   io_out16(
       rtl_port + 0x3e,
@@ -145,7 +145,7 @@ static bool e1000_init(const struct pci_device *d) {
     return false;
   if (!platform_mmio(d->bar[0] & ~15u, 0x20000))
     return false;
-  e1000 = (void *)(d->bar[0] & ~15u);
+  e1000 = (void *)(uintptr_t)(d->bar[0] & ~15u);
   if (!e1000)
     return false;
   pci_enable(d, 6);
@@ -175,9 +175,9 @@ static bool e1000_init(const struct pci_device *d) {
       mac[word * 2] = v >> 16;
       mac[word * 2 + 1] = v >> 24;
     }
-    low = (uint32_t)mac[0] | ((uint32_t)mac[1] << 8) |
-          ((uint32_t)mac[2] << 16) | ((uint32_t)mac[3] << 24);
-    high = mac[4] | ((uint32_t)mac[5] << 8) | 0x80000000u;
+    low = (uintptr_t)mac[0] | ((uintptr_t)mac[1] << 8) |
+          ((uintptr_t)mac[2] << 16) | ((uintptr_t)mac[3] << 24);
+    high = mac[4] | ((uintptr_t)mac[5] << 8) | 0x80000000u;
     wr(0x5400, low);
     wr(0x5404, high);
   } else {
@@ -189,19 +189,19 @@ static bool e1000_init(const struct pci_device *d) {
   for (unsigned i = 0; i < 128; i++)
     wr(0x5200 + i * 4, 0);
   for (unsigned i = 0; i < 32; i++) {
-    rx_ring[i].address = (uint32_t)rx_buffers[i];
+    rx_ring[i].address = (uintptr_t)rx_buffers[i];
     rx_ring[i].status = 0;
   }
   for (unsigned i = 0; i < 8; i++) {
-    tx_ring[i].address = (uint32_t)e_tx[i];
+    tx_ring[i].address = (uintptr_t)e_tx[i];
     tx_ring[i].status = 1;
   }
-  wr(0x2800, (uint32_t)rx_ring);
+  wr(0x2800, (uintptr_t)rx_ring);
   wr(0x2804, 0);
   wr(0x2808, sizeof(rx_ring));
   wr(0x2810, 0);
   wr(0x2818, 31);
-  wr(0x3800, (uint32_t)tx_ring);
+  wr(0x3800, (uintptr_t)tx_ring);
   wr(0x3804, 0);
   wr(0x3808, sizeof(tx_ring));
   wr(0x3810, 0);
@@ -688,7 +688,7 @@ int net_dhcp(void) {
   ip = 0;
   mask = 0;
   gateway = 0;
-  dhcp_xid = 0x41564c00u ^ clock_ticks() ^ ((uint32_t)mac[4] << 8) ^ mac[5];
+  dhcp_xid = 0x41564c00u ^ clock_ticks() ^ ((uintptr_t)mac[4] << 8) ^ mac[5];
   uint8_t p[320], reply[1472];
   struct lease offer = {0};
   bool offered = false;
@@ -972,8 +972,8 @@ int net_tcp_connect(uint32_t destination, uint16_t port) {
   tcp.local_port = ++tcp_port;
   if (tcp_port < 49152)
     tcp.local_port = tcp_port = 49152;
-  uint32_t seq = clock_ticks() * 1103515245u ^ ((uint32_t)mac[4] << 16) ^
-                 ((uint32_t)mac[5] << 8);
+  uint32_t seq = clock_ticks() * 1103515245u ^ ((uintptr_t)mac[4] << 16) ^
+                 ((uintptr_t)mac[5] << 8);
   tcp.snd_una = seq;
   tcp.snd_nxt = seq + 1;
   for (unsigned attempt = 0; attempt < 4; attempt++) {
@@ -1056,7 +1056,7 @@ int net_tcp_recv(void *data, uint32_t capacity, uint32_t timeout) {
   if (n > capacity)
     n = capacity;
   for (uint32_t i = 0; i < n; i++)
-    ((uint8_t *)data)[i] = tcp.buffer[(tcp.head + i) % TCP_RX];
+    ((uint8_t *)(uintptr_t)data)[i] = tcp.buffer[(tcp.head + i) % TCP_RX];
   tcp.head = (tcp.head + n) % TCP_RX;
   tcp.count -= n;
   if (n)
@@ -1142,7 +1142,7 @@ void net_http(const char *host, const char *path) {
       }
       for (int i = 0; i < r; i++)
         console_putc((char)data[i]);
-      total += (uint32_t)r;
+      total += (uintptr_t)r;
     }
   }
   net_tcp_close();

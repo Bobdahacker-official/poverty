@@ -11,7 +11,7 @@ int main(void) {
     return 1;
   }
   uint32_t address;
-  if (av_call(AV_DNS, (uint32_t)host, (uint32_t)&address, 0, 0) < 0) {
+  if (av_call(AV_DNS, (uintptr_t)host, (uintptr_t)&address, 0, 0) < 0) {
     puts_u("DNS resolution failed.\n");
     return 1;
   }
@@ -33,7 +33,7 @@ int main(void) {
       return 1;
     }
   }
-  if (av_call(AV_TCP_SEND, (uint32_t)request, n, 0, 0) < 0) {
+  if (av_call(AV_TCP_SEND, (uintptr_t)request, n, 0, 0) < 0) {
     puts_u("Send failed.\n");
     av_call(AV_TCP_CLOSE, 0, 0, 0, 0);
     return 1;
@@ -41,7 +41,7 @@ int main(void) {
   unsigned total = 0;
   int result = 0;
   while (total < 65536) {
-    int count = av_call(AV_TCP_RECV, (uint32_t)response, 4096, 500, 0);
+    int count = av_call(AV_TCP_RECV, (uintptr_t)response, 4096, 500, 0);
     if (count < 0) {
       puts_u("\nReceive failed.\n");
       result = 1;

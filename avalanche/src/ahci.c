@@ -43,10 +43,10 @@ static bool execute(unsigned unit, uint8_t opcode, uint32_t lba, void *data,
   h->flags = 5 | (write ? 1 << 6 : 0);
   h->prdt_count = data ? 1 : 0;
   h->transferred = 0;
-  h->table = (uint32_t)t;
+  h->table = (uintptr_t)t;
   h->table_high = 0;
   if (data) {
-    t->address = (uint32_t)bounce[unit];
+    t->address = (uintptr_t)bounce[unit];
     if (write)
       memcpy(bounce[unit], data, 512);
     t->bytes = 511;
@@ -91,7 +91,7 @@ void ahci_init(void) {
     return;
   if (!platform_mmio(d->bar[5] & ~15u, 0x1100))
     return;
-  volatile uint32_t *hba = (void *)(d->bar[5] & ~15u);
+  volatile uint32_t *hba = (void *)(uintptr_t)(d->bar[5] & ~15u);
   pci_enable(d, 6);
   if (hba[0x24 / 4] & 1) {
     hba[0x28 / 4] |= 2;
@@ -115,9 +115,9 @@ void ahci_init(void) {
     unsigned unit = count;
     memset(lists[unit], 0, sizeof(lists[unit]));
     memset(received_fis[unit], 0, 256);
-    p[0] = (uint32_t)lists[unit];
+    p[0] = (uintptr_t)lists[unit];
     p[1] = 0;
-    p[2] = (uint32_t)received_fis[unit];
+    p[2] = (uintptr_t)received_fis[unit];
     p[3] = 0;
     p[0x14 / 4] = 0;
     p[0x30 / 4] = 0xffffffffu;
@@ -131,7 +131,7 @@ void ahci_init(void) {
     uint16_t *w = identify[unit];
     if (!(w[83] & (1 << 10)) ||
         ((w[106] & 0xd000) == 0x5000 &&
-         ((uint32_t)w[117] | ((uint32_t)w[118] << 16)) != 256)) {
+         ((uintptr_t)w[117] | ((uintptr_t)w[118] << 16)) != 256)) {
       p[0x18 / 4] &= ~1u;
       continue;
     }
@@ -144,7 +144,7 @@ void ahci_init(void) {
     struct block_device block = {
         .backend = 1,
         .unit = unit,
-        .sectors = sectors > 0xffffffffu ? 0xffffffffu : (uint32_t)sectors};
+        .sectors = sectors > 0xffffffffu ? 0xffffffffu : (uintptr_t)sectors};
     for (unsigned k = 0; k < 20; k++) {
       block.model[k * 2] = w[27 + k] >> 8;
       block.model[k * 2 + 1] = w[27 + k] & 255;

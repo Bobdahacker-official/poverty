@@ -224,15 +224,15 @@ static int write_fd(struct process *t, unsigned fd, uint32_t p, uint32_t n) {
   if (old < 0)
     return -5;
   if (h->flags & 1024)
-    h->position = (uint32_t)old;
+    h->position = (uintptr_t)old;
   if (h->position > FS_MAX_FILE || n > FS_MAX_FILE - h->position)
     return -27;
-  if (h->position > (uint32_t)old)
-    memset(contents + old, 0, h->position - (uint32_t)old);
+  if (h->position > (uintptr_t)old)
+    memset(contents + old, 0, h->position - (uintptr_t)old);
   process_copyin(t, contents + h->position, p, n);
   uint32_t end = h->position + n;
-  if (end < (uint32_t)old)
-    end = (uint32_t)old;
+  if (end < (uintptr_t)old)
+    end = (uintptr_t)old;
   if (fs_write(h->name, contents, end) < 0)
     return -5;
   h->position += n;
@@ -256,7 +256,7 @@ static int seek_fd(struct process *t, unsigned fd, int32_t offset,
   int64_t pos = base + offset;
   if (pos < 0 || pos > FS_MAX_FILE)
     return -22;
-  h->position = (uint32_t)pos;
+  h->position = (uintptr_t)pos;
   return (int)pos;
 }
 static int duplicate(struct process *t, unsigned fd, int target, bool exact) {
@@ -290,7 +290,7 @@ static int stat_data(struct process *t, uint32_t out, bool wide, unsigned kind,
     int n = fs_size(name);
     if (n < 0)
       return -2;
-    size = (uint32_t)n;
+    size = (uintptr_t)n;
     ino = crc32(name, strlen(name));
   }
   if (wide) {
@@ -379,7 +379,7 @@ static int memory_map(struct process *t, uint32_t address, uint32_t length,
   if (!process_address(address, n))
     return -12;
   for (uint32_t off = 0; off < n; off += 4096) {
-    uint32_t *pte = process_pte(t, address + off);
+    uint64_t *pte = process_pte(t, address + off);
     if (pte && (*pte & ~4095u))
       return -12;
   }
@@ -405,11 +405,11 @@ static int tls_set(struct process *t, uint32_t address) {
     return -14;
   int index = (int)data[0];
   if (index == -1) {
-    for (index = 6; index < 9; index++)
-      if (!t->tls[index - 6])
+    for (index = 8; index < 11; index++)
+      if (!t->tls[index - 8])
         break;
   }
-  if (index < 6 || index > 8 || data[2] > 0xfffff || (data[3] & 6) ||
+  if (index < 8 || index > 10 || data[2] > 0xfffff || (data[3] & 6) ||
       !(data[3] & 1) || data[3] & ~0x7fu)
     return -22;
   uint32_t base = data[1], limit = data[2], f = data[3];
@@ -417,10 +417,10 @@ static int tls_set(struct process *t, uint32_t address) {
   if (f & 8)
     access &= ~2u;
   uint8_t high = ((limit >> 16) & 15) | 0x40 | ((f & 16) ? 0x80 : 0);
-  t->tls[index - 6] = (limit & 65535ULL) | ((uint64_t)(base & 0xffffff) << 16) |
+  t->tls[index - 8] = (limit & 65535ULL) | ((uint64_t)(base & 0xffffff) << 16) |
                       ((uint64_t)access << 40) | ((uint64_t)high << 48) |
                       ((uint64_t)(base >> 24) << 56);
-  data[0] = (uint32_t)index;
+  data[0] = (uintptr_t)index;
   process_copyout(t, address, data, 16);
   platform_tls(t->tls);
   return 0;
@@ -641,7 +641,7 @@ void linux_syscall(struct trap_frame *f) {
   case 122: {
     char uts[6][65] = {{0}};
     const char *values[] = {"Linux",           "avalanche", "6.0.0-avalanche",
-                            "Avalanche 0.3.0", "i686",      "localdomain"};
+                            "Avalanche 0.4.0", "i686",      "localdomain"};
     for (unsigned i = 0; i < 6; i++)
       memcpy(uts[i], values[i], strlen(values[i]));
     result = process_copyout(t, a, uts, sizeof(uts)) ? 0 : -14;
@@ -655,7 +655,7 @@ void linux_syscall(struct trap_frame *f) {
     }
     bool ok = true;
     for (uint32_t off = 0; off < b; off += 4096) {
-      uint32_t *pte = process_pte(t, a + off);
+      uint64_t *pte = process_pte(t, a + off);
       if (!pte || !(*pte & ~4095u)) {
         ok = false;
         break;
@@ -666,9 +666,9 @@ void linux_syscall(struct trap_frame *f) {
       break;
     }
     for (uint32_t off = 0; off < b; off += 4096) {
-      uint32_t *pte = process_pte(t, a + off);
+      uint64_t *pte = process_pte(t, a + off);
       *pte = (*pte & ~6u) | (c ? 4 : 0) | ((c & 2) ? 2 : 0);
-      __asm__ volatile("invlpg (%0)" ::"r"(a + off) : "memory");
+      __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)(a + off)) : "memory");
     }
     result = 0;
     break;
@@ -687,7 +687,7 @@ void linux_syscall(struct trap_frame *f) {
     if (n < 0)
       result = n;
     else {
-      uint32_t offset[2] = {(uint32_t)n, 0};
+      uint32_t offset[2] = {(uintptr_t)n, 0};
       result = process_copyout(t, f->esi, offset, 8) ? 0 : -14;
     }
     break;
@@ -757,5 +757,5 @@ void linux_syscall(struct trap_frame *f) {
   default:
     break;
   }
-  f->eax = (uint32_t)result;
+  f->eax = (uintptr_t)result;
 }

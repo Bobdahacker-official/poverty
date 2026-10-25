@@ -47,12 +47,12 @@ static bool queue(struct virtq *q, uint16_t port, uint16_t index,
   q->index = index;
   q->size = n;
   q->last = 0;
-  q->desc = (void *)memory;
-  q->avail = (void *)(memory + 16 * n);
+  q->desc = (void *)(uintptr_t)memory;
+  q->avail = (void *)(uintptr_t)(memory + 16 * n);
   uint32_t offset = (16 * n + 4 + 2 * n + 4095) & ~4095u;
-  q->used = (void *)(memory + offset);
+  q->used = (void *)(uintptr_t)(memory + offset);
   q->avail[0] = 1;
-  io_out32(port + 8, (uint32_t)memory >> 12);
+  io_out32(port + 8, (uintptr_t)memory >> 12);
   return true;
 }
 static void submit(struct virtq *q, uint16_t descriptor) {
@@ -71,7 +71,7 @@ static bool wait_used(struct virtq *q) {
     cpu_pause();
   }
   __asm__ volatile("" ::: "memory");
-  volatile struct virtq_used *ring = (void *)(q->used + 2);
+  volatile struct virtq_used *ring = (void *)(uintptr_t)(q->used + 2);
   bool valid = ring[q->last % q->size].id == 0;
   q->last++;
   (void)io_in8(q->port + 19);
@@ -87,10 +87,10 @@ static bool block_request(uint32_t type, uint32_t lba, void *buffer) {
   if (type == 1)
     memcpy(block_buffer, buffer, 512);
   blockq.desc[0] = (struct virtq_desc){
-      (uint32_t)&block_header, sizeof(block_header), 1, type == 4 ? 2 : 1};
-  blockq.desc[1] = (struct virtq_desc){(uint32_t)block_buffer, 512,
+      (uintptr_t)&block_header, sizeof(block_header), 1, type == 4 ? 2 : 1};
+  blockq.desc[1] = (struct virtq_desc){(uintptr_t)block_buffer, 512,
                                        (uint16_t)(type == 0 ? 3 : 1), 2};
-  blockq.desc[2] = (struct virtq_desc){(uint32_t)&block_status, 1, 2, 0};
+  blockq.desc[2] = (struct virtq_desc){(uintptr_t)&block_status, 1, 2, 0};
   submit(&blockq, 0);
   if (!wait_used(&blockq)) {
     io_out8(block_port + 18, 0);
@@ -148,7 +148,7 @@ bool virtio_net_init(uint8_t *mac) {
   for (unsigned i = 0; i < 6; i++)
     mac[i] = io_in8(net_port + 20 + i);
   for (unsigned i = 0; i < 32; i++) {
-    rxq.desc[i] = (struct virtq_desc){(uint32_t)rx_buffers[i],
+    rxq.desc[i] = (struct virtq_desc){(uintptr_t)rx_buffers[i],
                                       sizeof(rx_buffers[i]), 2, 0};
     rxq.avail[2 + i] = i;
   }
@@ -164,7 +164,7 @@ bool virtio_net_send(const void *frame, uint32_t n) {
   unsigned padded = n < 60 ? 60 : n;
   memset(tx_buffer, 0, 10 + padded);
   memcpy(tx_buffer + 10, frame, n);
-  txq.desc[0] = (struct virtq_desc){(uint32_t)tx_buffer, 10 + padded, 0, 0};
+  txq.desc[0] = (struct virtq_desc){(uintptr_t)tx_buffer, 10 + padded, 0, 0};
   submit(&txq, 0);
   if (!wait_used(&txq)) {
     io_out8(net_port + 18, 0);
@@ -178,7 +178,7 @@ void virtio_net_poll(void (*receive)(const uint8_t *, uint32_t)) {
     return;
   for (unsigned count = 0; count < 32 && rxq.used[1] != rxq.last; count++) {
     __asm__ volatile("" ::: "memory");
-    volatile struct virtq_used *ring = (void *)(rxq.used + 2);
+    volatile struct virtq_used *ring = (void *)(uintptr_t)(rxq.used + 2);
     uint32_t i = ring[rxq.last % rxq.size].id,
              n = ring[rxq.last % rxq.size].length;
     rxq.last++;

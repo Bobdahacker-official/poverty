@@ -16,7 +16,7 @@ void puts_u(const char *s) {
   size_t n = ulen(s);
   while (n) {
     uint32_t count = n > 4096 ? 4096 : n;
-    av_call(AV_WRITE, (uint32_t)s, count, 0, 0);
+    av_call(AV_WRITE, (uintptr_t)s, count, 0, 0);
     s += count;
     n -= count;
   }
@@ -30,7 +30,7 @@ void uint_u(uint32_t n) {
   } while (n);
   while (i) {
     char c = p[--i];
-    av_call(AV_WRITE, (uint32_t)&c, 1, 0, 0);
+    av_call(AV_WRITE, (uintptr_t)&c, 1, 0, 0);
   }
 }
 char *word_u(char **p) {

@@ -1,6 +1,8 @@
 #include "abi.h"
 #include "process.h"
-static uint32_t kernel_directory[1024] __attribute__((aligned(4096)));
+static uint64_t kernel_root[512] __attribute__((aligned(4096)));
+static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
+static uint64_t kernel_directory[2048] __attribute__((aligned(4096)));
 static struct process tasks[PROCESS_MAX];
 static int current = -1, next_pid = 1;
 static int tcp_owner;
@@ -34,14 +36,33 @@ static const struct builtin builtins[] = {
 struct elf_header {
   uint8_t ident[16];
   uint16_t type, machine;
-  uint32_t version, entry, phoff, shoff, flags;
+  uint32_t version;
+  uint64_t entry, phoff, shoff;
+  uint32_t flags;
   uint16_t ehsize, phsize, phnum, shsize, shnum, shstr;
 } __attribute__((packed));
 struct program_header {
+  uint32_t type, flags;
+  uint64_t offset, vaddr, paddr, filesz, memsz, align;
+} __attribute__((packed));
+struct elf32_header {
+  uint8_t ident[16];
+  uint16_t type, machine;
+  uint32_t version, entry, phoff, shoff, flags;
+  uint16_t ehsize, phsize, phnum, shsize, shnum, shstr;
+} __attribute__((packed));
+struct program32_header {
   uint32_t type, offset, vaddr, paddr, filesz, memsz, flags, align;
 } __attribute__((packed));
-static void activate(uint32_t *directory) {
-  __asm__ volatile("mov %0,%%cr3" ::"r"((uint32_t)directory) : "memory");
+static void activate(uint64_t *directory) {
+  uint64_t *root = kernel_root;
+  if (directory != kernel_directory)
+    for (unsigned i = 0; i < PROCESS_MAX; i++)
+      if (directory == tasks[i].directory) {
+        root = tasks[i].root;
+        break;
+      }
+  __asm__ volatile("mov %0,%%cr3" ::"r"((uintptr_t)root) : "memory");
 }
 struct process *process_current(void) {
   return current < 0 ? NULL : &tasks[current];
@@ -59,11 +80,11 @@ bool process_address(uint32_t p, uint32_t n) {
          (p >= AV_USER_BASE && end <= AV_USER_END) ||
          (p >= 0xbfc00000u && end <= 0xc0000000u);
 }
-uint32_t *process_pte(struct process *t, uint32_t v) {
-  unsigned index = v >> 22;
+uint64_t *process_pte(struct process *t, uint32_t v) {
+  unsigned index = v >> 21;
   for (unsigned i = 0; i < t->table_count; i++)
     if (t->indices[i] == index)
-      return &t->tables[i][(v >> 12) & 1023];
+      return &t->tables[i][(v >> 12) & 511];
   return NULL;
 }
 bool process_range(struct process *t, uint32_t p, uint32_t n, bool write) {
@@ -73,7 +94,7 @@ bool process_range(struct process *t, uint32_t p, uint32_t n, bool write) {
     return false;
   uint32_t end = (p + n - 1) & ~4095u;
   for (uint32_t v = p & ~4095u;; v += 4096) {
-    uint32_t *pte = process_pte(t, v);
+    uint64_t *pte = process_pte(t, v);
     if (!pte || (*pte & 5) != 5 || (write && !(*pte & 2)))
       return false;
     if (v == end)
@@ -88,8 +109,8 @@ bool process_copyin(struct process *t, void *out, uint32_t p, uint32_t n) {
     uint32_t count = 4096 - (p & 4095);
     if (count > n)
       count = n;
-    uint32_t *pte = process_pte(t, p);
-    memcpy(d, (void *)((*pte & ~4095u) + (p & 4095)), count);
+    uint64_t *pte = process_pte(t, p);
+    memcpy(d, (void *)(uintptr_t)((*pte & ~4095u) + (p & 4095)), count);
     d += count;
     p += count;
     n -= count;
@@ -105,8 +126,8 @@ bool process_copyout(struct process *t, uint32_t p, const void *in,
     uint32_t count = 4096 - (p & 4095);
     if (count > n)
       count = n;
-    uint32_t *pte = process_pte(t, p);
-    memcpy((void *)((*pte & ~4095u) + (p & 4095)), s, count);
+    uint64_t *pte = process_pte(t, p);
+    memcpy((void *)(uintptr_t)((*pte & ~4095u) + (p & 4095)), s, count);
     s += count;
     p += count;
     n -= count;
@@ -125,15 +146,15 @@ bool process_string(struct process *t, uint32_t p, char *out, unsigned cap) {
 bool process_map(struct process *t, uint32_t v, bool write) {
   if (!process_address(v, 4096))
     return false;
-  uint32_t *pte = process_pte(t, v);
+  uint64_t *pte = process_pte(t, v);
   if (!pte) {
     if (t->table_count == PROCESS_TABLES)
       return false;
     unsigned slot = t->table_count++;
-    t->indices[slot] = v >> 22;
+    t->indices[slot] = v >> 21;
     memset(t->tables[slot], 0, 4096);
-    t->directory[v >> 22] = (uint32_t)t->tables[slot] | 7;
-    pte = &t->tables[slot][(v >> 12) & 1023];
+    t->directory[v >> 21] = (uintptr_t)t->tables[slot] | 7;
+    pte = &t->tables[slot][(v >> 12) & 511];
   }
   if (*pte & ~4095u) {
     if (write)
@@ -145,49 +166,45 @@ bool process_map(struct process *t, uint32_t v, bool write) {
   void *page = page_alloc();
   if (!page)
     return false;
-  *pte = (uint32_t)page | 5 | (write ? 2 : 0);
+  *pte = (uintptr_t)page | 5 | (write ? 2 : 0);
   t->pages++;
   if (t == process_current())
-    __asm__ volatile("invlpg (%0)" ::"r"(v) : "memory");
+    __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
   return true;
 }
 void process_unmap(struct process *t, uint32_t v) {
-  uint32_t *pte = process_pte(t, v);
+  uint64_t *pte = process_pte(t, v);
   if (pte && (*pte & ~4095u)) {
-    page_free((void *)(*pte & ~4095u));
+    page_free((void *)(uintptr_t)(*pte & ~4095u));
     *pte = 0;
     t->pages--;
     if (t == process_current())
-      __asm__ volatile("invlpg (%0)" ::"r"(v) : "memory");
+      __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
   }
 }
 static void release(struct process *t) {
   for (unsigned i = 0; i < t->table_count; i++)
-    for (unsigned j = 0; j < 1024; j++)
+    for (unsigned j = 0; j < 512; j++)
       if (t->tables[i][j] & ~4095u) {
-        page_free((void *)(t->tables[i][j] & ~4095u));
+        page_free((void *)(uintptr_t)(t->tables[i][j] & ~4095u));
         t->tables[i][j] = 0;
       }
   t->pages = 0;
 }
 void user_init(void) {
-  for (unsigned i = 0; i < 1024; i++)
-    kernel_directory[i] = (i << 22) | 0x83;
-  uint32_t cr4, cr0;
-  __asm__ volatile("mov %%cr4,%0" : "=r"(cr4));
-  cr4 = (cr4 & ~0xa0u) | 0x10;
-  __asm__ volatile("mov %0,%%cr4" ::"r"(cr4));
+  kernel_root[0] = (uintptr_t)kernel_pdpt | 7;
+  for (unsigned i = 0; i < 4; i++)
+    kernel_pdpt[i] = (uintptr_t)&kernel_directory[i * 512] | 7;
+  for (unsigned i = 0; i < 2048; i++)
+    kernel_directory[i] = ((uint64_t)i << 21) | 0x83;
   activate(kernel_directory);
-  __asm__ volatile("mov %%cr0,%0" : "=r"(cr0));
-  cr0 |= 0x80010000u;
-  __asm__ volatile("mov %0,%%cr0" ::"r"(cr0) : "memory");
 }
 bool platform_mmio(uint32_t address, uint32_t size) {
   if (!size || size - 1 > 0xffffffffu - address)
     return false;
-  unsigned first = address >> 22, last = (address + size - 1) >> 22;
+  unsigned first = address >> 21, last = (address + size - 1) >> 21;
   for (unsigned i = first; i <= last; i++)
-    if (process_address(i << 22, 0x400000))
+    if (process_address(i << 21, 0x200000))
       return false;
   for (unsigned i = first; i <= last; i++) {
     kernel_directory[i] |= 0x18;
@@ -212,7 +229,10 @@ static struct process *empty(void) {
 }
 static void initialize(struct process *t) {
   memset(t, 0, sizeof(*t));
-  memcpy(t->directory, kernel_directory, 4096);
+  memcpy(t->directory, kernel_directory, sizeof(kernel_directory));
+  t->root[0] = (uintptr_t)t->pdpt | 7;
+  for (unsigned i = 0; i < 4; i++)
+    t->pdpt[i] = (uintptr_t)&t->directory[i * 512] | 7;
   t->pid = next_pid++;
   t->parent = current < 0 ? 0 : tasks[current].pid;
   t->state = TASK_EMPTY;
@@ -268,7 +288,7 @@ static uint32_t linux_stack(struct process *t, const struct elf_header *h,
     env[envc++] = stack_string(t, &sp, e2, sizeof(e2));
   }
   uint8_t random[16];
-  uint32_t seed = clock_ticks() ^ (uint32_t)t;
+  uint32_t seed = clock_ticks() ^ (uintptr_t)t;
   for (unsigned i = 0; i < 16; i++) {
     seed = seed * 1664525u + 1013904223u;
     random[i] = seed >> 24;
@@ -282,7 +302,7 @@ static uint32_t linux_stack(struct process *t, const struct elf_header *h,
   for (unsigned i = 0; i < envc; i++)
     words[n++] = env[i];
   words[n++] = 0;
-  uint32_t aux[] = {3,  phdr,     4,  sizeof(struct program_header),
+  uint32_t aux[] = {3,  phdr,     4,  sizeof(struct program32_header),
                     5,  h->phnum, 6,  4096,
                     9,  h->entry, 11, 0,
                     12, 0,        13, 0,
@@ -299,18 +319,52 @@ static int load(struct process *t, const void *image, uint32_t size,
                 const char *name, const char *args) {
   if (size < sizeof(struct elf_header))
     return -8;
+  struct elf_header normalized;
+  struct program_header normalized_ph[32];
   const struct elf_header *h = image;
+  bool compat = h->ident[4] == 1;
+  if (compat) {
+    const struct elf32_header *old = image;
+    if (old->machine != 3 || old->ehsize != sizeof(*old) ||
+        old->phsize != sizeof(struct program32_header) || old->phnum > 32 ||
+        old->phoff > size ||
+        old->phnum > (size - old->phoff) / sizeof(struct program32_header))
+      return -8;
+    memset(&normalized, 0, sizeof(normalized));
+    memcpy(normalized.ident, old->ident, 16);
+    normalized.ident[4] = 2;
+    normalized.type = old->type;
+    normalized.machine = 62;
+    normalized.version = old->version;
+    normalized.entry = old->entry;
+    normalized.phoff = old->phoff;
+    normalized.phnum = old->phnum;
+    normalized.phsize = sizeof(struct program_header);
+    normalized.ehsize = sizeof(normalized);
+    const struct program32_header *oldph =
+        (const void *)((const uint8_t *)image + old->phoff);
+    for (unsigned i = 0; i < old->phnum; i++) {
+      const struct program32_header *v = &oldph[i];
+      normalized_ph[i] =
+          (struct program_header){v->type,  v->flags,  v->offset, v->vaddr,
+                                  v->paddr, v->filesz, v->memsz,  v->align};
+    }
+    h = &normalized;
+  }
   if (h->ident[0] != 0x7f || h->ident[1] != 'E' || h->ident[2] != 'L' ||
-      h->ident[3] != 'F' || h->ident[4] != 1 || h->ident[5] != 1 ||
-      h->ident[6] != 1 || h->type != 2 || h->machine != 3 || h->version != 1 ||
+      h->ident[3] != 'F' || h->ident[4] != 2 || h->ident[5] != 1 ||
+      h->ident[6] != 1 || h->type != 2 || h->machine != 62 || h->version != 1 ||
       h->ehsize != sizeof(*h) || h->phsize != sizeof(struct program_header) ||
       !h->phnum || h->phnum > 32 || h->phoff > size ||
-      h->phnum > (size - h->phoff) / sizeof(struct program_header))
+      (!compat && h->phnum > (size - h->phoff) / sizeof(struct program_header)))
     return -8;
   const struct program_header *ph =
-      (const void *)((const uint8_t *)image + h->phoff);
+      compat ? normalized_ph
+             : (const void *)((const uint8_t *)image + h->phoff);
   bool entry = false,
        native = h->entry >= AV_USER_BASE && h->entry < AV_USER_END;
+  if (compat == native || h->entry > UINT32_MAX)
+    return -8;
   uint32_t total = 0, high = 0, phdr = 0;
   for (unsigned i = 0; i < h->phnum; i++) {
     const struct program_header *p = &ph[i];
@@ -323,7 +377,8 @@ static int load(struct process *t, const void *image, uint32_t size,
       return -8;
     if (!p->memsz)
       continue;
-    if (!process_address(p->vaddr, p->memsz) || p->vaddr >= 0xbfc00000u ||
+    if (p->vaddr > UINT32_MAX || p->memsz > UINT32_MAX ||
+        !process_address(p->vaddr, p->memsz) || p->vaddr >= 0xbfc00000u ||
         p->memsz > 8 * 1024 * 1024 || total > 8 * 1024 * 1024 - p->memsz)
       return -8;
     total += p->memsz;
@@ -360,8 +415,8 @@ static int load(struct process *t, const void *image, uint32_t size,
       uint32_t v = p->vaddr + n, amount = 4096 - (v & 4095);
       if (amount > p->filesz - n)
         amount = p->filesz - n;
-      uint32_t *pte = process_pte(t, v);
-      memcpy((void *)((*pte & ~4095u) + (v & 4095)),
+      uint64_t *pte = process_pte(t, v);
+      memcpy((void *)(uintptr_t)((*pte & ~4095u) + (v & 4095)),
              (const uint8_t *)image + p->offset + n, amount);
       n += amount;
     }
@@ -370,11 +425,11 @@ static int load(struct process *t, const void *image, uint32_t size,
   for (uint32_t v = stack_top - 65536; v < stack_top; v += 4096)
     if (!process_map(t, v, true))
       goto memory;
-  t->frame =
-      (void *)(t->kernel_stack + PROCESS_STACK - sizeof(struct trap_frame));
+  t->frame = (void *)(uintptr_t)(t->kernel_stack + PROCESS_STACK -
+                                 sizeof(struct trap_frame));
   memset(t->frame, 0, sizeof(*t->frame));
   t->frame->gs = t->frame->fs = t->frame->es = t->frame->ds = 35;
-  t->frame->cs = 27;
+  t->frame->cs = compat ? 59 : 27;
   t->frame->ss = 35;
   t->frame->eflags = 0x202;
   t->frame->eip = h->entry;
@@ -394,12 +449,12 @@ static int load_name(struct process *t, const char *name, const char *args) {
   int n = fs_size(name);
   if (n >= 0) {
     n = fs_read(name, executable_image, sizeof(executable_image));
-    return n < 0 ? -5 : load(t, executable_image, (uint32_t)n, name, args);
+    return n < 0 ? -5 : load(t, executable_image, (uintptr_t)n, name, args);
   }
   for (unsigned i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
     if (str_eq(name, builtins[i].name))
       return load(t, builtins[i].start,
-                  (uint32_t)(builtins[i].end - builtins[i].start), name, args);
+                  (uintptr_t)(builtins[i].end - builtins[i].start), name, args);
   return -2;
 }
 int user_spawn(const char *name, const char *args, bool foreground) {
@@ -436,7 +491,7 @@ int user_exec(const char *name, const char *args) {
 int user_install(void) {
   for (unsigned i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++) {
     int r = fs_write(builtins[i].name, builtins[i].start,
-                     (uint32_t)(builtins[i].end - builtins[i].start));
+                     (uintptr_t)(builtins[i].end - builtins[i].start));
     if (r < 0)
       return r;
   }
@@ -457,7 +512,7 @@ static void wake_waiters(void) {
           (p->wait_pid > 0 && p->wait_pid != c->pid))
         continue;
       uint32_t status =
-          c->signal ? (uint32_t)c->signal : ((uint32_t)c->status & 255) << 8;
+          c->signal ? (uintptr_t)c->signal : ((uintptr_t)c->status & 255) << 8;
       if (p->wait_status && !process_copyout(p, p->wait_status, &status, 4))
         p->frame->eax = (uint32_t)-14;
       else
@@ -489,7 +544,7 @@ void process_exit(struct process *t, int status, int signal) {
 void user_fault(unsigned vector, uint32_t eip) {
   struct process *t = process_current();
   console_write("\nProcess ");
-  print_uint((uint32_t)t->pid);
+  print_uint((uintptr_t)t->pid);
   console_write(" fault ");
   print_uint(vector);
   console_write(" at ");
@@ -521,7 +576,7 @@ int process_wait(struct process *p, int pid, uint32_t status, bool nohang) {
     children = true;
     if (c->state == TASK_ZOMBIE) {
       uint32_t s =
-          c->signal ? (uint32_t)c->signal : ((uint32_t)c->status & 255) << 8;
+          c->signal ? (uintptr_t)c->signal : ((uintptr_t)c->status & 255) << 8;
       if (status && !process_copyout(p, status, &s, 4))
         return -14;
       int id = c->pid;
@@ -584,7 +639,7 @@ struct trap_frame *user_reschedule(struct trap_frame *f) {
       continue;
     current = (int)n;
     t->state = TASK_RUNNING;
-    platform_kernel_stack((uint32_t)(t->kernel_stack + PROCESS_STACK));
+    platform_kernel_stack((uintptr_t)(t->kernel_stack + PROCESS_STACK));
     platform_tls(t->tls);
     platform_fpu_restore(t->fpu);
     activate(t->directory);
@@ -716,9 +771,9 @@ void user_list(void) {
     struct process *t = &tasks[i];
     if (t->state == TASK_EMPTY)
       continue;
-    print_uint((uint32_t)t->pid);
+    print_uint((uintptr_t)t->pid);
     console_putc(' ');
-    print_uint((uint32_t)t->parent);
+    print_uint((uintptr_t)t->parent);
     console_putc(' ');
     console_write(states[t->state]);
     console_write(t->linux_abi ? " linux " : " native ");
@@ -743,20 +798,21 @@ int process_fork(struct trap_frame *f) {
   memcpy(c->name, p->name, sizeof(c->name));
   memcpy(c->arguments, p->arguments, sizeof(c->arguments));
   for (unsigned i = 0; i < p->table_count; i++)
-    for (unsigned j = 0; j < 1024; j++) {
+    for (unsigned j = 0; j < 512; j++) {
       uint32_t old = p->tables[i][j];
       if (!(old & ~4095u))
         continue;
-      uint32_t v = ((uint32_t)p->indices[i] << 22) | (j << 12);
+      uint32_t v = ((uintptr_t)p->indices[i] << 21) | (j << 12);
       if (!process_map(c, v, old & 2)) {
         release(c);
         return -12;
       }
-      uint32_t *pte = process_pte(c, v);
-      memcpy((void *)(*pte & ~4095u), (void *)(old & ~4095u), 4096);
+      uint64_t *pte = process_pte(c, v);
+      memcpy((void *)(uintptr_t)(*pte & ~4095u),
+             (void *)(uintptr_t)(old & ~4095u), 4096);
       *pte = (*pte & ~4095u) | (old & 4095u);
     }
-  c->frame = (void *)(c->kernel_stack + PROCESS_STACK - sizeof(*f));
+  c->frame = (void *)(uintptr_t)(c->kernel_stack + PROCESS_STACK - sizeof(*f));
   *c->frame = *f;
   c->frame->eax = 0;
   linux_clone_fds(c, p);
@@ -843,6 +899,11 @@ void user_syscall(struct trap_frame *f) {
     linux_syscall(f);
     return;
   }
+  /* Native code is ELF64; the current service ABI uses low-4-GiB addresses. */
+  if ((f->ebx | f->ecx | f->edx | f->esi) > UINT32_MAX) {
+    f->eax = (uint32_t)-14;
+    return;
+  }
   uint32_t n = f->ecx;
   char name[32];
   int result = -1;
@@ -853,7 +914,7 @@ void user_syscall(struct trap_frame *f) {
     break;
   case AV_WRITE:
     if (n <= 4096 && range(f->ebx, n, false)) {
-      const char *s = (void *)f->ebx;
+      const char *s = (void *)(uintptr_t)f->ebx;
       for (uint32_t i = 0; i < n; i++)
         console_putc(s[i]);
       result = (int)n;
@@ -875,12 +936,12 @@ void user_syscall(struct trap_frame *f) {
   case AV_FILE_READ:
     if (f->edx <= FS_MAX_FILE && user_string(f->ebx, name, sizeof(name)) &&
         range(f->ecx, f->edx, true))
-      result = fs_read(name, (void *)f->ecx, f->edx);
+      result = fs_read(name, (void *)(uintptr_t)f->ecx, f->edx);
     break;
   case AV_FILE_WRITE:
     if (f->edx <= FS_MAX_FILE && user_string(f->ebx, name, sizeof(name)) &&
         range(f->ecx, f->edx, false))
-      result = fs_write(name, (void *)f->ecx, f->edx);
+      result = fs_write(name, (void *)(uintptr_t)f->ecx, f->edx);
     break;
   case AV_FILE_REMOVE:
     if (user_string(f->ebx, name, sizeof(name)))
@@ -900,14 +961,14 @@ void user_syscall(struct trap_frame *f) {
   case AV_UDP_SEND:
     if (f->esi <= 1472 && range(f->edx, f->esi, false))
       result = net_udp_send(f->ebx, (uint16_t)(f->ecx >> 16), (uint16_t)f->ecx,
-                            (void *)f->edx, f->esi);
+                            (void *)(uintptr_t)f->edx, f->esi);
     break;
   case AV_UDP_RECV:
     if (f->edx <= 1472 && range(f->ecx, f->edx, true)) {
       uint32_t source = 0;
       uint16_t port = 0;
-      result = net_udp_recv((uint16_t)f->ebx, (void *)f->ecx, f->edx, &source,
-                            &port);
+      result = net_udp_recv((uint16_t)f->ebx, (void *)(uintptr_t)f->ecx, f->edx,
+                            &source, &port);
       f->edx = source;
       f->ecx = port;
     }
@@ -917,8 +978,8 @@ void user_syscall(struct trap_frame *f) {
       uint32_t len = strlen(t->arguments);
       if (len >= n)
         len = n - 1;
-      memcpy((void *)f->ebx, t->arguments, len);
-      ((char *)f->ebx)[len] = 0;
+      memcpy((void *)(uintptr_t)f->ebx, t->arguments, len);
+      ((char *)(uintptr_t)f->ebx)[len] = 0;
       result = (int)len;
     }
     break;
@@ -948,7 +1009,7 @@ void user_syscall(struct trap_frame *f) {
       break;
     }
     if (n <= 4096 && range(f->ebx, n, false))
-      result = net_tcp_send((void *)f->ebx, n);
+      result = net_tcp_send((void *)(uintptr_t)f->ebx, n);
     break;
   case AV_TCP_RECV:
     if (tcp_owner != t->pid) {
@@ -956,7 +1017,7 @@ void user_syscall(struct trap_frame *f) {
       break;
     }
     if (n <= 4096 && range(f->ebx, n, true) && f->edx <= 1000)
-      result = net_tcp_recv((void *)f->ebx, n, f->edx);
+      result = net_tcp_recv((void *)(uintptr_t)f->ebx, n, f->edx);
     break;
   case AV_TCP_CLOSE:
     if (tcp_owner != t->pid) {
@@ -973,7 +1034,7 @@ void user_syscall(struct trap_frame *f) {
         range(f->ecx, 4, true)) {
       result = net_dns(hostname, &answer);
       if (!result)
-        memcpy((void *)f->ecx, &answer, 4);
+        memcpy((void *)(uintptr_t)f->ecx, &answer, 4);
     }
     break;
   }
@@ -1081,7 +1142,7 @@ void user_syscall(struct trap_frame *f) {
     result = -38;
     break;
   }
-  f->eax = (uint32_t)result;
+  f->eax = (uintptr_t)result;
 }
 
 char user_tty_getchar(void) {

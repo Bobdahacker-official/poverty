@@ -1,7 +1,7 @@
 # Magenta
 *This OS is not a hobby OS, it is not "niche", and it is not educational or a proof of concept or portfolio project! please do no call it that. this is in the first stage of production.* 
 
-**Magenta 0.1** is a small, text-based operating system distribution powered by [Avalanche Kernel](avalanche/). It includes a native userspace interface, bundled applications, a BIOS/UEFI boot image, and a separate writable data disk.
+**Magenta 0.1** is a small, native x86-64 text-based operating system distribution powered by [Avalanche Kernel](avalanche/). It includes a native userspace interface, bundled applications, a BIOS/UEFI boot image, and a separate writable data disk.
 
 The interface uses numbered menus, keyboard input, and magenta headings. File operations, process management, networking, and system information use implemented kernel services.
 
@@ -17,7 +17,7 @@ The ISO is read-only boot media. Attach the separate writable data disk for pers
 
 ## VirtualBox
 
-Magenta's BIOS boot image and Intel E1000 network driver are configured for VirtualBox. Create a VM manually with 256 MiB of memory, attach `magenta.iso` as an IDE optical drive, attach `magenta-data.img` as a virtual hard disk, and select the Intel PRO/1000 MT Desktop (`82540EM`) network adapter with NAT.
+Magenta's BIOS boot image and Intel E1000 network driver are configured for VirtualBox. Create a 64-bit Other/Unknown VM manually with 256 MiB of memory, attach `magenta.iso` as an IDE optical drive, attach `magenta-data.img` as a virtual hard disk, and select the Intel PRO/1000 MT Desktop (`82540EM`) network adapter with NAT.
 
 The included [`copy.sh`](copy.sh) copies both release files to a directory:
 
@@ -36,9 +36,7 @@ The data disk is where saved files live. Keep its generated `magenta-data.vdi` w
 
 ## Browser emulator (Copy.sh)
 
-[Launch Magenta in Copy.sh](copy.sh.html) to boot the distribution in the browser through Copy.sh's v86 emulator. The page loads the project ISO and data image, uses the emulator's VirtIO network adapter, and needs no local installation. Its v86 runtime and BIOS files are included in this repository, so it does not depend on Copy.sh allowing external script requests. Click the display after it starts to direct keyboard input to Magenta.
-
-The packaged data disk is read-only to the browser. Changes made in this emulator are retained only for its current browser session; use the VirtualBox data disk for persistent saved files.
+Copy.sh's v86 emulator does not implement x86-64 long mode and cannot run these new 64-bit images. The [browser page](copy.sh.html) explains this limitation and links to the downloads. Use VirtualBox with a 64-bit VM type, or QEMU's `qemu-system-x86_64`. The old 32-bit images have been replaced; the repository does not present them as the 64-bit build.
 
 ## Interface
 
@@ -98,6 +96,8 @@ make -C magenta
 
 Outputs are `avalanche/build/magenta.iso` and `avalanche/build/magenta-data.img`. Ordinary builds retain an existing writable data image, including any files already saved in it.
 
+When upgrading a data disk from the old 32-bit release, boot the rescue-console entry and run `install` to replace the bundled applications with the new native binaries while preserving other files. Alternatively, use the freshly packaged release data disk. A stored old 32-bit `magenta` executable cannot run as the native 64-bit interface.
+
 Package fresh distribution artifacts:
 
 ```sh
@@ -106,11 +106,11 @@ make -C magenta package
 
 This replaces the release artifacts in `magenta/images/` and creates a fresh release data disk from the bundled applications and welcome file. It does not refresh applications inside an existing working data disk.
 
-Build prerequisites are GCC/binutils with freestanding i386 support, GNU Make, Python 3, GRUB BIOS and x86-64 EFI modules, xorriso and mtools. `GRUB_LIB` can select an alternative GRUB module directory.
+Build prerequisites are GCC/binutils with freestanding x86-64 and i386 compatibility-application support, GNU Make, Python 3, GRUB BIOS and x86-64 EFI modules, xorriso and mtools. `GRUB_LIB` can select an alternative GRUB module directory.
 
 ## Scope
 
-Avalanche supports up to eight isolated user processes and a limited static Linux i386 ABI subset. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. The filesystem has 32 flat files, each limited to 64 KiB. The kernel is 32-bit x86; its UEFI loader targets x86-64 firmware. Secure Boot signatures are not included.
+Avalanche supports up to eight isolated user processes and a limited static Linux i386 ABI subset. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. The filesystem has 32 flat files, each limited to 64 KiB. The kernel, Magenta interface and native utilities execute in x86-64 long mode; the BIOS loader enters long mode before calling C. Its UEFI loader targets x86-64 firmware. Four-level paging uses 2 MiB supervisor identity mappings and private 4 KiB user mappings. The allocator still manages RAM below 128 MiB, and the service ABI deliberately bounds user addresses below 4 GiB. Linux compatibility remains an i386 subset in CPU compatibility mode; Linux x86-64 binaries are not supported. Secure Boot signatures are not included.
 
 Magenta is an early development distribution. General Linux application compatibility, dynamic linking, USB, NVMe, Wi-Fi, HTTPS and a graphical desktop are not provided. See [Avalanche's capability notes](avalanche/images/NOTICE) for the underlying kernel's limits and earlier validation results.
 

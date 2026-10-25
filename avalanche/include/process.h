@@ -20,8 +20,10 @@ enum process_state {
   TASK_ZOMBIE
 };
 struct process {
-  uint32_t directory[1024] __attribute__((aligned(4096)));
-  uint32_t tables[PROCESS_TABLES][1024] __attribute__((aligned(4096)));
+  uint64_t root[512] __attribute__((aligned(4096)));
+  uint64_t pdpt[512] __attribute__((aligned(4096)));
+  uint64_t directory[2048] __attribute__((aligned(4096)));
+  uint64_t tables[PROCESS_TABLES][512] __attribute__((aligned(4096)));
   uint8_t kernel_stack[PROCESS_STACK] __attribute__((aligned(16)));
   uint16_t indices[PROCESS_TABLES];
   unsigned table_count, pages;
@@ -48,7 +50,7 @@ bool process_range(struct process *, uint32_t, uint32_t, bool);
 bool process_copyin(struct process *, void *, uint32_t, uint32_t);
 bool process_copyout(struct process *, uint32_t, const void *, uint32_t);
 bool process_string(struct process *, uint32_t, char *, unsigned);
-uint32_t *process_pte(struct process *, uint32_t);
+uint64_t *process_pte(struct process *, uint32_t);
 bool process_map(struct process *, uint32_t, bool);
 void process_unmap(struct process *, uint32_t);
 bool process_address(uint32_t, uint32_t);

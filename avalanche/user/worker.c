@@ -34,7 +34,7 @@ int main(void) {
       line[n++] = r[i];
     n = append_number(line, n, round);
     line[n++] = '\n';
-    av_call(AV_WRITE, (uint32_t)line, n, 0, 0);
+    av_call(AV_WRITE, (uintptr_t)line, n, 0, 0);
   }
   return 0;
 }

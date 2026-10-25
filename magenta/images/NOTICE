@@ -1,4 +1,4 @@
-Magenta 0.1 is a text-based userspace distribution of Avalanche Kernel.
+Magenta 0.1 x86-64 is a text-based userspace distribution of Avalanche Kernel.
 Source and applications are covered by ../../avalanche/LICENSE (MIT).
 
 The ISO additionally contains GNU GRUB 2.12-9+deb13u2. Its licensing and
@@ -14,6 +14,11 @@ recognized writable disk, files use RAM. Network settings are per-session.
 Menus call implemented kernel services; there are no simulated file,
 process, network, device or power actions. The text editor supports ASCII
 text and files up to 64 KiB. Binary files have a bounded hexadecimal view.
+
+Magenta, its native applications and its extended kernel are now ELF64
+x86-64 binaries. The Linux demos remain ELF32 compatibility applications.
+Copy.sh v86 cannot execute long mode; use a 64-bit virtual machine.
+The physical allocator and userspace address bounds remain unchanged.
 
 Magenta and its extended kernel were compiled and images were packaged.
 No Magenta boot, runtime, firmware, UI, storage or network tests were run,

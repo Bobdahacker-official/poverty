@@ -110,10 +110,15 @@ int net_tcp_recv(void *, uint32_t, uint32_t);
 int net_tcp_close(void);
 void net_http(const char *, const char *);
 struct trap_frame {
-  uint32_t gs, fs, es, ds, edi, esi, ebp, esp, ebx, edx, ecx, eax, vector,
+  uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+  uint64_t gs, fs, es, ds, edi, esi, ebp, esp, ebx, edx, ecx, eax, vector,
       error, eip, cs, eflags, useresp, ss;
 };
 struct trap_frame *trap_dispatch(struct trap_frame *);
+_Static_assert(sizeof(void *) == 8, "Avalanche requires an x86-64 compiler");
+_Static_assert(offsetof(struct trap_frame, vector) == 160,
+               "interrupt frame ABI");
+_Static_assert(sizeof(struct trap_frame) == 216, "iretq frame ABI");
 void user_init(void);
 bool platform_mmio(uint32_t, uint32_t);
 int user_run(const void *, uint32_t, const char *);

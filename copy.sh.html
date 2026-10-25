@@ -1,67 +1,20 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Magenta in Copy.sh</title>
-  <style>
-    :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #18001d; color: #ffe8ff; }
-    body { margin: 0 auto; max-width: 980px; padding: 24px; }
-    h1 { color: #ff62f5; } button { background: #d500be; border: 0; color: white; cursor: pointer; font: inherit; padding: 12px 18px; }
-    #screen_container { background: #000; min-height: 480px; outline: 2px solid #8e1788; position: relative; }
-    #screen_container .vga { width: 100%; }
-    #screen_container canvas { display: block; margin: auto; max-width: 100%; }
-    #screen_container .loading { padding: 2rem; text-align: center; }
-    #screen_container .terminal { display: none; }
-    #notice { line-height: 1.55; }
-  </style>
-</head>
-<body>
-  <h1>Magenta / Copy.sh</h1>
-  <p id="notice">Start Magenta in the Copy.sh v86 browser emulator. The first boot downloads the ISO and data disk.</p>
-  <button id="start" type="button">Start Magenta</button>
-  <p><a href="index.html">Back to drawing Inc</a> · <a href="README.md">Documentation</a></p>
-  <div id="screen_container">
-    <div class="loading">The emulator has not started.</div>
-    <div class="vga"><canvas></canvas></div>
-    <div class="terminal"></div>
-  </div>
-  <script src="emulator/v86/libv86.js"></script>
-  <script>
-    "use strict";
-    const start = document.getElementById("start");
-    const notice = document.getElementById("notice");
-    let emulator;
-
-    start.addEventListener("click", () => {
-      if (emulator) return;
-      if (typeof V86 !== "function") {
-        notice.textContent = "The bundled v86 emulator could not be loaded. Reload the page after GitHub Pages finishes deploying.";
-        return;
-      }
-      start.disabled = true;
-      start.textContent = "Starting…";
-      try {
-        emulator = new V86({
-        wasm_path: "emulator/v86/v86.wasm",
-        memory_size: 256 * 1024 * 1024,
-        vga_memory_size: 8 * 1024 * 1024,
-        bios: { url: "emulator/v86/seabios.bin" },
-        vga_bios: { url: "emulator/v86/vgabios.bin" },
-        cdrom: { url: "magenta/images/magenta.iso" },
-        hda: { url: "magenta/images/magenta-data.img", async: true },
-        screen_container: document.getElementById("screen_container"),
-        autostart: true,
-        disable_speaker: true,
-        net_device: { type: "virtio", relay_url: "wss://relay.widgetry.org/" },
-        });
-        notice.textContent = "Magenta is booting. Click the display to send keyboard input. Disk changes remain in this browser session.";
-      } catch (error) {
-        start.disabled = false;
-        start.textContent = "Start Magenta";
-        notice.textContent = "The emulator failed to start: " + (error && error.message ? error.message : error);
-      }
-    });
-  </script>
-</body>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magenta x86-64</title>
+<style>
+  :root { color-scheme: dark; font-family: monospace; background: #18001d; color: #ffe8ff; }
+  body { max-width: 760px; margin: 4rem auto; padding: 24px; line-height: 1.6; }
+  h1, a { color: #ff62f5; }
+</style>
+<h1>Magenta is now 64-bit</h1>
+<p>Magenta and Avalanche Kernel now target x86-64. Copy.sh's v86 emulator does not implement 64-bit long mode, so it cannot boot this release.</p>
+<p>Use a 64-bit VirtualBox machine or QEMU with <code>qemu-system-x86_64</code>. Attach the ISO as boot media and the separate data disk for saved files.</p>
+<ul>
+  <li><a href="magenta/images/magenta.iso">Download Magenta x86-64 ISO</a></li>
+  <li><a href="magenta/images/magenta-data.img">Download writable data disk</a></li>
+  <li><a href="https://github.com/Bobdahacker-official/poverty#virtualbox">VirtualBox instructions</a></li>
+</ul>
+<p>The 64-bit conversion has been compiled and packaged, but has not been boot-tested.</p>
 </html>

@@ -5,7 +5,7 @@ int main(void) {
   puts_u("Avalanche userspace shell (ring 3). Type help.\n");
   for (;;) {
     puts_u("user> ");
-    if (av_call(AV_READLINE, (uint32_t)line, sizeof(line), 0, 0) < 0)
+    if (av_call(AV_READLINE, (uintptr_t)line, sizeof(line), 0, 0) < 0)
       return 1;
     char *rest = line, *cmd = word_u(&rest);
     if (!*cmd)
@@ -18,12 +18,12 @@ int main(void) {
              "TEXT; udp IP PORT TEXT; recv LOCALPORT\n");
     else if (ueq(cmd, "spawn")) {
       char *name = word_u(&rest);
-      int pid = av_call(AV_SPAWN, (uint32_t)name, (uint32_t)rest, 0, 0);
+      int pid = av_call(AV_SPAWN, (uintptr_t)name, (uintptr_t)rest, 0, 0);
       if (pid < 0)
         puts_u("Spawn failed.\n");
       else {
         puts_u("Started PID ");
-        uint_u((uint32_t)pid);
+        uint_u((uintptr_t)pid);
         puts_u("\n");
       }
     } else if (ueq(cmd, "wait")) {
@@ -33,7 +33,7 @@ int main(void) {
       puts_u(av_call(AV_KILL, decimal_u(rest), 9, 0, 0) < 0 ? "Kill failed.\n"
                                                             : "Terminated.\n");
     } else if (ueq(cmd, "pid")) {
-      uint_u((uint32_t)av_call(AV_GETPID, 0, 0, 0, 0));
+      uint_u((uintptr_t)av_call(AV_GETPID, 0, 0, 0, 0));
       puts_u("\n");
     } else if (ueq(cmd, "echo")) {
       puts_u(rest);
@@ -56,11 +56,11 @@ int main(void) {
                                                  : "Saved.\n");
     } else if (ueq(cmd, "rm")) {
       char *name = word_u(&rest);
-      puts_u(av_call(AV_FILE_REMOVE, (uint32_t)name, 0, 0, 0) < 0
+      puts_u(av_call(AV_FILE_REMOVE, (uintptr_t)name, 0, 0, 0) < 0
                  ? "Remove failed.\n"
                  : "Removed.\n");
     } else if (ueq(cmd, "ticks")) {
-      uint_u((uint32_t)av_call(AV_TICKS, 0, 0, 0, 0));
+      uint_u((uintptr_t)av_call(AV_TICKS, 0, 0, 0, 0));
       puts_u("\n");
     } else if (ueq(cmd, "sleep")) {
       uint32_t n = decimal_u(rest);

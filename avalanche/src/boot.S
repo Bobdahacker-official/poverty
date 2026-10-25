@@ -12,94 +12,93 @@ header:
 .short 0, 0
 .long 8
 header_end:
+
 .section .bss
+.balign 4096
+boot_pml4: .skip 4096
+boot_pdpt: .skip 4096
+boot_pd: .skip 16384
 .balign 16
 stack_bottom: .skip 65536
 stack_top:
 .section .text
 .code32
 .global _start
-.type _start,@function
 _start:
  cli
  cld
+ mov %eax,%edi
+ mov %ebx,%esi
+ mov $stack_top,%esp
+ mov $0x80000000,%eax
+ cpuid
+ cmp $0x80000001,%eax
+ jb unsupported
+ mov $0x80000001,%eax
+ cpuid
+ test $0x20000000,%edx
+ jz unsupported
+ mov $boot_pdpt,%eax
+ or $3,%eax
+ mov %eax,boot_pml4
+ xor %ecx,%ecx
+1:
+ mov %ecx,%eax
+ shl $12,%eax
+ add $boot_pd,%eax
+ or $3,%eax
+ mov %eax,boot_pdpt(,%ecx,8)
+ inc %ecx
+ cmp $4,%ecx
+ jne 1b
+ xor %ecx,%ecx
+2:
+ mov %ecx,%eax
+ shl $21,%eax
+ or $0x83,%eax
+ mov %eax,boot_pd(,%ecx,8)
+ inc %ecx
+ cmp $2048,%ecx
+ jne 2b
+ mov %cr4,%eax
+ or $0x20,%eax
+ mov %eax,%cr4
+ mov $boot_pml4,%eax
+ mov %eax,%cr3
+ mov $0xc0000080,%ecx
+ rdmsr
+ or $0x100,%eax
+ wrmsr
+ mov %cr0,%eax
+ or $0x80010000,%eax
+ mov %eax,%cr0
  lgdt gdt_desc
- ljmp $0x08, $reload
-reload:
- mov $0x10, %cx
- mov %cx, %ds
- mov %cx, %es
- mov %cx, %fs
- mov %cx, %gs
- mov %cx, %ss
- mov $stack_top, %esp
- xor %ebp, %ebp
- sub $8, %esp
- push %ebx
- push %eax
- call kernel_main
-1: cli
+ ljmp $8,$long_entry
+unsupported:
+ cli
  hlt
- jmp 1b
+ jmp unsupported
+.code64
+long_entry:
+ mov %edi,%edi
+ mov %esi,%esi
+ mov $16,%ax
+ mov %ax,%ds
+ mov %ax,%es
+ mov %ax,%ss
+ xor %eax,%eax
+ mov %ax,%fs
+ mov %ax,%gs
+ mov $stack_top,%rsp
+ xor %rbp,%rbp
+ call kernel_main
+3: cli
+ hlt
+ jmp 3b
 .balign 8
 gdt:
- .quad 0
- .quad 0x00cf9a000000ffff
- .quad 0x00cf92000000ffff
+ .quad 0,0x00af9a000000ffff,0x00cf92000000ffff
 gdt_desc:
  .word 23
  .long gdt
 .section .note.GNU-stack,"",@progbits
-.section .text
-.macro EXCEPTION num, error=0
-.global exception_\num
-exception_\num:
- .if !\error
- pushl $0
- .endif
- pushl $\num
- jmp trap_common
-.endm
-EXCEPTION 0
-EXCEPTION 1
-EXCEPTION 2
-EXCEPTION 3
-EXCEPTION 4
-EXCEPTION 5
-EXCEPTION 6
-EXCEPTION 7
-EXCEPTION 8,1
-EXCEPTION 9
-EXCEPTION 10,1
-EXCEPTION 11,1
-EXCEPTION 12,1
-EXCEPTION 13,1
-EXCEPTION 14,1
-EXCEPTION 15
-EXCEPTION 16
-EXCEPTION 17,1
-EXCEPTION 18
-EXCEPTION 19
-EXCEPTION 20
-EXCEPTION 21,1
-EXCEPTION 22
-EXCEPTION 23
-EXCEPTION 24
-EXCEPTION 25
-EXCEPTION 26
-EXCEPTION 27
-EXCEPTION 28
-EXCEPTION 29,1
-EXCEPTION 30,1
-EXCEPTION 31
-.section .rodata
-.global exception_table
-exception_table:
-.long exception_0,exception_1,exception_2,exception_3
-.long exception_4,exception_5,exception_6,exception_7
-.long exception_8,exception_9,exception_10,exception_11
-.long exception_12,exception_13,exception_14,exception_15
-.long exception_16,exception_17,exception_18,exception_19
-.long exception_20,exception_21,exception_22,exception_23
-.long exception_24,exception_25,exception_26,exception_27
-.long exception_28,exception_29,exception_30,exception_31

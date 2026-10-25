@@ -9,12 +9,12 @@ static void fpu_init(void) {
   have_fxsr = (d & (1u << 24)) != 0;
   if (!have_fpu)
     return;
-  uint32_t cr0;
+  uintptr_t cr0;
   __asm__ volatile("mov %%cr0,%0" : "=r"(cr0));
   cr0 = (cr0 & ~12u) | 0x22;
   __asm__ volatile("mov %0,%%cr0" ::"r"(cr0));
   if (have_fxsr) {
-    uint32_t cr4;
+    uintptr_t cr4;
     __asm__ volatile("mov %%cr4,%0" : "=r"(cr4));
     cr4 |= 1u << 9;
     if (d & (1u << 25))
@@ -47,45 +47,47 @@ void platform_fpu_restore(const void *p) {
 }
 void platform_fpu_initial(void *p) { memcpy(p, initial_fpu, 512); }
 
-static uint64_t gdt[9] __attribute__((aligned(16)));
+static uint64_t gdt[11] __attribute__((aligned(16)));
 static uint8_t interrupt_stack[32768] __attribute__((aligned(16)));
 struct tss {
-  uint32_t prev, esp0, ss0, unused[22];
-  uint16_t trap, iomap;
+  uint32_t reserved;
+  uint64_t esp0, rsp1, rsp2, reserved2, ist[7], reserved3;
+  uint16_t reserved4, iomap;
 } __attribute__((packed));
 static struct tss tss;
 struct gate {
   uint16_t low, selector;
   uint8_t zero, flags;
   uint16_t high;
+  uint32_t upper, reserved;
 } __attribute__((packed));
 static struct gate idt[256];
 extern void *exception_table[32];
 extern void timer_entry(void), syscall_entry(void), irq7_entry(void),
     irq15_entry(void), schedule_entry(void), arch_load_gdt(void *);
 static void gate(unsigned n, void *entry, uint8_t flags) {
-  uint32_t a = (uint32_t)entry;
-  idt[n] = (struct gate){a & 65535, 8, 0, flags, a >> 16};
+  uint32_t a = (uintptr_t)entry;
+  idt[n] = (struct gate){a & 65535, 8, 0, flags, a >> 16, 0, 0};
 }
 void platform_init(void) {
   fpu_init();
   gdt[0] = 0;
-  gdt[1] = 0x00cf9a000000ffffULL;
+  gdt[1] = 0x00af9a000000ffffULL;
   gdt[2] = 0x00cf92000000ffffULL;
-  gdt[3] = 0x00cffa000000ffffULL;
+  gdt[3] = 0x00affa000000ffffULL;
   gdt[4] = 0x00cff2000000ffffULL;
   memset(&tss, 0, sizeof(tss));
-  tss.ss0 = 16;
-  tss.esp0 = (uint32_t)(interrupt_stack + sizeof(interrupt_stack));
+  gdt[7] = 0x00cffa000000ffffULL;
+  tss.esp0 = (uintptr_t)(interrupt_stack + sizeof(interrupt_stack));
   tss.iomap = sizeof(tss);
-  uint32_t b = (uint32_t)&tss, l = sizeof(tss) - 1;
+  uint32_t b = (uintptr_t)&tss, l = sizeof(tss) - 1;
   gdt[5] = (l & 65535ULL) | ((uint64_t)(b & 0xffffff) << 16) | (0x89ULL << 40) |
            ((uint64_t)(l & 0xf0000) << 32) | ((uint64_t)(b >> 24) << 56);
   struct {
     uint16_t limit;
-    uint32_t base;
-  } __attribute__((packed)) gdtr = {sizeof(gdt) - 1, (uint32_t)gdt},
-                            idtr = {sizeof(idt) - 1, (uint32_t)idt};
+    uint64_t base;
+  } __attribute__((packed)) gdtr = {sizeof(gdt) - 1, (uintptr_t)gdt},
+                            idtr = {sizeof(idt) - 1, (uintptr_t)idt};
   arch_load_gdt(&gdtr);
   for (unsigned i = 0; i < 32; i++)
     gate(i, exception_table[i], 0x8e);
@@ -113,7 +115,7 @@ void platform_enable(void) { __asm__ volatile("sti"); }
 uint32_t clock_ticks(void) { return ticks; }
 void sleep_ticks(uint32_t n) {
   uint32_t start = ticks;
-  while ((uint32_t)(ticks - start) < n) {
+  while ((uintptr_t)(ticks - start) < n) {
     net_poll();
     __asm__ volatile("hlt");
   }
@@ -121,7 +123,7 @@ void sleep_ticks(uint32_t n) {
 void platform_kernel_stack(uint32_t stack) { tss.esp0 = stack; }
 void platform_tls(const uint64_t *tls) {
   for (unsigned i = 0; i < 3; i++)
-    gdt[6 + i] = tls ? tls[i] : 0;
+    gdt[8 + i] = tls ? tls[i] : 0;
 }
 struct trap_frame *trap_dispatch(struct trap_frame *f) {
   if (f->vector == 39) {
@@ -170,9 +172,9 @@ uint32_t parse_uint(const char *s, bool *ok) {
   if (!*s)
     return 0;
   while (*s) {
-    if (*s < '0' || *s > '9' || n > (0xffffffffu - (uint32_t)(*s - '0')) / 10)
+    if (*s < '0' || *s > '9' || n > (0xffffffffu - (uintptr_t)(*s - '0')) / 10)
       return 0;
-    n = n * 10 + (uint32_t)(*s++ - '0');
+    n = n * 10 + (uintptr_t)(*s++ - '0');
   }
   *ok = true;
   return n;

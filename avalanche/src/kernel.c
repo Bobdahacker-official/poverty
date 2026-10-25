@@ -88,14 +88,14 @@ void *page_alloc(void) {
     if (bit(usable, i) && !bit(allocated, i)) {
       mark(allocated, i, true);
       ++used;
-      void *p = (void *)(i * PAGE);
+      void *p = (void *)(uintptr_t)(i * PAGE);
       memset(p, 0, PAGE);
       return p;
     }
   return NULL;
 }
 bool page_free(void *p) {
-  uint32_t a = (uint32_t)p, i = a / PAGE;
+  uint32_t a = (uintptr_t)p, i = a / PAGE;
   if (a % PAGE || i >= PAGES || !bit(allocated, i))
     return false;
   mark(allocated, i, false);
@@ -137,9 +137,9 @@ static const uint8_t glyphs[36][7] = {
     {14, 16, 16, 30, 17, 17, 14}, {31, 1, 2, 4, 8, 8, 8},
     {14, 17, 17, 14, 17, 17, 14}, {14, 17, 17, 15, 1, 1, 14}};
 static uint32_t rgb(uint8_t r, uint8_t g, uint8_t b) {
-  return ((uint32_t)(r >> (8 - rbits)) << rpos) |
-         ((uint32_t)(g >> (8 - gbits)) << gpos) |
-         ((uint32_t)(b >> (8 - bbits)) << bpos);
+  return ((uintptr_t)(r >> (8 - rbits)) << rpos) |
+         ((uintptr_t)(g >> (8 - gbits)) << gpos) |
+         ((uintptr_t)(b >> (8 - bbits)) << bpos);
 }
 static void pixel(uint32_t x, uint32_t y, uint32_t c) {
   volatile uint8_t *p = fb + y * pitch + x * bytespp;
@@ -213,7 +213,7 @@ static void newline(void) {
   ++row;
   if (row >= rows) {
     if (fb) {
-      memmove((void *)fb, (const void *)(fb + 16 * pitch),
+      memmove((void *)(uintptr_t)fb, (const void *)(fb + 16 * pitch),
               (rows - 1) * 16 * pitch);
       for (uint32_t y = (rows - 1) * 16; y < rows * 16; ++y)
         for (uint32_t x = 0; x < fw; ++x)
@@ -437,8 +437,9 @@ static void command(char *line) {
         "net dhcp ip ADDRESS MASK GATEWAY DNS ping ADDRESS dns NAME\n"
         "udp ADDRESS PORT TEXT recv LOCALPORT http HOST /PATH reboot halt\n");
   else if (eq(cmd, "version"))
-    console_write("Avalanche Kernel 0.3.0 - x86 / BIOS + UEFI\nPaging-isolated "
-                  "ring 3, ELF32, syscalls, ATA/AFS, Ethernet/IPv4.\n");
+    console_write(
+        "Avalanche Kernel 0.4.0 - x86-64 / BIOS + UEFI\nPaging-isolated "
+        "ring 3, ELF32, syscalls, ATA/AFS, Ethernet/IPv4.\n");
   else if (eq(cmd, "clear"))
     console_clear();
   else if (eq(cmd, "echo")) {
@@ -511,7 +512,7 @@ static void command(char *line) {
       result(pid);
     else {
       console_write("Started PID ");
-      print_uint((uint32_t)pid);
+      print_uint((uintptr_t)pid);
       console_putc('\n');
     }
   } else if (eq(cmd, "ps"))
@@ -538,7 +539,7 @@ static void command(char *line) {
       console_putc('-');
       print_uint((uint32_t)-status);
     } else
-      print_uint((uint32_t)status);
+      print_uint((uintptr_t)status);
     console_putc('\n');
   } else if (eq(cmd, "net"))
     net_info();
@@ -567,7 +568,7 @@ static void command(char *line) {
         result(ms);
       else {
         console_write("Reply in ");
-        print_uint((uint32_t)ms);
+        print_uint((uintptr_t)ms);
         console_write(" ms\n");
       }
     }
@@ -641,7 +642,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     for (;;)
       __asm__ volatile("hlt");
   }
-  uint32_t total = *(uint32_t *)mbi;
+  uint32_t total = *(uint32_t *)(uintptr_t)mbi;
   if (total < 16 || total > 0x100000 || mbi > 0xffffffffu - total) {
     console_write("Invalid boot information.\n");
     for (;;)
@@ -649,8 +650,8 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   }
   uint32_t end = mbi + total;
   bool magenta_boot = false;
-  for (struct tag *t = (void *)(mbi + 8); (uint32_t)t <= end - 8;) {
-    if (t->size < 8 || t->size > end - (uint32_t)t)
+  for (struct tag *t = (void *)(uintptr_t)(mbi + 8); (uintptr_t)t <= end - 8;) {
+    if (t->size < 8 || t->size > end - (uintptr_t)t)
       break;
     if (t->type == 0)
       break;
@@ -666,16 +667,17 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
       }
     }
     if (t->type == 6 && t->size >= 16) {
-      uint32_t step = *(uint32_t *)((uint8_t *)t + 8);
+      uint32_t step = *(uint32_t *)(uintptr_t)((uint8_t *)(uintptr_t)t + 8);
       if (step >= 24)
         for (uint32_t off = 16; off <= t->size - 24;) {
-          struct mmap_entry *e = (void *)((uint8_t *)t + off);
+          struct mmap_entry *e =
+              (void *)(uintptr_t)((uint8_t *)(uintptr_t)t + off);
           if (e->type == 1 && e->base < (uint64_t)PAGES * PAGE) {
             uint64_t last = e->base + e->len;
             if (last < e->base || last > (uint64_t)PAGES * PAGE)
               last = (uint64_t)PAGES * PAGE;
-            uint32_t a = (uint32_t)((e->base + PAGE - 1) >> 12),
-                     b = (uint32_t)(last >> 12);
+            uint32_t a = (uintptr_t)((e->base + PAGE - 1) >> 12),
+                     b = (uintptr_t)(last >> 12);
             for (uint32_t i = a; i < b; ++i)
               if (!bit(usable, i)) {
                 mark(usable, i, true);
@@ -688,7 +690,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
         }
     }
     if (t->type == 8 && t->size >= 38) {
-      struct fbtag *f = (void *)t;
+      struct fbtag *f = (void *)(uintptr_t)t;
       uint64_t span = (uint64_t)f->pitch * f->height;
       if (f->kind == 1 && (f->bpp == 24 || f->bpp == 32) && f->width >= 120 &&
           f->height >= 32 && f->width <= 4096 && f->height <= 2160 &&
@@ -696,7 +698,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
           f->addr + span <= 0xffffffffu && f->rs && f->rs <= 8 && f->gs &&
           f->gs <= 8 && f->bs && f->bs <= 8 && f->rp + f->rs <= f->bpp &&
           f->gp + f->gs <= f->bpp && f->bp + f->bs <= f->bpp) {
-        fb = (void *)(uint32_t)f->addr;
+        fb = (void *)(uintptr_t)f->addr;
         pitch = f->pitch;
         fw = f->width;
         fh = f->height;
@@ -714,28 +716,28 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
       }
     }
     uint32_t next = (t->size + 7) & ~7u;
-    if (next > end - (uint32_t)t)
+    if (next > end - (uintptr_t)t)
       break;
-    t = (void *)((uint8_t *)t + next);
+    t = (void *)(uintptr_t)((uint8_t *)(uintptr_t)t + next);
   }
-  reserve(0, (uint32_t)&kernel_end);
+  reserve(0, (uintptr_t)&kernel_end);
   reserve(mbi, end);
   if (fb)
-    reserve((uint32_t)fb, (uint32_t)fb + pitch * fh);
+    reserve((uintptr_t)fb, (uintptr_t)fb + pitch * fh);
   /* Boot modules remain reserved so future distribution payloads are not
    * overwritten. */
-  for (struct tag *t = (void *)(mbi + 8); (uint32_t)t <= end - 8;) {
-    if (t->size < 8 || t->size > end - (uint32_t)t || !t->type)
+  for (struct tag *t = (void *)(uintptr_t)(mbi + 8); (uintptr_t)t <= end - 8;) {
+    if (t->size < 8 || t->size > end - (uintptr_t)t || !t->type)
       break;
     if (t->type == 3 && t->size >= 16) {
-      uint32_t *m = (void *)((uint8_t *)t + 8);
+      uint32_t *m = (void *)(uintptr_t)((uint8_t *)(uintptr_t)t + 8);
       if (m[1] >= m[0])
         reserve(m[0], m[1]);
     }
     uint32_t next = (t->size + 7) & ~7u;
-    if (next > end - (uint32_t)t)
+    if (next > end - (uintptr_t)t)
       break;
-    t = (void *)((uint8_t *)t + next);
+    t = (void *)(uintptr_t)((uint8_t *)(uintptr_t)t + next);
   }
   console_clear();
   user_init();
@@ -743,7 +745,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   devices_init();
   net_init();
   fs_init();
-  console_write("AVALANCHE KERNEL 0.3.0\n");
+  console_write("AVALANCHE KERNEL 0.4.0\n");
   console_write(
       "--------------------------------------------------\nA small independent "
       "operating system kernel.\nBIOS / UEFI through GRUB Multiboot2\n\n");
@@ -800,7 +802,7 @@ void *memchr(const void *p, int c, size_t n) {
   const uint8_t *s = p;
   while (n--) {
     if (*s == (uint8_t)c)
-      return (void *)s;
+      return (void *)(uintptr_t)s;
     s++;
   }
   return NULL;

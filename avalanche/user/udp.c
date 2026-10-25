@@ -14,7 +14,7 @@ int main(void) {
     return 1;
   }
   puts_u("Sent ");
-  uint_u((uint32_t)n);
+  uint_u((uintptr_t)n);
   puts_u(" bytes.\n");
   return 0;
 }

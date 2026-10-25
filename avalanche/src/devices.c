@@ -6,15 +6,15 @@ static unsigned pci_count;
 static struct block_device disks[16];
 static unsigned ndisks;
 uint32_t pci_read(const struct pci_device *d, uint8_t r) {
-  io_out32(0xcf8, 0x80000000u | ((uint32_t)d->bus << 16) |
-                      ((uint32_t)d->slot << 11) | ((uint32_t)d->function << 8) |
-                      (r & 0xfc));
+  io_out32(0xcf8, 0x80000000u | ((uintptr_t)d->bus << 16) |
+                      ((uintptr_t)d->slot << 11) |
+                      ((uintptr_t)d->function << 8) | (r & 0xfc));
   return io_in32(0xcfc);
 }
 void pci_write(const struct pci_device *d, uint8_t r, uint32_t v) {
-  io_out32(0xcf8, 0x80000000u | ((uint32_t)d->bus << 16) |
-                      ((uint32_t)d->slot << 11) | ((uint32_t)d->function << 8) |
-                      (r & 0xfc));
+  io_out32(0xcf8, 0x80000000u | ((uintptr_t)d->bus << 16) |
+                      ((uintptr_t)d->slot << 11) |
+                      ((uintptr_t)d->function << 8) | (r & 0xfc));
   io_out32(0xcfc, v);
 }
 void pci_enable(const struct pci_device *d, uint16_t flags) {
@@ -109,9 +109,9 @@ static void ata_init(void) {
       if (!(words[49] & (1 << 9)))
         continue;
       if ((words[106] & 0xd000) == 0x5000 &&
-          ((uint32_t)words[117] | ((uint32_t)words[118] << 16)) != 256)
+          ((uintptr_t)words[117] | ((uintptr_t)words[118] << 16)) != 256)
         continue;
-      d.sectors = (uint32_t)words[60] | ((uint32_t)words[61] << 16);
+      d.sectors = (uintptr_t)words[60] | ((uintptr_t)words[61] << 16);
       if (d.sectors > 0x10000000u)
         d.sectors = 0x10000000u;
       for (unsigned i = 0; i < 20; i++) {
@@ -167,10 +167,10 @@ bool disk_write(unsigned n, uint32_t lba, const void *buf) {
     return false;
   if (n < ndisks && disks[n].backend == 2)
     return lba < disks[n].sectors &&
-           virtio_block_transfer(lba, (void *)buf, true);
+           virtio_block_transfer(lba, (void *)(uintptr_t)buf, true);
   if (n < ndisks && disks[n].backend == 1)
     return lba < disks[n].sectors &&
-           ahci_transfer(disks[n].unit, lba, (void *)buf, true);
+           ahci_transfer(disks[n].unit, lba, (void *)(uintptr_t)buf, true);
   if (!ata_select(n, lba))
     return false;
   struct block_device *d = &disks[n];
@@ -366,9 +366,9 @@ void devices_list(void) {
     console_putc('.');
     print_uint(d->function);
     console_write(" id=");
-    print_hex(((uint32_t)d->vendor << 16) | d->device);
+    print_hex(((uintptr_t)d->vendor << 16) | d->device);
     console_write(" class=");
-    print_hex(((uint32_t)d->class_id << 8) | d->subclass);
+    print_hex(((uintptr_t)d->class_id << 8) | d->subclass);
     console_putc('\n');
   }
   for (unsigned i = 0; i < ndisks; i++) {

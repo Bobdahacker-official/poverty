@@ -1,8 +1,9 @@
 .section .text.start
-.code32
+.code64
 .global _start
 _start:
- xor %ebp,%ebp
+ xor %rbp,%rbp
+ and $-16,%rsp
  call main
  mov %eax,%ebx
  xor %eax,%eax
