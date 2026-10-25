@@ -35,7 +35,7 @@ The data disk is where saved files live. Keep its generated `magenta-data.vdi` w
 
 ## Browser emulator (Copy.sh)
 
-[Launch Magenta in Copy.sh](copy.sh.html) to boot the distribution in the browser through Copy.sh's v86 emulator. The page loads the project ISO and data image, uses the emulator's VirtIO network adapter, and needs no local installation. Click the display after it starts to direct keyboard input to Magenta.
+[Launch Magenta in Copy.sh](copy.sh.html) to boot the distribution in the browser through Copy.sh's v86 emulator. The page loads the project ISO and data image, uses the emulator's VirtIO network adapter, and needs no local installation. Its v86 runtime and BIOS files are included in this repository, so it does not depend on Copy.sh allowing external script requests. Click the display after it starts to direct keyboard input to Magenta.
 
 The packaged data disk is read-only to the browser. Changes made in this emulator are retained only for its current browser session; use the VirtualBox data disk for persistent saved files.
 
@@ -119,4 +119,4 @@ Magenta is an early development distribution. General Linux application compatib
 - `avalanche/` — kernel, hardware drivers, userspace applications and build tools.
 - `index.html` — drawing Inc, the separate browser drawing game.
 
-Source is covered by [Avalanche's MIT license](avalanche/LICENSE). Bundled GRUB retains its [own licensing](avalanche/images/GRUB-COPYRIGHT), with corresponding source included in [grub-source](avalanche/images/grub-source/).
+Source is covered by [Avalanche's MIT license](avalanche/LICENSE). Bundled GRUB retains its [own licensing](avalanche/images/GRUB-COPYRIGHT), with corresponding source included in [grub-source](avalanche/images/grub-source/). The included Copy.sh v86 runtime and BIOS files retain their [BSD-2-Clause license](emulator/v86/LICENSE).
