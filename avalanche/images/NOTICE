@@ -1,4 +1,4 @@
-Avalanche Kernel 0.2.0 source, user applications, avalanche.elf and the
+Avalanche Kernel 0.3.0 source, user applications, avalanche.elf and the
 Avalanche filesystem image are covered by ../LICENSE (MIT).
 
 avalanche.iso additionally contains unmodified GNU GRUB 2.12-9+deb13u2
@@ -7,28 +7,56 @@ GRUB-COPYRIGHT. Corresponding upstream source and Debian patches/build
 rules are included in grub-source/. GRUB is a separate bootloader, not
 part of the Avalanche kernel. The MIT license does not relicense GRUB.
 
-Implemented: x86 ring-3 static ELF32 execution; supervisor/user paging;
-checked int 0x80 system calls; user fault termination and CPU budget;
-userspace shell, hello, cat, UDP and HTTP programs; PIT and PIC; PCI;
-legacy ATA and AHCI SATA; checksummed copy-on-write Avalanche FS v2;
-RTL8139 and E1000 Ethernet; ARP, IPv4, ICMP, UDP, DHCP, DNS, and an
-active-open TCP stream with an HTTP/1.0 client; PS/2 keyboard/mouse;
-COM1 serial, CMOS RTC, PC speaker, and RGB framebuffer console.
+Implemented: up to eight isolated ring-3 processes, timer-driven round
+robin scheduling, per-process page tables and kernel stacks, background
+jobs, sleep/input/child waits, process termination, and x87/FXSAVE SSE
+context preservation. Native applications include the userspace shell,
+hello, cat, UDP, HTTP and a CPU-bound worker.
 
-Limits: one user process and one TCP connection at a time. No POSIX or
-Linux ABI, multiprocess scheduler, dynamic linker, TCP listener, TLS,
-IPv6, IP fragmentation/reassembly, native USB, NVMe, Wi-Fi, audio mixer,
-or GPU acceleration. DHCP leases require manual renewal. TCP uses
-in-order receive, stop-and-wait sending and bounded retries; it does not
-implement SACK, window scaling, congestion control or a TIME_WAIT table.
-FS v2 has a flat namespace, 32 files of at most 64 KiB each, and requires
-its own MBR partition type 0x7f. Without a recognized disk, files use RAM.
-AHCI uses the first discovered controller and at most eight SATA ports.
-Storage drivers require 512-byte logical sectors.
-The page allocator manages usable RAM below 128 MiB. An x86 CPU with PSE
-is required. The kernel is 32-bit; the UEFI loader targets x86-64 firmware.
-Secure Boot signatures are not supplied. These are development images,
-not a complete general-purpose distribution.
+Linux compatibility is a specific i386 static-ELF/int-0x80 ABI subset:
+ELF initial argc/argv/envp/auxv, fork, execve, exit, waitpid, PID/UID calls,
+file descriptors with shared fork offsets, open/read/write/close, dup,
+lseek/_llseek, fcntl, unlink, stat/fstat/stat64/fstat64, getdents64,
+brk, anonymous mmap/mmap2/munmap/mprotect, set_thread_area TLS,
+set_tid_address, nanosleep, monotonic clocks, uname, terminal queries,
+and sched_yield. The linuxhello and linuxfork executables use Linux
+syscall numbers directly, without the Avalanche SDK. Unimplemented calls
+return -ENOSYS. This is not general Linux application/distribution or
+libc compatibility: no ELF64, interpreter, dynamic linker, threads,
+shared mappings, signal handlers, process groups, pipes, Linux socket
+API, mounts, permissions model or full POSIX filesystem semantics.
 
-The ISO, kernel, user programs and data disk were built. No boot, runtime,
-network, storage or automated tests were run at the user's request.
+Hardware: PCI, legacy ATA PIO/LBA28, AHCI SATA DMA48, legacy/transitional
+VirtIO block and network, RTL8139, E1000, PIC/PIT, CMOS RTC, COM1 serial,
+PS/2 keyboard/mouse, PC speaker and RGB framebuffer. VirtIO uses the
+legacy PCI I/O interface and supports queue sizes through 1024; modern
+VirtIO-only/MMIO devices are not supported. AHCI uses the first discovered
+controller and at most eight SATA ports. Block I/O requires 512-byte
+logical sectors. No native USB, NVMe, Wi-Fi, audio mixer or accelerated GPU.
+
+Networking: ARP, IPv4, ICMP, UDP, DHCP, DNS, an active-open TCP stream,
+and HTTP/1.0 clients. TCP has one process-owned connection, in-order
+receive, stop-and-wait sending and bounded retries; no listen API, SACK,
+window scaling, congestion control or TIME_WAIT table. No TLS, IPv6 or
+IP fragmentation/reassembly. DHCP renewal is manual. Drivers are polled;
+kernel syscalls are serialized, while user code is timer-preempted.
+
+Filesystem: checksummed dual metadata banks and copy-on-write file slots,
+a flat namespace with 32 files of at most 64 KiB each, in its own MBR type
+0x7f partition. Without a recognized disk, files use volatile RAM. The
+supplied data image contains eight application executables. The physical
+allocator manages usable RAM below 128 MiB; user memory is bounded to
+8 MiB per process and twelve page tables. The x86 CPU must support PSE.
+The kernel is 32-bit; the UEFI loader targets x86-64 firmware. Secure Boot
+signatures are not supplied. These remain development images.
+
+Validation performed in QEMU TCG: BIOS and OVMF UEFI boots; legacy ATA,
+AHCI and VirtIO disk access; RTL8139, E1000 and VirtIO network traffic;
+DHCP, ICMP and controlled local HTTP; persistence across VM restarts;
+overlapping CPU-bound workers; eight-process admission and limit handling;
+Linux fork/wait/private memory, file I/O, brk/mmap, TLS, uname and execve
+argument/environment preservation; EFAULT/ENOSYS results; user memory
+fault containment; blocking native shell input; process kill/wait and
+page reclamation; x87/SSE fork inheritance and timer context switching.
+Physical hardware, general Linux distributions and unsupported features
+have not been validated. The host could not directly execute ELF32 files.

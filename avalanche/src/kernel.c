@@ -273,10 +273,9 @@ static const char keys[128] = {
     [39] = ';',  [40] = '\'', [41] = '`',  [43] = '\\', [44] = 'z', [45] = 'x',
     [46] = 'c',  [47] = 'v',  [48] = 'b',  [49] = 'n',  [50] = 'm', [51] = ',',
     [52] = '.',  [53] = '/',  [57] = ' '};
-char console_input(void) {
-  static bool left_shift, right_shift, caps, extended;
+char console_getchar(void) {
+  static bool left_shift, right_shift, left_ctrl, right_ctrl, caps, extended;
   for (;;) {
-    net_poll();
     if (serial && (inb(0x3fd) & 1)) {
       char c = inb(0x3f8);
       if (c == '\r')
@@ -286,8 +285,7 @@ char console_input(void) {
       return c;
     }
     if (!(inb(0x64) & 1)) {
-      __asm__ volatile("pause");
-      continue;
+      return 0;
     }
     uint8_t status = inb(0x64), s = inb(0x60);
     if (status & 0x20)
@@ -298,6 +296,12 @@ char console_input(void) {
     }
     if (extended) {
       extended = false;
+      if (s == 29 || s == 157)
+        right_ctrl = s == 29;
+      continue;
+    }
+    if (s == 29 || s == 157) {
+      left_ctrl = s == 29;
       continue;
     }
     if (s == 42 || s == 170) {
@@ -327,8 +331,31 @@ char console_input(void) {
           break;
         }
     }
+    if (left_ctrl || right_ctrl) {
+      if (c >= 'a' && c <= 'z')
+        c -= 'a' - 1;
+      else if (c >= 'A' && c <= 'Z')
+        c -= 'A' - 1;
+    }
     if (c)
       return c;
+  }
+}
+void console_size(uint16_t *r, uint16_t *c) {
+  *r = (uint16_t)rows;
+  *c = (uint16_t)cols;
+}
+char console_input(void) {
+  for (;;) {
+    net_poll();
+    user_poll();
+    char c = user_tty_getchar();
+    if (!c)
+      c = console_getchar();
+    if (c)
+      return c;
+    user_yield_kernel();
+    cpu_pause();
   }
 }
 static char *token(char **p) {
@@ -362,16 +389,17 @@ static void command(char *line) {
     return;
   if (eq(cmd, "help"))
     console_write(
-        "help version clear echo mem ticks date beep mouse devices\n"
+        "help version clear echo mem ticks date beep mouse devices ps\n"
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
         "format DISK ERASE  - DESTROYS the selected disk's contents\n"
         "install           - copy built-in ELF applications into filesystem\n"
-        "run NAME [ARGS]   - execute an ELF32 program in ring 3\n"
-        "Built-in programs: hello, cat, udp, http, ush (userspace shell)\n"
+        "run NAME [ARGS]   - foreground program; spawn NAME [ARGS], wait PID, "
+        "kill PID\n"
+        "Programs: hello, cat, udp, http, ush, worker, linuxhello, linuxfork\n"
         "net dhcp ip ADDRESS MASK GATEWAY DNS ping ADDRESS dns NAME\n"
         "udp ADDRESS PORT TEXT recv LOCALPORT http HOST /PATH reboot halt\n");
   else if (eq(cmd, "version"))
-    console_write("Avalanche Kernel 0.2.0 - x86 / BIOS + UEFI\nPaging-isolated "
+    console_write("Avalanche Kernel 0.3.0 - x86 / BIOS + UEFI\nPaging-isolated "
                   "ring 3, ELF32, syscalls, ATA/AFS, Ethernet/IPv4.\n");
   else if (eq(cmd, "clear"))
     console_clear();
@@ -438,7 +466,33 @@ static void command(char *line) {
     }
   } else if (eq(cmd, "install"))
     result(user_install());
-  else if (eq(cmd, "run")) {
+  else if (eq(cmd, "spawn")) {
+    char *name = token(&rest);
+    int pid = user_spawn(name, rest, false);
+    if (pid < 0)
+      result(pid);
+    else {
+      console_write("Started PID ");
+      print_uint((uint32_t)pid);
+      console_putc('\n');
+    }
+  } else if (eq(cmd, "ps"))
+    user_list();
+  else if (eq(cmd, "wait")) {
+    bool ok;
+    uint32_t pid = parse_uint(token(&rest), &ok);
+    if (ok)
+      result(user_wait_pid((int)pid));
+    else
+      console_write("Usage: wait PID\n");
+  } else if (eq(cmd, "kill")) {
+    bool ok;
+    uint32_t pid = parse_uint(token(&rest), &ok);
+    if (ok)
+      result(user_kill((int)pid, 9));
+    else
+      console_write("Usage: kill PID\n");
+  } else if (eq(cmd, "run")) {
     char *name = token(&rest);
     int status = user_exec(name, rest);
     console_write("Process exit: ");
@@ -639,7 +693,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   devices_init();
   net_init();
   fs_init();
-  console_write("AVALANCHE KERNEL 0.2.0\n");
+  console_write("AVALANCHE KERNEL 0.3.0\n");
   console_write(
       "--------------------------------------------------\nA small independent "
       "operating system kernel.\nBIOS / UEFI through GRUB Multiboot2\n\n");

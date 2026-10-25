@@ -21,3 +21,16 @@ app_ush_end:
 .global app_http_start,app_http_end
 app_http_start: .incbin "build/user/http.elf"
 app_http_end:
+.section .rodata
+.balign 16
+.global app_worker_start,app_worker_end
+app_worker_start: .incbin "build/user/worker.elf"
+app_worker_end:
+.balign 16
+.global app_linuxhello_start,app_linuxhello_end
+app_linuxhello_start: .incbin "build/user/linuxhello.elf"
+app_linuxhello_end:
+.balign 16
+.global app_linuxfork_start,app_linuxfork_end
+app_linuxfork_start: .incbin "build/user/linuxfork.elf"
+app_linuxfork_end:

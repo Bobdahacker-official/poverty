@@ -351,3 +351,19 @@ void fs_list(void) {
   if (!count)
     console_write("No files.\n");
 }
+bool fs_entry(unsigned i, char *name, uint32_t *size) {
+  if (i >= FILE_COUNT)
+    return false;
+  if (mounted < 0) {
+    if (!ram[i].exists)
+      return false;
+    memcpy(name, ram[i].name, 32);
+    *size = ram[i].size;
+  } else {
+    if (!directory[i].used)
+      return false;
+    memcpy(name, directory[i].name, 32);
+    *size = directory[i].size;
+  }
+  return true;
+}

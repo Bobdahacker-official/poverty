@@ -51,7 +51,7 @@ trap_common:
  sub $12,%esp
  push %ebx
  call trap_dispatch
- mov %ebx,%esp
+ mov %eax,%esp
  pop %gs
  pop %fs
  pop %es
@@ -59,50 +59,9 @@ trap_common:
  popal
  add $8,%esp
  iret
-.global arch_user_enter,arch_user_leave
-arch_user_enter:
- push %ebp
- push %ebx
- push %esi
- push %edi
- mov %esp,saved_kernel_esp
- mov 20(%esp),%ecx
- mov 24(%esp),%edx
- mov $35,%ax
- mov %ax,%ds
- mov %ax,%es
- mov %ax,%fs
- mov %ax,%gs
- pushl $35
- push %edx
- pushl $0x202
- pushl $27
- push %ecx
- xor %eax,%eax
- xor %ebx,%ebx
- xor %ecx,%ecx
- xor %edx,%edx
- xor %esi,%esi
- xor %edi,%edi
- xor %ebp,%ebp
- iret
-arch_user_leave:
- cli
- mov 4(%esp),%edx
- mov $16,%ax
- mov %ax,%ds
- mov %ax,%es
- mov %ax,%fs
- mov %ax,%gs
- mov saved_kernel_esp,%esp
- mov %edx,%eax
- pop %edi
- pop %esi
- pop %ebx
- pop %ebp
- sti
- ret
-.section .bss
-.balign 4
-saved_kernel_esp: .skip 4
+.global schedule_entry
+schedule_entry:
+ pushl $0
+ pushl $129
+ jmp trap_common
 .section .note.GNU-stack,"",@progbits

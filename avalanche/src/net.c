@@ -1,6 +1,7 @@
 #include "system.h"
+#include "virtio.h"
 /* Poll-driven Ethernet. DMA memory is identity mapped and supervisor-only. */
-static enum { NONE, RTL8139, E1000 } nic;
+static enum { NONE, RTL8139, E1000, VIRTIO } nic;
 static uint16_t rtl_port;
 static volatile uint32_t *e1000;
 static uint8_t mac[6];
@@ -71,6 +72,12 @@ static bool same_mac(const uint8_t *a, const uint8_t *b) {
 static bool ethernet_send(const void *frame, uint32_t n) {
   if (!link_ready || n > 1514 || n < 14)
     return false;
+  if (nic == VIRTIO) {
+    bool ok = virtio_net_send(frame, n);
+    if (ok)
+      tx_count++;
+    return ok;
+  }
   uint32_t size = n < 60 ? 60 : n;
   if (nic == RTL8139) {
     unsigned index = tx_index++ % 4;
@@ -206,6 +213,11 @@ static bool e1000_init(const struct pci_device *d) {
   return true;
 }
 void net_init(void) {
+  if (virtio_net_init(mac)) {
+    nic = VIRTIO;
+    link_ready = true;
+    return;
+  }
   const struct pci_device *d = pci_find(0x10ec, 0x8139);
   if (d && rtl_init(d))
     link_ready = true;
@@ -429,6 +441,10 @@ void net_poll(void) {
   devices_poll();
   if (!link_ready)
     return;
+  if (nic == VIRTIO) {
+    virtio_net_poll(receive);
+    return;
+  }
   if (nic == RTL8139) {
     for (unsigned frames = 0; frames < 32 && !(io_in8(rtl_port + 0x37) & 1);
          frames++) {
@@ -535,9 +551,10 @@ void net_config(uint32_t address, uint32_t netmask, uint32_t router,
 }
 void net_info(void) {
   console_write("NIC: ");
-  console_write(nic == RTL8139 ? "RTL8139"
-                : nic == E1000 ? "Intel E1000"
-                               : "none supported");
+  console_write(nic == VIRTIO    ? "VirtIO legacy net"
+                : nic == RTL8139 ? "RTL8139"
+                : nic == E1000   ? "Intel E1000"
+                                 : "none supported");
   console_write(" MAC ");
   for (unsigned i = 0; i < 6; i++) {
     console_putc("0123456789abcdef"[mac[i] >> 4]);

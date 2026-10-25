@@ -13,9 +13,29 @@ int main(void) {
     if (ueq(cmd, "exit"))
       return 0;
     if (ueq(cmd, "help"))
-      puts_u("help echo ls cat write rm ticks sleep udp recv exit\nwrite NAME "
+      puts_u("help echo ls cat write rm ticks sleep udp recv spawn wait kill "
+             "pid exit\nwrite NAME "
              "TEXT; udp IP PORT TEXT; recv LOCALPORT\n");
-    else if (ueq(cmd, "echo")) {
+    else if (ueq(cmd, "spawn")) {
+      char *name = word_u(&rest);
+      int pid = av_call(AV_SPAWN, (uint32_t)name, (uint32_t)rest, 0, 0);
+      if (pid < 0)
+        puts_u("Spawn failed.\n");
+      else {
+        puts_u("Started PID ");
+        uint_u((uint32_t)pid);
+        puts_u("\n");
+      }
+    } else if (ueq(cmd, "wait")) {
+      int r = av_call(AV_WAIT, decimal_u(rest), 0, 0, 0);
+      puts_u(r < 0 ? "Wait failed.\n" : "Child completed.\n");
+    } else if (ueq(cmd, "kill")) {
+      puts_u(av_call(AV_KILL, decimal_u(rest), 9, 0, 0) < 0 ? "Kill failed.\n"
+                                                            : "Terminated.\n");
+    } else if (ueq(cmd, "pid")) {
+      uint_u((uint32_t)av_call(AV_GETPID, 0, 0, 0, 0));
+      puts_u("\n");
+    } else if (ueq(cmd, "echo")) {
       puts_u(rest);
       puts_u("\n");
     } else if (ueq(cmd, "ls"))

@@ -1,6 +1,53 @@
 #include "system.h"
 static volatile uint32_t ticks;
-static uint64_t gdt[6] __attribute__((aligned(16)));
+static bool have_fpu, have_fxsr;
+static uint8_t initial_fpu[512] __attribute__((aligned(16)));
+static void fpu_init(void) {
+  uint32_t a = 1, b, c, d;
+  __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+  have_fpu = (d & 1) != 0;
+  have_fxsr = (d & (1u << 24)) != 0;
+  if (!have_fpu)
+    return;
+  uint32_t cr0;
+  __asm__ volatile("mov %%cr0,%0" : "=r"(cr0));
+  cr0 = (cr0 & ~12u) | 0x22;
+  __asm__ volatile("mov %0,%%cr0" ::"r"(cr0));
+  if (have_fxsr) {
+    uint32_t cr4;
+    __asm__ volatile("mov %%cr4,%0" : "=r"(cr4));
+    cr4 |= 1u << 9;
+    if (d & (1u << 25))
+      cr4 |= 1u << 10;
+    __asm__ volatile("mov %0,%%cr4" ::"r"(cr4));
+  }
+  __asm__ volatile("fninit");
+  if (have_fxsr && (d & (1u << 25))) {
+    uint32_t mxcsr = 0x1f80;
+    __asm__ volatile("ldmxcsr %0" ::"m"(mxcsr));
+  }
+  platform_fpu_save(initial_fpu);
+  platform_fpu_restore(initial_fpu);
+}
+void platform_fpu_save(void *p) {
+  if (!have_fpu)
+    return;
+  if (have_fxsr)
+    __asm__ volatile("fxsave (%0)" ::"r"(p) : "memory");
+  else
+    __asm__ volatile("fnsave (%0)" ::"r"(p) : "memory");
+}
+void platform_fpu_restore(const void *p) {
+  if (!have_fpu)
+    return;
+  if (have_fxsr)
+    __asm__ volatile("fxrstor (%0)" ::"r"(p) : "memory");
+  else
+    __asm__ volatile("frstor (%0)" ::"r"(p) : "memory");
+}
+void platform_fpu_initial(void *p) { memcpy(p, initial_fpu, 512); }
+
+static uint64_t gdt[9] __attribute__((aligned(16)));
 static uint8_t interrupt_stack[32768] __attribute__((aligned(16)));
 struct tss {
   uint32_t prev, esp0, ss0, unused[22];
@@ -15,12 +62,13 @@ struct gate {
 static struct gate idt[256];
 extern void *exception_table[32];
 extern void timer_entry(void), syscall_entry(void), irq7_entry(void),
-    irq15_entry(void), arch_load_gdt(void *);
+    irq15_entry(void), schedule_entry(void), arch_load_gdt(void *);
 static void gate(unsigned n, void *entry, uint8_t flags) {
   uint32_t a = (uint32_t)entry;
   idt[n] = (struct gate){a & 65535, 8, 0, flags, a >> 16};
 }
 void platform_init(void) {
+  fpu_init();
   gdt[0] = 0;
   gdt[1] = 0x00cf9a000000ffffULL;
   gdt[2] = 0x00cf92000000ffffULL;
@@ -45,6 +93,7 @@ void platform_init(void) {
   gate(39, irq7_entry, 0x8e);
   gate(47, irq15_entry, 0x8e);
   gate(128, syscall_entry, 0xee);
+  gate(129, schedule_entry, 0x8e);
   __asm__ volatile("lidt %0" ::"m"(idtr));
   io_out8(0x20, 0x11);
   io_out8(0xa0, 0x11);
@@ -69,39 +118,41 @@ void sleep_ticks(uint32_t n) {
     __asm__ volatile("hlt");
   }
 }
-void trap_dispatch(struct trap_frame *f) {
+void platform_kernel_stack(uint32_t stack) { tss.esp0 = stack; }
+void platform_tls(const uint64_t *tls) {
+  for (unsigned i = 0; i < 3; i++)
+    gdt[6 + i] = tls ? tls[i] : 0;
+}
+struct trap_frame *trap_dispatch(struct trap_frame *f) {
   if (f->vector == 39) {
     io_out8(0x20, 0x0b);
     if (io_in8(0x20) & 0x80)
       io_out8(0x20, 0x20);
-    return;
+    return f;
   }
   if (f->vector == 47) {
     io_out8(0xa0, 0x0b);
     if (io_in8(0xa0) & 0x80)
       io_out8(0xa0, 0x20);
     io_out8(0x20, 0x20);
-    return;
+    return f;
   }
   if (f->vector == 32) {
     ++ticks;
     io_out8(0x20, 0x20);
-    user_timer(f);
-    return;
+    return user_timer(f);
   }
+  if (f->vector == 129)
+    return user_reschedule(f);
   if (f->vector == 128) {
     __asm__ volatile("sti");
     user_syscall(f);
     __asm__ volatile("cli");
-    return;
+    return user_reschedule(f);
   }
   if ((f->cs & 3) == 3 && user_active()) {
-    console_write("\nUser process fault ");
-    print_uint(f->vector);
-    console_write(" at ");
-    print_hex(f->eip);
-    console_putc('\n');
-    user_stop(128 + (int)f->vector);
+    user_fault(f->vector, f->eip);
+    return user_reschedule(f);
   }
   console_write("\nKERNEL EXCEPTION ");
   print_uint(f->vector);

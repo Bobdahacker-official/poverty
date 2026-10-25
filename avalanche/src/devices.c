@@ -1,4 +1,5 @@
 #include "system.h"
+#include "virtio.h"
 #define PCI_MAX 192
 static struct pci_device pci[PCI_MAX];
 static unsigned pci_count;
@@ -143,6 +144,8 @@ static bool ata_select(unsigned n, uint32_t lba) {
   return true;
 }
 bool disk_read(unsigned n, uint32_t lba, void *buf) {
+  if (n < ndisks && disks[n].backend == 2)
+    return lba < disks[n].sectors && virtio_block_transfer(lba, buf, false);
   if (n < ndisks && disks[n].backend == 1)
     return lba < disks[n].sectors &&
            ahci_transfer(disks[n].unit, lba, buf, false);
@@ -160,6 +163,11 @@ bool disk_read(unsigned n, uint32_t lba, void *buf) {
   return ata_wait(d, false);
 }
 bool disk_write(unsigned n, uint32_t lba, const void *buf) {
+  if (n < ndisks && disks[n].read_only)
+    return false;
+  if (n < ndisks && disks[n].backend == 2)
+    return lba < disks[n].sectors &&
+           virtio_block_transfer(lba, (void *)buf, true);
   if (n < ndisks && disks[n].backend == 1)
     return lba < disks[n].sectors &&
            ahci_transfer(disks[n].unit, lba, (void *)buf, true);
@@ -177,6 +185,8 @@ bool disk_write(unsigned n, uint32_t lba, const void *buf) {
   return ata_wait(d, false);
 }
 bool disk_flush(unsigned n) {
+  if (n < ndisks && disks[n].backend == 2)
+    return virtio_block_flush();
   if (n < ndisks && disks[n].backend == 1)
     return ahci_flush(disks[n].unit);
   if (n >= ndisks)
@@ -341,6 +351,7 @@ void devices_init(void) {
   pci_init();
   ata_init();
   ahci_init();
+  virtio_block_init();
   mouse_init();
 }
 void devices_list(void) {
@@ -361,7 +372,9 @@ void devices_list(void) {
     console_putc('\n');
   }
   for (unsigned i = 0; i < ndisks; i++) {
-    console_write(disks[i].backend ? "AHCI disk " : "ATA disk ");
+    console_write(disks[i].backend == 2 ? "VirtIO disk "
+                  : disks[i].backend    ? "AHCI disk "
+                                        : "ATA disk ");
     print_uint(i);
     console_write(" ");
     console_write(disks[i].model);
@@ -370,6 +383,7 @@ void devices_list(void) {
     console_putc('\n');
   }
   console_write(
-      "Drivers: PCI, ATA PIO/LBA28, AHCI SATA/DMA48, PS/2 keyboard/mouse, "
+      "Drivers: PCI, ATA PIO/LBA28, AHCI SATA/DMA48, VirtIO block/network, "
+      "PS/2 keyboard/mouse, "
       "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000.\n");
 }

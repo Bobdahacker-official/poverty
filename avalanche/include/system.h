@@ -36,7 +36,9 @@ static inline bool str_eq(const char *a, const char *b) {
 void print_uint(uint32_t n);
 void print_hex(uint32_t n);
 char console_input(void);
+char console_getchar(void);
 void console_clear(void);
+void console_size(uint16_t *, uint16_t *);
 uint32_t parse_uint(const char *, bool *);
 uint32_t crc32(const void *, size_t);
 void platform_init(void);
@@ -61,7 +63,7 @@ const struct pci_device *pci_find_class(uint8_t, uint8_t, uint8_t);
 void pci_enable(const struct pci_device *, uint16_t);
 struct block_device {
   uint16_t port, control;
-  uint8_t slave, backend, unit;
+  uint8_t slave, backend, unit, read_only;
   uint32_t sectors;
   char model[41];
 };
@@ -84,6 +86,7 @@ int fs_read(const char *, void *, uint32_t);
 int fs_write(const char *, const void *, uint32_t);
 int fs_remove(const char *);
 int fs_size(const char *);
+bool fs_entry(unsigned, char *, uint32_t *);
 void net_init(void);
 void net_poll(void);
 void net_info(void);
@@ -104,14 +107,27 @@ struct trap_frame {
   uint32_t gs, fs, es, ds, edi, esi, ebp, esp, ebx, edx, ecx, eax, vector,
       error, eip, cs, eflags, useresp, ss;
 };
-void trap_dispatch(struct trap_frame *);
+struct trap_frame *trap_dispatch(struct trap_frame *);
 void user_init(void);
 bool platform_mmio(uint32_t, uint32_t);
 int user_run(const void *, uint32_t, const char *);
 int user_exec(const char *, const char *);
 int user_install(void);
 bool user_active(void);
-void user_stop(int) __attribute__((noreturn));
-void user_timer(struct trap_frame *);
+struct trap_frame *user_timer(struct trap_frame *);
+struct trap_frame *user_reschedule(struct trap_frame *);
+void user_fault(unsigned, uint32_t);
+void user_poll(void);
+char user_tty_getchar(void);
+void user_yield_kernel(void);
+int user_spawn(const char *, const char *, bool);
+int user_wait_pid(int);
+int user_kill(int, int);
+void user_list(void);
+void platform_kernel_stack(uint32_t);
+void platform_tls(const uint64_t *);
+void platform_fpu_save(void *);
+void platform_fpu_restore(const void *);
+void platform_fpu_initial(void *);
 void user_syscall(struct trap_frame *);
 #endif
