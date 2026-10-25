@@ -1,4 +1,5 @@
 # Magenta
+*This OS is not a hobby OS, it is not "niche", and it is not educational or a proof of concept or portfolio project! please do no call it that. this is in the first stage of production.* 
 
 **Magenta 0.1** is a small, text-based operating system distribution powered by [Avalanche Kernel](avalanche/). It includes a native userspace interface, bundled applications, a BIOS/UEFI boot image, and a separate writable data disk.
 
