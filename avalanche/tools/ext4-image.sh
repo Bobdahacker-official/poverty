@@ -16,7 +16,11 @@ create)
     staging=$(mktemp -d "$(dirname "$image")/.ext4.XXXXXXXX")
     trap 'rm -f "$staging/disk"; rmdir "$staging"' EXIT HUP INT TERM
     truncate -s 9G "$staging/disk"
-    mkfs.ext4 -F -b 4096 -L AVALANCHE -O extent,dir_index,64bit,flex_bg,has_journal -E lazy_itable_init=0,lazy_journal_init=0 "$staging/disk"
+    if [ -n "${3:-}" ]; then
+        mkfs.ext4 -F -b 4096 -L AVALANCHE -O extent,dir_index,64bit,flex_bg,has_journal -E lazy_itable_init=0,lazy_journal_init=0 -d "$3" "$staging/disk"
+    else
+        mkfs.ext4 -F -b 4096 -L AVALANCHE -O extent,dir_index,64bit,flex_bg,has_journal -E lazy_itable_init=0,lazy_journal_init=0 "$staging/disk"
+    fi
     e2fsck -fn "$staging/disk"
     debugfs -R stats "$staging/disk"
     ln "$staging/disk" "$image"

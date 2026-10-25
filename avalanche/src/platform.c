@@ -1,3 +1,4 @@
+#include "process.h"
 #include "system.h"
 static volatile uint32_t ticks;
 static bool have_fpu, have_fxsr;
@@ -153,6 +154,13 @@ struct trap_frame *trap_dispatch(struct trap_frame *f) {
     return user_reschedule(f);
   }
   if ((f->cs & 3) == 3 && user_active()) {
+    if (f->vector == 14) {
+      uintptr_t address;
+      __asm__ volatile("mov %%cr2,%0" : "=r"(address));
+      if (address <= UINT32_MAX && !(f->error & 8) &&
+          process_page_fault(process_current(), address, (f->error & 2) != 0))
+        return f;
+    }
     user_fault(f->vector, f->eip);
     return user_reschedule(f);
   }

@@ -286,6 +286,11 @@ void mouse_print(void) {
   print_uint(mouse_buttons);
   console_putc('\n');
 }
+void mouse_state(int *x, int *y, uint8_t *buttons) {
+  *x = mouse_x;
+  *y = mouse_y;
+  *buttons = mouse_buttons;
+}
 static uint8_t cmos(uint8_t r) {
   io_out8(0x70, r);
   return io_in8(0x71);

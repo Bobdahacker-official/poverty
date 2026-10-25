@@ -1,4 +1,7 @@
+#include "ext4.h"
 #include "system.h"
+static bool mounted_ext4;
+static struct ext4_volume root_ext4;
 #define FILE_COUNT 32u
 #define DATA_START 10u
 #define VOLUME_SECTORS (DATA_START + FILE_COUNT * 256u)
@@ -103,6 +106,13 @@ static bool bank_valid(unsigned d, unsigned bank) {
   return true;
 }
 int fs_mount(unsigned disk) {
+  struct ext4_volume candidate;
+  if (!ext4_mount(&candidate, disk, 0)) {
+    root_ext4 = candidate;
+    mounted_ext4 = true;
+    mounted = disk;
+    return 0;
+  }
   uint32_t start;
   if (disk >= disk_count() || !get_partition(disk, &start))
     return -1;
@@ -121,6 +131,7 @@ int fs_mount(unsigned disk) {
   generation = headers[current_bank].generation;
   memcpy(directory, banks[current_bank], sizeof(directory));
   mounted = (int)disk;
+  mounted_ext4 = false;
   return 0;
 }
 static bool commit(const struct record *records) {
@@ -181,11 +192,25 @@ int fs_format(unsigned disk) {
   return fs_mount(disk);
 }
 void fs_init(void) {
+  for (unsigned d = 0; d < disk_count(); d++) {
+    struct ext4_volume volume;
+    if (!ext4_mount(&volume, d, 0)) {
+      root_ext4 = volume;
+      mounted_ext4 = true;
+      mounted = d;
+      return;
+    }
+  }
   for (unsigned d = 0; d < disk_count(); d++)
     if (fs_mount(d) == 0)
       return;
 }
 int fs_size(const char *name) {
+  if (mounted_ext4) {
+    struct ext4_inode inode;
+    int r = ext4_lookup(&root_ext4, name, &inode);
+    return r ? r : inode.size > INT32_MAX ? -27 : (int)inode.size;
+  }
   if (mounted >= 0) {
     int i = find_record(name);
     return i < 0 ? -1 : (int)directory[i].size;
@@ -194,6 +219,17 @@ int fs_size(const char *name) {
   return i < 0 ? -1 : (int)ram[i].size;
 }
 int fs_read(const char *name, void *buffer, uint32_t capacity) {
+  if (mounted_ext4) {
+    struct ext4_inode inode;
+    int r = ext4_lookup(&root_ext4, name, &inode);
+    if (r)
+      return r;
+    if ((inode.mode & 0xf000) != 0x8000)
+      return -21;
+    if (inode.size > capacity)
+      return -27;
+    return ext4_read(&root_ext4, &inode, 0, buffer, inode.size);
+  }
   int size = fs_size(name);
   if (size < 0)
     return -1;
@@ -227,6 +263,8 @@ int fs_read(const char *name, void *buffer, uint32_t capacity) {
   return size;
 }
 int fs_write(const char *name, const void *data, uint32_t size) {
+  if (mounted_ext4)
+    return ext4_replace(&root_ext4, name, data, size);
   if (!valid_name(name) || size > FS_MAX_FILE)
     return -1;
   if (mounted < 0) {
@@ -297,6 +335,8 @@ int fs_write(const char *name, const void *data, uint32_t size) {
   return commit(candidate) ? (int)size : -3;
 }
 int fs_remove(const char *name) {
+  if (mounted_ext4)
+    return ext4_remove(&root_ext4, name);
   if (mounted < 0) {
     int i = find_ram(name);
     if (i < 0)
@@ -315,6 +355,13 @@ int fs_remove(const char *name) {
   return commit(candidate) ? 0 : -3;
 }
 void fs_info(void) {
+  if (mounted_ext4) {
+    console_write("ext4 root filesystem on disk ");
+    print_uint(root_ext4.disk);
+    console_write(
+        "; 4096-byte blocks, extents and persistent JBD2 transactions.\n");
+    return;
+  }
   if (mounted < 0)
     console_write("RAM filesystem (volatile). No Avalanche disk mounted.\n");
   else {
@@ -327,6 +374,10 @@ void fs_info(void) {
   console_write("32 flat files, 65536 bytes per file.\n");
 }
 void fs_list(void) {
+  if (mounted_ext4) {
+    ext4_list(&root_ext4, "/");
+    return;
+  }
   unsigned count = 0;
   for (unsigned i = 0; i < FILE_COUNT; i++) {
     const char *name;
@@ -352,6 +403,15 @@ void fs_list(void) {
     console_write("No files.\n");
 }
 bool fs_entry(unsigned i, char *name, uint32_t *size) {
+  if (mounted_ext4) {
+    char full[256];
+    uint64_t length;
+    if (ext4_entry(&root_ext4, "/", i, full, &length) || strlen(full) > 31)
+      return false;
+    memcpy(name, full, strlen(full) + 1);
+    *size = length > UINT32_MAX ? UINT32_MAX : length;
+    return true;
+  }
   if (i >= FILE_COUNT)
     return false;
   if (mounted < 0) {

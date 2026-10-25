@@ -1,9 +1,11 @@
 # Magenta
 *This OS is not a hobby OS, it is not "niche", and it is not educational or a proof of concept or portfolio project! please do no call it that. this is in the first stage of production.* 
 
-**Magenta 0.1** is a small, native x86-64 text-based operating system distribution powered by [Avalanche Kernel](avalanche/). It includes a native userspace interface, bundled applications, a BIOS/UEFI boot image, and a separate writable data disk.
+**Magenta 0.1** is a native x86-64 operating system distribution powered by [Avalanche Kernel](avalanche/). It includes a graphical desktop, a text interface, bundled applications, a BIOS/UEFI boot image, and persistent storage.
 
-The interface uses numbered menus, keyboard input, and magenta headings. File operations, process management, networking, and system information use implemented kernel services.
+The graphical desktop uses the #E6007E magenta accent, translucent rounded windows, blurred backgrounds, shadows, glossy title bars, window fades, and notifications. Its TrueType renderer draws antialiased text from the bundled DejaVu Sans Mono font. Terminal, Files, Text editor, Tasks, Network, and Packages launch from the taskbar. File operations, process management, networking, and system information call kernel services.
+
+![Magenta desktop running in QEMU](magenta/images/desktop.png)
 
 ## Downloads
 
@@ -38,7 +40,7 @@ Copy.sh's v86 emulator does not implement x86-64 long mode and cannot run these 
 
 ## Interface
 
-The default boot entry is configured to start Magenta automatically. Choose a numbered option and press Enter:
+The default entry starts the graphical desktop when a suitable framebuffer is present. Escape opens the text interface. Ctrl-T, Ctrl-F, Ctrl-E, Ctrl-K, Ctrl-N, and Ctrl-P open Terminal, Files, Text editor, Tasks, Network, and Packages. Ctrl-S saves an editor document. In the text interface, choose a numbered option and press Enter:
 
 ```text
 MAGENTA 0.1 | Home
@@ -84,7 +86,7 @@ The data disk also contains a `welcome` text file. Foreground programs return to
 
 ## Implementation and builds
 
-[Magenta's interface](avalanche/user/magenta.c) runs in ring 3. Hardware access, storage, process isolation and networking remain in the kernel. The default boot entry passes `--magenta`; the kernel then launches the interface. The Magenta executable is also embedded as a fallback when no data disk is attached.
+[Magenta's text interface](avalanche/user/magenta.c) runs in ring 3. Hardware access, storage, process isolation, networking, and framebuffer composition run in the kernel. The default boot entry passes `--magenta`; the kernel starts the graphical desktop when a framebuffer is available and enters the text interface after it closes. The Magenta executable is also embedded as a fallback when no data disk is attached.
 
 Build the distribution:
 
@@ -108,7 +110,11 @@ Build prerequisites are GCC/binutils with freestanding x86-64 and i386 compatibi
 
 ## Scope
 
-Avalanche supports up to eight isolated user processes and a limited static Linux i386 ABI subset. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. The filesystem has 32 flat files, each limited to 64 KiB. The kernel, Magenta interface and native utilities execute in x86-64 long mode; the BIOS loader enters long mode before calling C. Its UEFI loader targets x86-64 firmware. Four-level paging uses 2 MiB supervisor identity mappings and private 4 KiB user mappings. The allocator still manages RAM below 128 MiB, and the service ABI deliberately bounds user addresses below 4 GiB. Linux compatibility remains an i386 subset in CPU compatibility mode; Linux x86-64 binaries are not supported. Secure Boot signatures are not included.
+Avalanche has a 256-slot process table, preemptive priority scheduling with aging and time slices, copy-on-write fork pages, anonymous demand paging, and a static Linux i386 compatibility ABI. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. Its ext4 driver reads and writes 4 KiB filesystems, creates files, grows sparse files beyond 4 GiB, replaces and removes files, and uses JBD2 transactions with committed-transaction replay. A writeback cache serves the block drivers. An attached ext4 disk becomes the root filesystem; Avalanche FS and RAM storage provide fallback options.
+
+The kernel and native applications execute in x86-64 long mode. Four-level paging uses supervisor identity mappings and private 4 KiB user mappings. The allocator manages RAM below 128 MiB, and service addresses are bounded below 4 GiB. The UEFI loader targets x86-64 firmware.
+
+`make run` creates and attaches a persistent 9 GiB ext4 disk when its working disk is absent. `make test` runs host filesystem checks and headless QEMU checks, including journal recovery, large files, process isolation, package downloads, and graphical screen and editor checks. `make packages` builds five HTTP-ready sample packages with versioned manifests, dependency lists, and SHA-256 hashes. The package manager supports `pkg install`, `remove`, `upgrade`, `list`, `query`, `search`, and `fetch HOST /MANIFEST`; its package files and database use the attached ext4 root.
 
 See [Avalanche's capability notes](avalanche/images/NOTICE) for the kernel's architecture and implemented services.
 
@@ -119,3 +125,5 @@ See [Avalanche's capability notes](avalanche/images/NOTICE) for the kernel's arc
 - `index.html` — drawing Inc, the separate browser drawing game.
 
 Source is covered by [Avalanche's MIT license](avalanche/LICENSE). Bundled GRUB retains its [own licensing](avalanche/images/GRUB-COPYRIGHT), with corresponding source included in [grub-source](avalanche/images/grub-source/). The included Copy.sh v86 runtime and BIOS files retain their [BSD-2-Clause license](emulator/v86/LICENSE).
+
+The bundled DejaVu font retains its [font license](avalanche/assets/FONT-LICENSE).

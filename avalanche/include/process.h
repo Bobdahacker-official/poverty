@@ -1,7 +1,7 @@
 #ifndef AVALANCHE_PROCESS_H
 #define AVALANCHE_PROCESS_H
 #include "system.h"
-#define PROCESS_MAX 8
+#define PROCESS_MAX 256
 #define PROCESS_TABLES 12
 #define PROCESS_FDS 16
 #define PROCESS_STACK 32768
@@ -32,6 +32,8 @@ struct process {
   enum process_state state;
   bool linux_abi, foreground, yield, read_linux;
   uint32_t cpu_ticks, wake, read_address, read_capacity, read_count;
+  uint32_t ready_since;
+  unsigned priority, slice_left;
   int wait_pid;
   uint32_t wait_status;
   uint32_t heap_min, heap_break, mmap_next, clear_tid;
@@ -52,6 +54,9 @@ bool process_copyout(struct process *, uint32_t, const void *, uint32_t);
 bool process_string(struct process *, uint32_t, char *, unsigned);
 uint64_t *process_pte(struct process *, uint32_t);
 bool process_map(struct process *, uint32_t, bool);
+bool process_map_lazy(struct process *, uint32_t, bool);
+bool process_private(struct process *, uint32_t);
+bool process_page_fault(struct process *, uint32_t, bool);
 void process_unmap(struct process *, uint32_t);
 bool process_address(uint32_t, uint32_t);
 void process_exit(struct process *, int, int);

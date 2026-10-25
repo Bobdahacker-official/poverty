@@ -1,8 +1,8 @@
 CC = gcc
 LD = ld
 CFLAGS = -m64 -mno-red-zone -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -msoft-float -Iinclude
-SOURCES = kernel platform devices ahci fs net user linux virtio block_cache ext4
-OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o
+SOURCES = kernel platform devices ahci fs net user linux virtio block_cache ext4 gui package sha256 font
+OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o
 APPS = magenta hello cat udp ush http worker linuxhello linuxfork
 APP_ELFS = $(addprefix build/user/,$(addsuffix .elf,$(APPS)))
 .PHONY: all iso disk magenta clean
@@ -14,6 +14,8 @@ build/%.o: src/%.c include/avalanche.h include/system.h include/abi.h include/pr
 build/boot.o: src/boot.S | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/platform_asm.o: src/platform.S | build
+	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
+build/font_data.o: src/font_data.S assets/DejaVuSansMono.ttf | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/user/crt.o: user/crt.S | build/user
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@

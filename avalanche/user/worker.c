@@ -13,6 +13,7 @@ static unsigned append_number(char *s, unsigned pos, unsigned n) {
 int main(void) {
   char name[256];
   args_u(name, sizeof(name));
+  if(ueq(name,"sleep")) return av_call(AV_SLEEP,3000,0,0,0);
   unsigned pid = (unsigned)av_call(AV_GETPID, 0, 0, 0, 0);
   for (unsigned round = 0; round < 5; round++) {
     volatile unsigned work = 0;

@@ -7,11 +7,24 @@ GRUB-COPYRIGHT. Corresponding upstream source and Debian patches/build
 rules are included in grub-source/. GRUB is a separate bootloader, not
 part of the Avalanche kernel. The MIT license does not relicense GRUB.
 
-Implemented: up to eight isolated ring-3 processes, timer-driven round
-robin scheduling, per-process page tables and kernel stacks, background
+Implemented: a 256-slot ring-3 process table, preemptive priority scheduling
+with aging and time slices, per-process page tables and kernel stacks, background
 jobs, sleep/input/child waits, process termination, and x87/FXSAVE SSE
 context preservation. Native applications include the userspace shell,
 hello, cat, UDP, HTTP and a CPU-bound worker.
+
+Fork uses reference-counted copy-on-write pages. Anonymous mappings are
+allocated on demand. The graphical Magenta compositor supports rounded,
+translucent windows, blurred panels, shadows, animations and TrueType text.
+The bundled DejaVu font retains its license in ../assets/FONT-LICENSE.
+
+The ext4 root backend supports 4096-byte blocks, extent trees, 64-bit
+filesystem descriptors, flex_bg layouts, sparse file growth beyond 4 GiB,
+file creation, replacement and removal. Metadata changes and data writes
+use bounded multi-block JBD2 transactions and committed-transaction replay.
+The package manager stores its binaries and versioned SHA-256 manifests
+on ext4, resolves catalog dependencies, and downloads HTTP packages through
+the kernel network stack. The block drivers use a writeback cache.
 
 Linux compatibility is a specific i386 static-ELF/int-0x80 ABI subset:
 ELF initial argc/argv/envp/auxv, fork, execve, exit, waitpid, PID/UID calls,

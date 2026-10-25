@@ -1,9 +1,19 @@
 #include "abi.h"
+#include "ext4.h"
 #include "process.h"
 static uint64_t kernel_root[512] __attribute__((aligned(4096)));
 static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
 static uint64_t kernel_directory[2048] __attribute__((aligned(4096)));
 static struct process tasks[PROCESS_MAX];
+static uint16_t page_references[32768];
+#define PAGE_COW 512u
+#define PAGE_LAZY 1024u
+static void drop_page(uint64_t entry) {
+  uint32_t physical = entry & ~4095u;
+  if (physical && physical / 4096 < 32768 && page_references[physical / 4096] &&
+      !--page_references[physical / 4096])
+    page_free((void *)(uintptr_t)physical);
+}
 static int current = -1, next_pid = 1;
 static int tcp_owner;
 static bool tcp_cleanup;
@@ -33,6 +43,15 @@ static const struct builtin builtins[] = {
     {"worker", app_worker_start, app_worker_end},
     {"linuxhello", app_linuxhello_start, app_linuxhello_end},
     {"linuxfork", app_linuxfork_start, app_linuxfork_end}};
+int user_builtin(const char *name, const void **data, uint32_t *size) {
+  for (unsigned i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
+    if (str_eq(name, builtins[i].name)) {
+      *data = builtins[i].start;
+      *size = builtins[i].end - builtins[i].start;
+      return 0;
+    }
+  return -2;
+}
 struct elf_header {
   uint8_t ident[16];
   uint16_t type, machine;
@@ -95,6 +114,9 @@ bool process_range(struct process *t, uint32_t p, uint32_t n, bool write) {
   uint32_t end = (p + n - 1) & ~4095u;
   for (uint32_t v = p & ~4095u;; v += 4096) {
     uint64_t *pte = process_pte(t, v);
+    if (pte && ((*pte & PAGE_LAZY) || (write && (*pte & PAGE_COW))))
+      if (!process_page_fault(t, v, write))
+        return false;
     if (!pte || (*pte & 5) != 5 || (write && !(*pte & 2)))
       return false;
     if (v == end)
@@ -143,22 +165,83 @@ bool process_string(struct process *t, uint32_t p, char *out, unsigned cap) {
   }
   return false;
 }
-bool process_map(struct process *t, uint32_t v, bool write) {
+static uint64_t *ensure_pte(struct process *t, uint32_t v) {
   if (!process_address(v, 4096))
-    return false;
+    return NULL;
   uint64_t *pte = process_pte(t, v);
   if (!pte) {
     if (t->table_count == PROCESS_TABLES)
-      return false;
+      return NULL;
     unsigned slot = t->table_count++;
     t->indices[slot] = v >> 21;
     memset(t->tables[slot], 0, 4096);
     t->directory[v >> 21] = (uintptr_t)t->tables[slot] | 7;
     pte = &t->tables[slot][(v >> 12) & 511];
   }
+  return pte;
+}
+bool process_private(struct process *t, uint32_t v) {
+  uint64_t *pte = process_pte(t, v);
+  if (!pte || !(*pte & ~4095u))
+    return false;
+  uint32_t old = *pte & ~4095u;
+  if (old / 4096 >= 32768 || !page_references[old / 4096])
+    return false;
+  if (page_references[old / 4096] > 1) {
+    void *copy = page_alloc();
+    if (!copy)
+      return false;
+    memcpy(copy, (void *)(uintptr_t)old, 4096);
+    page_references[(uintptr_t)copy / 4096] = 1;
+    drop_page(*pte);
+    *pte = (uintptr_t)copy | (*pte & 4095u);
+    if (t == process_current())
+      __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
+  }
+  return true;
+}
+bool process_map_lazy(struct process *t, uint32_t v, bool write) {
+  uint64_t *pte = ensure_pte(t, v);
+  if (!pte || *pte)
+    return false;
+  *pte = PAGE_LAZY | 4 | (write ? 2 : 0);
+  return true;
+}
+bool process_page_fault(struct process *t, uint32_t v, bool write) {
+  uint64_t *pte = process_pte(t, v);
+  if (!pte || !(*pte & 4))
+    return false;
+  if (*pte & PAGE_LAZY) {
+    if (write && !(*pte & 2))
+      return false;
+    if (t->pages == PROCESS_PAGE_LIMIT)
+      return false;
+    void *page = page_alloc();
+    if (!page)
+      return false;
+    page_references[(uintptr_t)page / 4096] = 1;
+    *pte = (uintptr_t)page | 5 | (*pte & 2);
+    t->pages++;
+  } else if (write && (*pte & PAGE_COW)) {
+    if (!process_private(t, v))
+      return false;
+    *pte = (*pte | 2) & ~PAGE_COW;
+  } else
+    return false;
+  if (t == process_current())
+    __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
+  return true;
+}
+bool process_map(struct process *t, uint32_t v, bool write) {
+  uint64_t *pte = ensure_pte(t, v);
+  if (!pte)
+    return false;
   if (*pte & ~4095u) {
-    if (write)
-      *pte |= 2;
+    if (write) {
+      if (!process_private(t, v))
+        return false;
+      *pte = (*pte | 2) & ~PAGE_COW;
+    }
     return true;
   }
   if (t->pages == PROCESS_PAGE_LIMIT)
@@ -167,6 +250,7 @@ bool process_map(struct process *t, uint32_t v, bool write) {
   if (!page)
     return false;
   *pte = (uintptr_t)page | 5 | (write ? 2 : 0);
+  page_references[(uintptr_t)page / 4096] = 1;
   t->pages++;
   if (t == process_current())
     __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
@@ -174,10 +258,12 @@ bool process_map(struct process *t, uint32_t v, bool write) {
 }
 void process_unmap(struct process *t, uint32_t v) {
   uint64_t *pte = process_pte(t, v);
-  if (pte && (*pte & ~4095u)) {
-    page_free((void *)(uintptr_t)(*pte & ~4095u));
+  if (pte && *pte) {
+    if (*pte & ~4095u) {
+      drop_page(*pte);
+      t->pages--;
+    }
     *pte = 0;
-    t->pages--;
     if (t == process_current())
       __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
   }
@@ -186,7 +272,7 @@ static void release(struct process *t) {
   for (unsigned i = 0; i < t->table_count; i++)
     for (unsigned j = 0; j < 512; j++)
       if (t->tables[i][j] & ~4095u) {
-        page_free((void *)(uintptr_t)(t->tables[i][j] & ~4095u));
+        drop_page(t->tables[i][j]);
         t->tables[i][j] = 0;
       }
   t->pages = 0;
@@ -236,6 +322,8 @@ static void initialize(struct process *t) {
   t->pid = next_pid++;
   t->parent = current < 0 ? 0 : tasks[current].pid;
   t->state = TASK_EMPTY;
+  t->priority = 16;
+  t->ready_since = clock_ticks();
   linux_init_fds(t);
   platform_fpu_initial(t->fpu);
 }
@@ -446,6 +534,17 @@ memory:
   return -12;
 }
 static int load_name(struct process *t, const char *name, const char *args) {
+  for (unsigned disk = 0; disk < disk_count(); disk++) {
+    struct ext4_volume volume;
+    struct ext4_inode inode;
+    if (ext4_mount(&volume, disk, 0) || ext4_lookup(&volume, name, &inode))
+      continue;
+    if ((inode.mode & 0xf000) != 0x8000 ||
+        inode.size > sizeof(executable_image))
+      return -8;
+    int size = ext4_read(&volume, &inode, 0, executable_image, inode.size);
+    return size < 0 ? size : load(t, executable_image, size, name, args);
+  }
   int n = fs_size(name);
   if (n >= 0) {
     n = fs_read(name, executable_image, sizeof(executable_image));
@@ -604,8 +703,24 @@ void process_read(struct process *t, uint32_t address, uint32_t capacity,
 static void wake_sleepers(void) {
   uint32_t now = clock_ticks();
   for (unsigned i = 0; i < PROCESS_MAX; i++)
-    if (tasks[i].state == TASK_SLEEP && (int32_t)(now - tasks[i].wake) >= 0)
+    if (tasks[i].state == TASK_SLEEP && (int32_t)(now - tasks[i].wake) >= 0) {
       tasks[i].state = TASK_READY;
+      tasks[i].ready_since = now;
+    }
+}
+int user_priority(int pid, unsigned priority) {
+  struct process *t = find(pid);
+  if (!t)
+    return -3;
+  if (priority > 31)
+    return -22;
+  t->priority = priority;
+  t->slice_left = 0;
+  return 0;
+}
+static unsigned effective_priority(struct process *t) {
+  unsigned age = (uint32_t)(clock_ticks() - t->ready_since) / 50;
+  return age >= t->priority ? 0 : t->priority - age;
 }
 struct trap_frame *user_reschedule(struct trap_frame *f) {
   wake_sleepers();
@@ -616,15 +731,26 @@ struct trap_frame *user_reschedule(struct trap_frame *f) {
     platform_fpu_save(tasks[current].fpu);
     tasks[current].frame = f;
     tasks[current].yield = false;
-    if (tasks[current].state == TASK_RUNNING)
+    if (tasks[current].state == TASK_RUNNING) {
       tasks[current].state = TASK_READY;
+      tasks[current].ready_since = clock_ticks();
+    }
   } else
     kernel_frame = f;
   unsigned start = current < 0 ? PROCESS_MAX : (unsigned)current;
+  static unsigned dispatches;
+  bool kernel_turn = current >= 0 && kernel_frame && ++dispatches % 8 == 0;
+  unsigned best = 32;
+  for (unsigned i = 0; i < PROCESS_MAX; i++)
+    if (tasks[i].state == TASK_READY) {
+      unsigned score = effective_priority(&tasks[i]);
+      if (score < best)
+        best = score;
+    }
   for (unsigned step = 1; step <= PROCESS_MAX + 1; step++) {
     unsigned n = (start + step) % (PROCESS_MAX + 1);
     if (n == PROCESS_MAX) {
-      if (!kernel_frame)
+      if (!kernel_frame || (!kernel_turn && best < 32))
         continue;
       current = -1;
       activate(kernel_directory);
@@ -635,10 +761,11 @@ struct trap_frame *user_reschedule(struct trap_frame *f) {
       return kernel_frame;
     }
     struct process *t = &tasks[n];
-    if (t->state != TASK_READY)
+    if (t->state != TASK_READY || kernel_turn || effective_priority(t) != best)
       continue;
     current = (int)n;
     t->state = TASK_RUNNING;
+    t->slice_left = 2 + (31 - t->priority) / 8;
     platform_kernel_stack((uintptr_t)(t->kernel_stack + PROCESS_STACK));
     platform_tls(t->tls);
     platform_fpu_restore(t->fpu);
@@ -657,7 +784,7 @@ struct trap_frame *user_timer(struct trap_frame *f) {
     process_exit(t, 124, 0);
     return user_reschedule(f);
   }
-  if (clock_ticks() % 2)
+  if (t->slice_left && --t->slice_left)
     return f;
   return user_reschedule(f);
 }
@@ -799,19 +926,29 @@ int process_fork(struct trap_frame *f) {
   memcpy(c->arguments, p->arguments, sizeof(c->arguments));
   for (unsigned i = 0; i < p->table_count; i++)
     for (unsigned j = 0; j < 512; j++) {
-      uint32_t old = p->tables[i][j];
-      if (!(old & ~4095u))
+      uint64_t old = p->tables[i][j];
+      if (!old)
         continue;
       uint32_t v = ((uintptr_t)p->indices[i] << 21) | (j << 12);
-      if (!process_map(c, v, old & 2)) {
+      uint64_t *pte = ensure_pte(c, v);
+      if (!pte) {
         release(c);
+        activate(p->directory);
         return -12;
       }
-      uint64_t *pte = process_pte(c, v);
-      memcpy((void *)(uintptr_t)(*pte & ~4095u),
-             (void *)(uintptr_t)(old & ~4095u), 4096);
-      *pte = (*pte & ~4095u) | (old & 4095u);
+      if (old & PAGE_LAZY) {
+        *pte = old;
+        continue;
+      }
+      if (old & 2)
+        old = (old & ~2u) | PAGE_COW;
+      p->tables[i][j] = old;
+      *pte = old;
+      page_references[(old & ~4095u) / 4096]++;
+      c->pages++;
     }
+  activate(p->directory);
+  c->priority = p->priority;
   c->frame = (void *)(uintptr_t)(c->kernel_stack + PROCESS_STACK - sizeof(*f));
   *c->frame = *f;
   c->frame->eax = 0;

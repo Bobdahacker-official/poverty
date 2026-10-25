@@ -1,5 +1,6 @@
-#include "system.h"
 #include "ext4.h"
+#include "package.h"
+#include "system.h"
 #define PAGES 32768u
 #define PAGE 4096u
 static inline void outb(uint16_t p, uint8_t v) {
@@ -223,7 +224,16 @@ static void newline(void) {
     row = rows - 1;
   }
 }
+static char *capture_buffer;
+static unsigned capture_size, capture_used;
 void console_putc(char c) {
+  if (capture_buffer) {
+    if (capture_used + 1 < capture_size) {
+      capture_buffer[capture_used++] = c;
+      capture_buffer[capture_used] = 0;
+    }
+    return;
+  }
   if (serial) {
     for (unsigned i = 0; i < 100000 && !(inb(0x3fd) & 0x20); ++i) {
     }
@@ -275,15 +285,15 @@ void print_hex(uint32_t n) {
     console_putc("0123456789ABCDEF"[(n >> (i * 4)) & 15]);
 }
 static const char keys[128] = {
-    [2] = '1',   [3] = '2',   [4] = '3',   [5] = '4',   [6] = '5',  [7] = '6',
-    [8] = '7',   [9] = '8',   [10] = '9',  [11] = '0',  [12] = '-', [13] = '=',
-    [14] = '\b', [15] = '\t', [16] = 'q',  [17] = 'w',  [18] = 'e', [19] = 'r',
-    [20] = 't',  [21] = 'y',  [22] = 'u',  [23] = 'i',  [24] = 'o', [25] = 'p',
-    [26] = '[',  [27] = ']',  [28] = '\n', [30] = 'a',  [31] = 's', [32] = 'd',
-    [33] = 'f',  [34] = 'g',  [35] = 'h',  [36] = 'j',  [37] = 'k', [38] = 'l',
-    [39] = ';',  [40] = '\'', [41] = '`',  [43] = '\\', [44] = 'z', [45] = 'x',
-    [46] = 'c',  [47] = 'v',  [48] = 'b',  [49] = 'n',  [50] = 'm', [51] = ',',
-    [52] = '.',  [53] = '/',  [57] = ' '};
+    [1] = 27,   [2] = '1',   [3] = '2',   [4] = '3',   [5] = '4',   [6] = '5',
+    [7] = '6',  [8] = '7',   [9] = '8',   [10] = '9',  [11] = '0',  [12] = '-',
+    [13] = '=', [14] = '\b', [15] = '\t', [16] = 'q',  [17] = 'w',  [18] = 'e',
+    [19] = 'r', [20] = 't',  [21] = 'y',  [22] = 'u',  [23] = 'i',  [24] = 'o',
+    [25] = 'p', [26] = '[',  [27] = ']',  [28] = '\n', [30] = 'a',  [31] = 's',
+    [32] = 'd', [33] = 'f',  [34] = 'g',  [35] = 'h',  [36] = 'j',  [37] = 'k',
+    [38] = 'l', [39] = ';',  [40] = '\'', [41] = '`',  [43] = '\\', [44] = 'z',
+    [45] = 'x', [46] = 'c',  [47] = 'v',  [48] = 'b',  [49] = 'n',  [50] = 'm',
+    [51] = ',', [52] = '.',  [53] = '/',  [57] = ' '};
 char console_getchar(void) {
   static bool left_shift, right_shift, left_ctrl, right_ctrl, caps, extended;
   for (;;) {
@@ -426,41 +436,99 @@ static void command(char *line) {
   char *rest = line, *cmd = token(&rest);
   if (!*cmd)
     return;
-  if (eq(cmd, "ext4ls") || eq(cmd, "ext4cat") || eq(cmd, "ext4read")) {
+  if (eq(cmd, "priority")) {
+    bool pid_ok, level_ok;
+    unsigned pid = parse_uint(token(&rest), &pid_ok),
+             level = parse_uint(token(&rest), &level_ok);
+    result(pid_ok && level_ok ? user_priority(pid, level) : -22);
+    return;
+  }
+  if (eq(cmd, "pkg")) {
+    package_command(rest);
+    return;
+  }
+  if (eq(cmd, "gui")) {
+    if (capture_buffer)
+      return;
+    result(gui_run());
+    console_clear();
+    return;
+  }
+  if (eq(cmd, "ext4ls") || eq(cmd, "ext4cat") || eq(cmd, "ext4read") ||
+      eq(cmd, "ext4write") || eq(cmd, "ext4create")) {
     bool ok;
     unsigned disk = parse_uint(token(&rest), &ok);
     char *path = token(&rest);
     struct ext4_volume volume;
     int r = ok ? ext4_mount(&volume, disk, 0) : -22;
+    if (!r && eq(cmd, "ext4create")) {
+      struct ext4_inode inode;
+      r = ext4_create(&volume, path, &inode);
+      if (r < 0)
+        result(r);
+      return;
+    }
     if (!r && eq(cmd, "ext4ls"))
       r = ext4_list(&volume, *path ? path : "/");
     else if (!r) {
       struct ext4_inode inode;
       r = ext4_lookup(&volume, path, &inode);
-      if (!r && (inode.mode & 0xf000) != 0x8000) r = -22;
+      if (!r && (inode.mode & 0xf000) != 0x8000)
+        r = -22;
+      if (!r && eq(cmd, "ext4write")) {
+        uint64_t position = 0;
+        char *number = token(&rest);
+        if (!*number)
+          r = -22;
+        while (*number && !r) {
+          unsigned digit = (unsigned)(*number++ - '0');
+          if (digit > 9 || position > (UINT64_MAX - digit) / 10)
+            r = -22;
+          else
+            position = position * 10 + digit;
+        }
+        while (*rest == ' ')
+          rest++;
+        if (!r)
+          r = ext4_write(&volume, &inode, position, rest, strlen(rest));
+        if (r < 0)
+          result(r);
+        return;
+      }
       uint64_t offset = 0, limit = inode.size;
       if (!r && eq(cmd, "ext4read")) {
         char *number = token(&rest);
-        if (!*number) r = -22;
+        if (!*number)
+          r = -22;
         while (*number && !r) {
           unsigned digit = (unsigned)(*number++ - '0');
-          if (digit > 9 || offset > (UINT64_MAX-digit)/10) r = -22;
-          else offset = offset*10+digit;
+          if (digit > 9 || offset > (UINT64_MAX - digit) / 10)
+            r = -22;
+          else
+            offset = offset * 10 + digit;
         }
         uint32_t count = parse_uint(token(&rest), &ok);
-        if (!ok || count > 4096 || offset > UINT64_MAX-count) r = -22;
-        else if (offset+count < limit) limit = offset+count;
+        if (!ok || count > 4096 || offset > UINT64_MAX - count)
+          r = -22;
+        else if (offset + count < limit)
+          limit = offset + count;
       }
       for (; !r && offset < limit;) {
         char data[512];
-        uint32_t count = limit-offset > sizeof(data) ? sizeof(data) : limit-offset;
+        uint32_t count =
+            limit - offset > sizeof(data) ? sizeof(data) : limit - offset;
         int n = ext4_read(&volume, &inode, offset, data, count);
-        if (n <= 0) { r = n ? n : -5; break; }
-        for (int i = 0; i < n; i++) console_putc(data[i]);
+        if (n <= 0) {
+          r = n ? n : -5;
+          break;
+        }
+        for (int i = 0; i < n; i++)
+          console_putc(data[i]);
         offset += n;
       }
     }
-    if (r < 0) result(r);
+    if (r < 0)
+      result(r);
     return;
   }
   if (eq(cmd, "help"))
@@ -469,6 +537,7 @@ static void command(char *line) {
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
         "ext4ls DISK /PATH  ext4cat DISK /PATH\n"
         "ext4read DISK /PATH OFFSET COUNT  - up to 4096 bytes\n"
+        "ext4write DISK /PATH OFFSET TEXT\n"
         "format DISK ERASE  - DESTROYS the selected disk's contents\n"
         "install           - copy built-in ELF applications into filesystem\n"
         "run NAME [ARGS]   - foreground program; spawn NAME [ARGS], wait PID, "
@@ -664,6 +733,49 @@ static void command(char *line) {
   } else
     console_write("Unknown command. Type help.\n");
 }
+void kernel_capture(char *line, char *out, unsigned size) {
+  if (!size)
+    return;
+  out[0] = 0;
+  if (str_eq(line, "gui"))
+    return;
+  capture_buffer = out;
+  capture_size = size;
+  capture_used = 0;
+  command(line);
+  capture_buffer = NULL;
+}
+bool graphics_size(unsigned *width, unsigned *height) {
+  if (!fb || fw < 640 || fh < 480)
+    return false;
+  *width = fw > 1024 ? 1024 : fw;
+  *height = fh > 768 ? 768 : fh;
+  return true;
+}
+uint8_t graphics_glyph(char c, unsigned y) { return glyph(c, y); }
+void graphics_present(const uint32_t *pixels, unsigned width, unsigned height) {
+  if (!fb || width > fw || height > fh)
+    return;
+  if (bytespp == 4 && rpos == 16 && gpos == 8 && bpos == 0 && rbits == 8 &&
+      gbits == 8 && bbits == 8) {
+    for (unsigned y = 0; y < height; y++) {
+      void *destination = (void *)(uintptr_t)(fb + y * pitch);
+      const void *source = pixels + y * width;
+      size_t count = width / 2;
+      __asm__ volatile("rep movsq"
+                       : "+D"(destination), "+S"(source),
+                         "+c"(count)::"memory");
+      if (width & 1)
+        *(volatile uint32_t *)destination = *(const uint32_t *)source;
+    }
+    return;
+  }
+  for (unsigned y = 0; y < height; y++)
+    for (unsigned x = 0; x < width; x++) {
+      uint32_t color = pixels[y * width + x];
+      pixel(x, y, rgb(color >> 16, color >> 8, color));
+    }
+}
 void kernel_main(uint32_t magic, uint32_t mbi) {
   /* Initialize the protected-mode platform before enabling timer IRQs. */
   outb(0x21, 255);
@@ -794,6 +906,9 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   console_write("Type help. Use run ush for the userspace shell.\n\n");
   fs_info();
   if (magenta_boot) {
+    unsigned width, height;
+    if (graphics_size(&width, &height))
+      gui_run();
     console_write("Starting Magenta...\n");
     int code = user_exec("magenta", "");
     console_color(0);

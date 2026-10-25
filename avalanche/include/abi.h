@@ -1,7 +1,8 @@
 #ifndef AVALANCHE_ABI_H
 #define AVALANCHE_ABI_H
-/* i386 int 0x80: EAX number/result; EBX, ECX, EDX, ESI arguments.
- * Negative results are errors. Programs are static ELF32 ET_EXEC images. */
+/* Native x86-64 int 0x80: RAX number/result; RBX, RCX, RDX, RSI arguments.
+ * Service addresses are bounded below 4 GiB. Native programs are ELF64 ET_EXEC.
+ * Linux ELF32 programs use a separate i386 compatibility dispatcher. */
 enum {
   AV_EXIT,
   AV_WRITE,

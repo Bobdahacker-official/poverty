@@ -380,12 +380,12 @@ static int memory_map(struct process *t, uint32_t address, uint32_t length,
     return -12;
   for (uint32_t off = 0; off < n; off += 4096) {
     uint64_t *pte = process_pte(t, address + off);
-    if (pte && (*pte & ~4095u))
+    if (pte && *pte)
       return -12;
   }
   uint32_t done = 0;
   for (; done < n; done += 4096) {
-    if (!process_map(t, address + done, (prot & 2) != 0))
+    if (!process_map_lazy(t, address + done, (prot & 2) != 0))
       break;
     if (!prot)
       *process_pte(t, address + done) &= ~4u;
@@ -656,7 +656,7 @@ void linux_syscall(struct trap_frame *f) {
     bool ok = true;
     for (uint32_t off = 0; off < b; off += 4096) {
       uint64_t *pte = process_pte(t, a + off);
-      if (!pte || !(*pte & ~4095u)) {
+      if (!pte || !*pte) {
         ok = false;
         break;
       }
@@ -667,10 +667,18 @@ void linux_syscall(struct trap_frame *f) {
     }
     for (uint32_t off = 0; off < b; off += 4096) {
       uint64_t *pte = process_pte(t, a + off);
+      if ((c & 2) && (*pte & ~4095u) && !process_private(t, a + off)) {
+        result = -12;
+        ok = false;
+        break;
+      }
       *pte = (*pte & ~6u) | (c ? 4 : 0) | ((c & 2) ? 2 : 0);
+      if (c & 2)
+        *pte &= ~512u;
       __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)(a + off)) : "memory");
     }
-    result = 0;
+    if (ok)
+      result = 0;
     break;
   }
   case 140: {
