@@ -34,6 +34,7 @@ static bool preferences_saved, close_editor_after_discard, exit_after_discard;
 static void shell_start(void);
 static int active_app = SETTINGS, focus_request = -1, editor_focus,
            terminal_focus, settings_page;
+static int held_control_app = -1, held_control = -1;
 static const uint32_t accents[] = {0xe6007e, 0x7287fd, 0x179299, 0xfe640b,
                                    0x8839ef};
 static const struct palette {
@@ -225,7 +226,7 @@ static void style(void) {
   ui.style.window.header.normal = ui.style.window.header.hover =
       ui.style.window.header.active =
           nk_style_item_color(alpha_color(p->mantle, 250));
-  ui.style.window.header.padding = nk_vec2(14, 10);
+  ui.style.window.header.padding = nk_vec2(14, 12);
   ui.style.window.header.label_padding = nk_vec2(6, 2);
   ui.style.window.header.label_normal = ui.style.window.header.label_hover =
       ui.style.window.header.label_active = text;
@@ -1131,9 +1132,13 @@ static void settings_view(void) {
     } else if (settings_page == 3) {
       heading("Pointer");
       nk_layout_row_dynamic(&ui, 50, 1);
-      nk_label_wrap(&ui,
-                    "Adjust the PS/2 pointer speed. The pointer remains inside "
-                    "the desktop while moving and dragging windows.");
+      nk_label_wrap(
+          &ui,
+          mouse_absolute()
+              ? "Absolute pointer input maps taps directly to the desktop. "
+                "Pointer sensitivity applies to physical PS/2 mice."
+              : "Adjust the PS/2 pointer speed. The pointer remains inside "
+                "the desktop while moving and dragging windows.");
       nk_layout_row_dynamic(&ui, 34, 1);
       int speed = preferences.pointer_speed;
       if (nk_slider_int(&ui, 25, &speed, 250, 5)) {
@@ -1177,25 +1182,73 @@ static void maximize(unsigned id) {
   apps[id].maximized = !apps[id].maximized;
   nk_window_set_bounds(&ui, app_names[id], apps[id].bounds);
 }
+static struct nk_rect window_control_bounds(unsigned id, unsigned control) {
+  struct nk_rect r = apps[id].bounds;
+  return nk_rect(r.x + r.w - 120 + control * 40, r.y + 4, 36, 36);
+}
+static int window_controls(unsigned id) {
+  struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
+  struct nk_rect clip = canvas->clip;
+  nk_push_scissor(canvas, nk_rect(0, 0, width, height));
+  bool active = nk_window_is_active(&ui, app_names[id]);
+  int action = -1;
+  for (unsigned control = 0; control < 3; control++) {
+    struct nk_rect r = window_control_bounds(id, control);
+    bool hover = active && nk_input_is_mouse_hovering_rect(&ui.input, r);
+    if (hover && nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT)) {
+      held_control_app = id;
+      held_control = control;
+    }
+    bool held = held_control_app == (int)id && held_control == (int)control;
+    if (held && nk_input_is_mouse_released(&ui.input, NK_BUTTON_LEFT)) {
+      if (hover)
+        action = control;
+      held_control_app = held_control = -1;
+    }
+    struct nk_color fill =
+        hover ? rgb(control == 2 ? 0xd12a56 : palette()->surface)
+              : alpha_color(palette()->surface, 60);
+    struct nk_color ink =
+        hover && control == 2 ? nk_rgb(255, 255, 255) : rgb(palette()->text);
+    nk_fill_rect(canvas, r, 8, fill);
+    if (held && hover)
+      nk_stroke_rect(canvas, r, 8, 2, rgb(accent()));
+    float x = r.x + 12, y = r.y + 12;
+    if (control == 0)
+      nk_stroke_line(canvas, x, y + 8, x + 12, y + 8, 2, ink);
+    else if (control == 1) {
+      nk_stroke_rect(canvas, nk_rect(x, y, 12, 12), 1, 2, ink);
+      if (apps[id].maximized)
+        nk_stroke_rect(canvas, nk_rect(x + 3, y - 3, 12, 12), 1, 1, ink);
+    } else {
+      nk_stroke_line(canvas, x, y, x + 12, y + 12, 2, ink);
+      nk_stroke_line(canvas, x + 12, y, x, y + 12, 2, ink);
+    }
+  }
+  nk_push_scissor(canvas, clip);
+  return action;
+}
 static void application(unsigned id) {
   if (!apps[id].visible)
     return;
   nk_set_user_data(&ui, nk_handle_id(id + 1));
   nk_flags flags = NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
-                   NK_WINDOW_CLOSABLE | NK_WINDOW_MINIMIZABLE | NK_WINDOW_TITLE;
-  if (nk_begin(&ui, app_names[id], apps[id].bounds, flags)) {
-    apps[id].bounds = nk_window_get_bounds(&ui);
-    struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
-    struct nk_rect saved_clip = canvas->clip;
-    struct nk_rect expand = nk_rect(apps[id].bounds.x + apps[id].bounds.w - 91,
-                                    apps[id].bounds.y + 13, 16, 16);
-    nk_push_scissor(canvas, nk_rect(0, 0, width, height));
-    nk_stroke_rect(canvas, nk_rect(expand.x + 2, expand.y + 2, 11, 11), 1, 1,
-                   rgb(palette()->text));
-    nk_push_scissor(canvas, saved_clip);
-    if (nk_input_is_mouse_hovering_rect(&ui.input, expand) &&
-        nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT))
-      maximize(id);
+                   NK_WINDOW_TITLE;
+  bool control_press = false;
+  for (unsigned control = 0; control < 3; control++)
+    if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&
+        nk_input_is_mouse_hovering_rect(&ui.input,
+                                        window_control_bounds(id, control)))
+      control_press = true;
+  if (control_press || held_control_app == (int)id)
+    flags &= ~NK_WINDOW_MOVABLE;
+  bool content = nk_begin(&ui, app_names[id], apps[id].bounds, flags);
+  apps[id].bounds = nk_window_get_bounds(&ui);
+  int action = -1;
+  if (!nk_window_is_hidden(&ui, app_names[id]) &&
+      !nk_window_is_closed(&ui, app_names[id]))
+    action = window_controls(id);
+  if (content) {
     if (nk_window_is_active(&ui, app_names[id]))
       active_app = id;
     if (id == TERMINAL)
@@ -1214,6 +1267,16 @@ static void application(unsigned id) {
       settings_view();
   }
   nk_end(&ui);
+  if (action == 0)
+    nk_window_collapse(&ui, app_names[id],
+                       nk_window_is_collapsed(&ui, app_names[id])
+                           ? NK_MAXIMIZED
+                           : NK_MINIMIZED);
+  else if (action == 1) {
+    nk_window_collapse(&ui, app_names[id], NK_MAXIMIZED);
+    maximize(id);
+  } else if (action == 2)
+    nk_window_show(&ui, app_names[id], NK_HIDDEN);
   if (nk_window_is_closed(&ui, app_names[id]) ||
       nk_window_is_hidden(&ui, app_names[id])) {
     apps[id].visible = false;
@@ -1578,6 +1641,7 @@ int gui_run(void) {
   terminal_output[0] = terminal_line[0] = 0;
   terminal_pid = 0;
   terminal_focus = editor_focus = 0;
+  held_control_app = held_control = -1;
   editor_dirty = false;
   editor[0] = 0;
   copy(editor_path, "/notes", sizeof(editor_path));

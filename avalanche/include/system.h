@@ -60,6 +60,7 @@ void mouse_print(void);
 void mouse_state(int *, int *, uint8_t *);
 void mouse_input_state(int *,int *,uint8_t *);
 void mouse_configure(unsigned, unsigned, unsigned);
+bool mouse_absolute(void);
 int graphics_key_event(void);
 void graphics_console_capture(void (*)(char));
 bool graphics_size(unsigned *, unsigned *);

@@ -16,14 +16,22 @@ for asset in vnc.html app core vendor defaults.json mandatory.json; do
     cp -RL "$novnc_web/$asset" "$runtime/web/"
   fi
 done
+python3 - "$runtime/web/vnc.html" <<'PY'
+from pathlib import Path
+import sys
+page = Path(sys.argv[1])
+content = page.read_text()
+style = '<style>#noVNC_container{max-width:1024px;max-height:768px;margin:auto}#noVNC_container canvas{image-rendering:auto}</style>'
+page.write_text(content.replace('</head>', style + '</head>', 1))
+PY
 cat > "$runtime/web/index.html" <<'HTML'
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="0;url=vnc.html?autoconnect=1&amp;resize=scale&amp;quality=4&amp;compression=3">
+<meta http-equiv="refresh" content="0;url=vnc.html?autoconnect=1&amp;resize=scale&amp;quality=9&amp;compression=3">
 <title>Magenta desktop</title>
-<a href="vnc.html?autoconnect=1&amp;resize=scale&amp;quality=4&amp;compression=3">Open Magenta desktop</a>
+<a href="vnc.html?autoconnect=1&amp;resize=scale&amp;quality=9&amp;compression=3">Open Magenta desktop</a>
 </html>
 HTML
 
@@ -55,11 +63,11 @@ if ! running "$runtime/qemu.pid"; then
   if [[ -r /dev/kvm && -w /dev/kvm ]]; then
     acceleration=(-accel kvm -cpu host)
   fi
-  "$qemu" "${acceleration[@]}" -m 256 -boot d \
+  "$qemu" "${acceleration[@]}" -machine pc,vmport=on -m 256 -boot d \
     -cdrom "$repo_root/Images/magenta.iso" \
     -drive "file=$runtime/data.img,format=raw,if=ide" \
     -netdev user,id=net0 -device e1000,netdev=net0,romfile= \
-    -vga std -display none -vnc 127.0.0.1:1,lossy=on \
+    -vga std -display none -vnc 127.0.0.1:1,lossy=off \
     -serial "file:$runtime/serial.log" -monitor none \
     -pidfile "$runtime/qemu.pid" -daemonize
 fi

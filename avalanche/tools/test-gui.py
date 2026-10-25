@@ -18,11 +18,12 @@ shutil.copyfile(storage.ROOT/'Images/magenta-data.img',data)
 with extra.open('wb') as file: file.truncate(16*1024**2)
 args=SimpleNamespace(qemu=os.environ.get('QEMU','qemu-system-x86_64'),
                      bios=os.environ.get('QEMU_BIOS'),qemu_data=os.environ.get('QEMU_DATA'),
-                     graphics=True,vga_rom=os.environ.get('QEMU_VGA_ROM','vgabios-stdvga.bin'))
+                     graphics=True,absolute_pointer=True,vga_rom=os.environ.get('QEMU_VGA_ROM','vgabios-stdvga.bin'))
 machine=storage.Machine(args,data,extra,folder)
 print(f'GUI artifacts: {folder}',flush=True)
 try:
     storage.report('graphical desktop boot',lambda: machine.until(b'Magenta graphical desktop ready'))
+    time.sleep(.3)
     connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(10)
     connection.connect(str(folder/'qmp.sock'));stream=connection.makefile('rwb',buffering=0)
     json.loads(stream.readline())
@@ -35,13 +36,17 @@ try:
             if 'error' in response: raise RuntimeError(response['error'])
             if 'return' in response: return response['return']
     qmp('qmp_capabilities')
-    print('QEMU mice:',qmp('query-mice'),flush=True)
+    mice=qmp('query-mice')
+    absolute_pointer=any(device['current'] and device['absolute'] for device in mice)
+    storage.report('absolute virtual pointer detection',lambda: storage.contains(str(mice).encode(),b"'absolute': True"))
+    display_size=[1024,768]
     def screenshot():
         deadline=time.monotonic()+15
         while time.monotonic()<deadline:
             qmp('screendump',{'filename':str(folder/'desktop.ppm')})
             header,dimensions,maximum,pixels=(folder/'desktop.ppm').read_bytes().split(b'\n',3)
             width,height=map(int,dimensions.split())
+            display_size[:]=[width,height]
             def pixel(x,y): return pixels[(y*width+x)*3:(y*width+x)*3+3]
             if width>=640 and height>=480 and len(pixels)==width*height*3:
                 panel=pixel(width//2,height//2)
@@ -53,6 +58,13 @@ try:
     storage.report('compositor screenshot and pixel checks',screenshot)
     mouse_position=[0,0]
     def move(x,y):
+        if absolute_pointer:
+            qmp('input-send-event',{'events':[
+                {'type':'abs','data':{'axis':'x','value':round(x*32767/(display_size[0]-1))}},
+                {'type':'abs','data':{'axis':'y','value':round(y*32767/(display_size[1]-1))}}]})
+            mouse_position[:]=[x,y]
+            time.sleep(.2)
+            return
         dx,dy=x-mouse_position[0],y-mouse_position[1]
         while dx or dy:
             step_x=max(-60,min(60,dx));step_y=max(-60,min(60,dy))
@@ -105,7 +117,20 @@ try:
                 time.sleep(.1)
             else:raise AssertionError('cursor movement left stale pixels or failed to update')
     storage.report('cached desktop cursor movement and restoration',cursor_restoration)
-    click(839,108)
+    def collapsed(expected):
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            qmp('screendump',{'filename':str(folder/'minimize.ppm')})
+            _,dimensions,_,pixels=(folder/'minimize.ppm').read_bytes().split(b'\n',3)
+            width,height=map(int,dimensions.split());sample=pixels[(400*width+512)*3:(400*width+512)*3+3]
+            if (max(sample)<150)==expected:return
+            time.sleep(.1)
+        raise AssertionError('minimize/restore did not update the visible window')
+    click(820,108)
+    storage.report('window minimize button',lambda: collapsed(True))
+    click(820,108)
+    storage.report('window restore button',lambda: collapsed(False))
+    click(860,108)
     storage.report('window maximize button',lambda: expanded(True))
     qmp('human-monitor-command',{'command-line':'sendkey ctrl-m'})
     storage.report('window restore shortcut',lambda: expanded(False))
@@ -113,7 +138,9 @@ try:
     storage.report('mouse-operated appearance theme',lambda: dark_panel(folder/'appearance.ppm'))
     qmp('human-monitor-command',{'command-line':'sendkey ctrl-n'})
     machine.until(b'[Magenta] Network');time.sleep(.2)
-    click(910,108)
+    move(910,108)
+    qmp('input-send-event',{'events':[{'type':'btn','data':{'button':'left','down':True}}]})
+    qmp('input-send-event',{'events':[{'type':'btn','data':{'button':'left','down':False}}]})
     storage.report('window close button',lambda: machine.until(b'[Magenta] Window closed'))
     qmp('human-monitor-command',{'command-line':'sendkey ctrl-e'})
     storage.report('graphical editor launch',lambda: machine.until(b'[Magenta] Text editor'))
@@ -181,3 +208,17 @@ try:
 finally:
     machine.stop()
 print(f'GUI artifacts: {folder}',flush=True)
+fallback=folder/'ps2-fallback';fallback.mkdir()
+args.absolute_pointer=False
+machine=storage.Machine(args,data,extra,fallback)
+try:
+    machine.until(b'Magenta graphical desktop ready')
+    connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(10)
+    connection.connect(str(fallback/'qmp.sock'));stream=connection.makefile('rwb',buffering=0)
+    json.loads(stream.readline());qmp('qmp_capabilities')
+    absolute_pointer=False;mouse_position[:]=[0,0]
+    click(900,108)
+    storage.report('physical PS/2 fallback window close',lambda: machine.until(b'[Magenta] Window closed'))
+    stream.close();connection.close()
+finally:
+    machine.stop()

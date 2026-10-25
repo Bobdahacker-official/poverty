@@ -227,6 +227,64 @@ void mouse_configure(unsigned width, unsigned height, unsigned speed) {
     mouse_speed = speed;
 }
 static uint8_t mouse_buttons;
+static bool absolute_mouse;
+struct pointer_reply {
+  uint32_t value, x, y, z;
+};
+static struct pointer_reply pointer_command(uint32_t command,
+                                            uint32_t argument) {
+  uint32_t a = 0x564d5868, b = argument, c = command, d = 0x5658;
+  __asm__ volatile("inl %%dx, %%eax"
+                   : "+a"(a), "+b"(b), "+c"(c), "+d"(d)::"memory");
+  return (struct pointer_reply){a, b, c, d};
+}
+bool mouse_absolute(void) { return absolute_mouse; }
+static void pointer_absolute_init(void) {
+  struct pointer_reply reply = pointer_command(10, ~0x564d5868u);
+  if (reply.x != 0x564d5868 || reply.value == 0xffffffffu)
+    return;
+  pointer_command(41, 0x45414552);
+  reply = pointer_command(40, 0);
+  if ((reply.value >> 16) || !(reply.value & 0xffff))
+    return;
+  reply = pointer_command(39, 1);
+  if (reply.value != 0x3442554a) {
+    pointer_command(41, 0xf5);
+    return;
+  }
+  pointer_command(41, 0x53424152);
+  absolute_mouse = true;
+  console_write("Absolute virtual pointer ready\n");
+}
+static void pointer_buttons(uint8_t buttons) {
+  if (mouse_irq_poll && buttons != mouse_buttons) {
+    if (mouse_event_count == 32) {
+      mouse_event_head = (mouse_event_head + 1) % 32;
+      mouse_event_count--;
+    }
+    mouse_events[(mouse_event_head + mouse_event_count) % 32] =
+        (struct mouse_event){mouse_x, mouse_y, buttons};
+    mouse_event_count++;
+  }
+  mouse_buttons = buttons;
+}
+static void pointer_absolute_poll(void) {
+  for (unsigned i = 0; i < 64; i++) {
+    struct pointer_reply reply = pointer_command(40, 0);
+    if (reply.value >> 16 || (reply.value & 0xffff) < 4)
+      return;
+    reply = pointer_command(39, 4);
+    if (reply.value & 0x10000)
+      continue;
+    uint32_t x = reply.x > 65535 ? 65535 : reply.x;
+    uint32_t y = reply.y > 65535 ? 65535 : reply.y;
+    mouse_x = ((uint64_t)x * (mouse_width - 1) + 32767) / 65535;
+    mouse_y = ((uint64_t)y * (mouse_height - 1) + 32767) / 65535;
+    pointer_buttons(((reply.value & 0x20) ? 1 : 0) |
+                    ((reply.value & 0x10) ? 2 : 0) |
+                    ((reply.value & 0x08) ? 4 : 0));
+  }
+}
 static bool ps2_wait_write(void) {
   for (unsigned i = 0; i < 100000; i++)
     if (!(io_in8(0x64) & 2))
@@ -270,6 +328,8 @@ static void mouse_init(void) {
   mouse_ready = mouse_command(0xf6) && mouse_command(0xf4);
   console_write(mouse_ready ? "PS/2 mouse ready\n"
                             : "PS/2 mouse initialization failed\n");
+  if (mouse_ready)
+    pointer_absolute_init();
 }
 static void mouse_poll(void) {
   uint8_t status = io_in8(0x64);
@@ -283,6 +343,10 @@ static void mouse_poll(void) {
   packet[packet_n++] = b;
   if (packet_n == 3) {
     packet_n = 0;
+    if (absolute_mouse) {
+      pointer_absolute_poll();
+      return;
+    }
     if (packet[0] & 0xc0)
       return;
     int dx = (int)packet[1] - ((packet[0] & 0x10) ? 256 : 0),
@@ -301,17 +365,7 @@ static void mouse_poll(void) {
       mouse_x = mouse_width - 1;
     if (mouse_y >= (int)mouse_height)
       mouse_y = mouse_height - 1;
-    uint8_t buttons = packet[0] & 7;
-    if (mouse_irq_poll && buttons != mouse_buttons) {
-      if (mouse_event_count == 32) {
-        mouse_event_head = (mouse_event_head + 1) % 32;
-        mouse_event_count--;
-      }
-      mouse_events[(mouse_event_head + mouse_event_count) % 32] =
-          (struct mouse_event){mouse_x, mouse_y, buttons};
-      mouse_event_count++;
-    }
-    mouse_buttons = buttons;
+    pointer_buttons(packet[0] & 7);
   }
 }
 void devices_poll(void) {
@@ -328,7 +382,7 @@ void mouse_print(void) {
     console_write("No PS/2 mouse acknowledged initialization.\n");
     return;
   }
-  console_write("PS/2 mouse x=");
+  console_write(absolute_mouse ? "Absolute pointer x=" : "PS/2 mouse x=");
   print_uint(mouse_x);
   console_write(" y=");
   print_uint(mouse_y);

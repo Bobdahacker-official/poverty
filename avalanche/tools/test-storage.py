@@ -49,7 +49,8 @@ class Machine:
             command+=['-netdev','user,id=net','-device','e1000,netdev=net,romfile=']
         if getattr(args,'graphics',False):
             index=command.index('-vga'); del command[index:index+2]
-            command+=['-device',f'VGA,romfile={args.vga_rom}',
+            command+=['-machine','pc,vmport='+('on' if getattr(args,'absolute_pointer',False) else 'off'),
+                      '-device',f'VGA,romfile={args.vga_rom}',
                       '-qmp',f'unix:{folder}/qmp.sock,server=on,wait=off']
         self.process = subprocess.Popen(command, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
