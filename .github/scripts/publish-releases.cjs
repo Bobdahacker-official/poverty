@@ -7,6 +7,8 @@ function git(...args) {
 const artifacts = [
   ['index.html', 'drawing-inc.html'],
   ['avalanche/images/avalanche.elf', 'avalanche.elf'],
+  ['Images/avalanche.iso', 'avalanche.iso'],
+  ['Images/avalanche-data.img', 'avalanche-data.img'],
   ['avalanche/images/avalanche.iso', 'avalanche.iso'],
   ['avalanche/images/avalanche-data.img', 'avalanche-data.img'],
   ['avalanche/images/NOTICE', 'avalanche-NOTICE.txt'],
@@ -14,6 +16,9 @@ const artifacts = [
   ['avalanche/assets/FONT-LICENSE', 'FONT-LICENSE.txt'],
   ['avalanche/vendor/nuklear/LICENSE', 'NUKLEAR-LICENSE.txt'],
   ['avalanche/vendor/nuklear/CATPPUCCIN-LICENSE', 'CATPPUCCIN-LICENSE.txt'],
+  ['Images/magenta.iso', 'magenta.iso'],
+  ['Images/magenta-data.img', 'magenta-data.img'],
+  ['Images/desktop.png', 'magenta-desktop.png'],
   ['magenta/images/magenta.iso', 'magenta.iso'],
   ['magenta/images/magenta-data.img', 'magenta-data.img'],
   ['magenta/images/NOTICE', 'magenta-NOTICE.txt'],
@@ -69,6 +74,7 @@ module.exports = async function publish({ github, context, core }) {
         owner, repo, release_id: release.id, name, data,
         headers: { 'content-type': 'application/octet-stream', 'content-length': data.length },
       });
+      names.add(name);
       core.info(`Attached ${name} to ${short}`);
     }
 

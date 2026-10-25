@@ -37,7 +37,7 @@ class Machine:
         command = [args.qemu, '-accel', 'tcg', '-cpu', 'qemu64', '-m', '256',
                    '-display', 'none', '-vga', 'none', '-serial', 'stdio',
                    '-monitor', 'none', '-no-reboot', '-no-shutdown', '-boot', 'd',
-                   '-cdrom', str(ROOT/'magenta/images/magenta.iso'),
+                   '-cdrom', str(ROOT/'Images/magenta.iso'),
                    '-drive', f'file={data},format=raw,if=ide',
                    '-drive', f'file={ext4},format=raw,if=ide', '-nic', 'none']
         if args.bios:
@@ -172,7 +172,7 @@ def main():
     report('host debugfs large file', lambda: contains(
         run(['debugfs', '-R', 'stat /large', str(image)]), str(5*1024**3+len(b'EXT4-LARGE-END\n')).encode()))
     data = folder/'data.img'
-    shutil.copyfile(ROOT/'magenta/images/magenta-data.img', data)
+    shutil.copyfile(ROOT/'Images/magenta-data.img', data)
     machine = Machine(args, data, image, folder)
     try:
         report('ring-3 Magenta boot', lambda: machine.until(b'Magenta> '))

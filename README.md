@@ -7,12 +7,12 @@ The graphical desktop uses [Nuklear](https://github.com/Immediate-Mode-UI/Nuklea
 
 Terminal, Files, Text editor, Tasks, Network, Packages, and Settings launch from the dock. Terminal runs the ring-3 shell; Files browses directories and launches executables; the editor saves documents and confirms unsaved changes. Tasks manages live processes and priorities, Network configures the adapter and runs diagnostics, and Packages installs, upgrades, removes, and downloads packages. Settings saves the palette, accent, wallpaper, transparency, blur, and pointer speed to the writable disk. Windows support dragging, resizing, minimizing, maximizing, and closing.
 
-![Magenta desktop running in QEMU](magenta/images/desktop.png)
+![Magenta desktop running in QEMU](Images/desktop.png)
 
 ## Downloads
 
-- [Download Magenta BIOS/UEFI ISO](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/magenta/images/magenta.iso) — boot media with a default Magenta entry and a separate rescue-console entry.
-- [Download Magenta writable data disk](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/magenta/images/magenta-data.img) — bundled applications and the `welcome` file in an Avalanche filesystem.
+- [Download Magenta BIOS/UEFI ISO](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/Images/magenta.iso) — boot media with a default Magenta entry and a separate rescue-console entry.
+- [Download Magenta writable data disk](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/Images/magenta-data.img) — bundled applications and the `welcome` file in an Avalanche filesystem.
 - [Distribution notes](magenta/images/NOTICE) — architecture, features and licensing.
 
 The ISO is read-only boot media. Attach the separate writable data disk for persistent files. Without a recognized disk, the interface uses RAM storage and identifies it as temporary.
@@ -106,7 +106,7 @@ Package fresh distribution artifacts:
 make -C magenta package
 ```
 
-This replaces the release artifacts in `magenta/images/` and creates a fresh release data disk from the bundled applications and welcome file. It does not refresh applications inside an existing working data disk.
+This replaces the Magenta release images in `Images/` and creates a fresh release data disk from the bundled applications and welcome file. It does not refresh applications inside an existing working data disk.
 
 Build prerequisites are GCC/binutils with freestanding x86-64 and i386 compatibility-application support, GNU Make, Python 3, GRUB BIOS and x86-64 EFI modules, xorriso and mtools. `GRUB_LIB` can select an alternative GRUB module directory.
 
@@ -122,7 +122,8 @@ See [Avalanche's capability notes](avalanche/images/NOTICE) for the kernel's arc
 
 ## Repository
 
-- `magenta/` — distribution boot configuration, welcome file, build entry point and packaged images.
+- `Images/` — Magenta and Avalanche boot images, writable data disks, and desktop screenshot.
+- `magenta/` — distribution boot configuration, welcome file, build entry point and distribution notices.
 - `avalanche/` — kernel, hardware drivers, userspace applications and build tools.
 - `index.html` — drawing Inc, the separate browser drawing game.
 

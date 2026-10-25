@@ -14,7 +14,7 @@ spec=importlib.util.spec_from_file_location('storage',pathlib.Path(__file__).wit
 storage=importlib.util.module_from_spec(spec);spec.loader.exec_module(storage)
 folder=pathlib.Path(tempfile.mkdtemp(prefix='magenta-gui-'))
 data=folder/'data.img';extra=folder/'extra.img'
-shutil.copyfile(storage.ROOT/'magenta/images/magenta-data.img',data)
+shutil.copyfile(storage.ROOT/'Images/magenta-data.img',data)
 with extra.open('wb') as file: file.truncate(16*1024**2)
 args=SimpleNamespace(qemu=os.environ.get('QEMU','qemu-system-x86_64'),
                      bios=os.environ.get('QEMU_BIOS'),qemu_data=os.environ.get('QEMU_DATA'),

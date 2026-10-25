@@ -3,8 +3,8 @@
 set -eu
 
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-iso=$root_dir/magenta/images/magenta.iso
-data=$root_dir/magenta/images/magenta-data.img
+iso=$root_dir/Images/magenta.iso
+data=$root_dir/Images/magenta-data.img
 
 usage() {
     printf '%s\n' "Usage: $0 DESTINATION" "       $0 --virtualbox [MACHINE-NAME] [MACHINE-DIRECTORY]"
