@@ -1,4 +1,5 @@
 #include "system.h"
+#include "ext4.h"
 #define PAGES 32768u
 #define PAGE 4096u
 static inline void outb(uint16_t p, uint8_t v) {
@@ -425,10 +426,34 @@ static void command(char *line) {
   char *rest = line, *cmd = token(&rest);
   if (!*cmd)
     return;
+  if (eq(cmd, "ext4ls") || eq(cmd, "ext4cat")) {
+    bool ok;
+    unsigned disk = parse_uint(token(&rest), &ok);
+    char *path = token(&rest);
+    struct ext4_volume volume;
+    int r = ok ? ext4_mount(&volume, disk, 0) : -22;
+    if (!r && eq(cmd, "ext4ls"))
+      r = ext4_list(&volume, *path ? path : "/");
+    else if (!r) {
+      struct ext4_inode inode;
+      r = ext4_lookup(&volume, path, &inode);
+      if (!r && (inode.mode & 0xf000) != 0x8000) r = -22;
+      for (uint64_t offset = 0; !r && offset < inode.size;) {
+        char data[512];
+        int n = ext4_read(&volume, &inode, offset, data, sizeof(data));
+        if (n <= 0) { r = n ? n : -5; break; }
+        for (int i = 0; i < n; i++) console_putc(data[i]);
+        offset += n;
+      }
+    }
+    if (r < 0) result(r);
+    return;
+  }
   if (eq(cmd, "help"))
     console_write(
         "help version clear echo mem ticks date beep mouse devices ps\n"
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
+        "ext4ls DISK /PATH  ext4cat DISK /PATH\n"
         "format DISK ERASE  - DESTROYS the selected disk's contents\n"
         "install           - copy built-in ELF applications into filesystem\n"
         "run NAME [ARGS]   - foreground program; spawn NAME [ARGS], wait PID, "

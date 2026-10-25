@@ -143,7 +143,7 @@ static bool ata_select(unsigned n, uint32_t lba) {
   io_out8(d->port + 5, lba >> 16);
   return true;
 }
-bool disk_read(unsigned n, uint32_t lba, void *buf) {
+bool disk_raw_read(unsigned n, uint32_t lba, void *buf) {
   if (n < ndisks && disks[n].backend == 2)
     return lba < disks[n].sectors && virtio_block_transfer(lba, buf, false);
   if (n < ndisks && disks[n].backend == 1)
@@ -162,7 +162,7 @@ bool disk_read(unsigned n, uint32_t lba, void *buf) {
   ata_delay(d);
   return ata_wait(d, false);
 }
-bool disk_write(unsigned n, uint32_t lba, const void *buf) {
+bool disk_raw_write(unsigned n, uint32_t lba, const void *buf) {
   if (n < ndisks && disks[n].read_only)
     return false;
   if (n < ndisks && disks[n].backend == 2)
@@ -184,7 +184,7 @@ bool disk_write(unsigned n, uint32_t lba, const void *buf) {
   ata_delay(d);
   return ata_wait(d, false);
 }
-bool disk_flush(unsigned n) {
+bool disk_raw_flush(unsigned n) {
   if (n < ndisks && disks[n].backend == 2)
     return virtio_block_flush();
   if (n < ndisks && disks[n].backend == 1)

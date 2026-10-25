@@ -1,7 +1,7 @@
 CC = gcc
 LD = ld
 CFLAGS = -m64 -mno-red-zone -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -msoft-float -Iinclude
-SOURCES = kernel platform devices ahci fs net user linux virtio
+SOURCES = kernel platform devices ahci fs net user linux virtio block_cache ext4
 OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o
 APPS = magenta hello cat udp ush http worker linuxhello linuxfork
 APP_ELFS = $(addprefix build/user/,$(addsuffix .elf,$(APPS)))
