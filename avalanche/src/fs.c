@@ -367,3 +367,10 @@ bool fs_entry(unsigned i, char *name, uint32_t *size) {
   }
   return true;
 }
+
+int fs_mounted_disk(void) { return mounted; }
+bool fs_writable(void) {
+  const struct block_device *d =
+      mounted < 0 ? NULL : disk_get((unsigned)mounted);
+  return mounted < 0 || (d && !d->read_only);
+}

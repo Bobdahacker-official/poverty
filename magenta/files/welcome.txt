@@ -1,0 +1,19 @@
+Welcome to Magenta 0.1
+
+Magenta is a small text-based distribution powered by Avalanche Kernel.
+Use the numbered menus and press Enter to choose an action.
+
+Files: read, create, replace, append, or delete text files.
+Programs: run an ELF program in the foreground or background.
+Processes: inspect tasks, wait for children, and terminate processes.
+Network: configure DHCP or static IPv4; use ping, DNS, and HTTP tools.
+System: inspect devices, memory, storage, uptime, and firmware time.
+Shell: use Avalanche's userspace command prompt; exit returns to Magenta.
+
+Persistent files require the separate writable Magenta data disk. Without
+one, Magenta uses RAM and shows that files disappear at shutdown. The ISO
+is boot media, not writable storage. Network changes last for the session.
+The filesystem has 32 flat files, with at most 64 KiB per file.
+
+This is an early distribution. Linux compatibility is limited to a static
+i386 ABI subset. Unsupported devices and operations may report errors.

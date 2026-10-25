@@ -1,57 +1,51 @@
 # Magenta
 
-Magenta is the distribution planned for **Avalanche Kernel**: a small, real operating system with a basic **text-based user interface**.
+**Magenta 0.1** is a small text-based distribution built on [Avalanche Kernel](avalanche/). Its interface is a native C userspace program with numbered menus and magenta headings, backed by kernel system calls.
 
-This README is the reference for building Magenta. The repository currently contains Avalanche Kernel 0.3.0 and its command-line applications; a separate Magenta distribution image and interface have not been implemented yet.
+The Magenta program, extended kernel, BIOS/UEFI ISO and writable data image have been compiled and packaged. **Magenta has not been booted or runtime-tested**, following the request to omit testing. Earlier Avalanche test results do not establish that these new images work at runtime.
 
-## What to build
+## Downloads
 
-Build a compact distribution that boots into a usable text interface. Users should be able to manage files, run programs, view processes, and configure supported networking without needing to understand kernel internals.
+- [Magenta BIOS/UEFI ISO](magenta/images/magenta.iso) — boot media with a default Magenta entry and a separate rescue-console entry.
+- [Magenta writable data disk](magenta/images/magenta-data.img) — bundled applications and the `welcome` file in an Avalanche filesystem.
+- [Distribution notes](magenta/images/NOTICE) — validation status, limits and licensing.
 
-The interface should use a clear Magenta title, readable text, simple numbered menus, and short prompts. Magenta-colored headings can be used where the console supports them. Keep keyboard navigation straightforward and provide a way to return to the main menu or open the shell.
+The ISO is read-only boot media. Attach the separate writable data disk for persistent files. Without a recognized disk, the interface uses RAM storage and identifies it as temporary.
 
-This is a text interface, not a graphical desktop. It does not need windows, icons, a mouse-driven desktop, or a browser frontend.
+## Interface
 
-## Initial interface
+Choose a numbered option and press Enter:
 
-The first version should provide these working screens:
+| Screen | Implemented actions |
+| --- | --- |
+| Files | List files, read text or a bounded binary hex view, create text, replace or append text, delete with confirmation. |
+| Programs | Launch bundled or disk-based ELF applications in the foreground or background and report foreground exit status. |
+| Processes | Show task IDs and states, wait for child processes, terminate a selected task with confirmation. |
+| Network | Show adapter/address information, request DHCP, apply static IPv4 settings, ping, resolve DNS, launch an HTTP client. |
+| System | Show actual memory, storage and uptime information, list detected devices, read the firmware clock. |
+| Shell | Open the userspace shell; `exit` returns to Magenta. |
+| Power | Confirm restart, halt or exit to the rescue console. |
 
-- **Files:** list, read, create, edit, and delete files; identify whether storage is persistent or held in RAM.
-- **Programs:** list available applications and launch them as foreground or background processes.
-- **Processes:** show process IDs and states, wait for children, and terminate processes.
-- **Network:** show the active adapter and addresses, configure DHCP or a static address, and expose supported connectivity tools.
-- **System:** show the kernel version, detected devices, memory usage, and uptime, with reboot and halt controls.
-- **Shell:** open the existing userspace shell and return cleanly when it exits.
+The text editor accepts ASCII text, up to 511 characters per entered line and 64 KiB per file. `.save` writes changes; `.cancel` discards them. The interface rejects binary files for editing. Network configuration lasts for the session.
 
-Every displayed action must call a real implementation. Report unsupported operations and failures clearly. Do not add decorative controls, simulated progress, invented device information, or success messages for actions that did not complete.
+## Implementation and builds
 
-## Distribution requirements
+[Magenta's interface](avalanche/user/magenta.c) runs in ring 3. Hardware access, storage, process isolation and networking remain in the kernel. The default boot entry passes `--magenta`; the kernel then launches the interface. The Magenta executable is also embedded as a fallback when no data disk is attached.
 
-Magenta should have its own reproducible image target, boot entry, startup path, and bundled applications while reusing Avalanche's kernel and drivers. Booting that image should launch the Magenta interface automatically.
+`make -C magenta` builds the distribution under `avalanche/build/`. `make -C magenta package` publishes local build artifacts into `magenta/images/`, creating a fresh release data disk. Existing writable disks under `avalanche/build/` are preserved by ordinary builds.
 
-Ship the user interface as a userspace program. Keep hardware access, process isolation, system calls, and storage drivers in the kernel. Handle missing disks or network adapters gracefully and make destructive storage operations explicit.
+Build prerequisites are GCC/binutils with freestanding i386 support, GNU Make, Python 3, GRUB BIOS and x86-64 EFI modules, xorriso and mtools. `GRUB_LIB` can select an alternative GRUB module directory.
 
-Provide a bootable BIOS/UEFI ISO and a separate writable data image. The distribution must remain usable with the hardware Avalanche actually supports; do not advertise unimplemented hardware or general Linux application compatibility.
+## Scope
 
-## Existing foundation
+Avalanche supports up to eight isolated user processes and a limited static Linux i386 ABI subset. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. The filesystem has 32 flat files, each limited to 64 KiB.
 
-[Avalanche Kernel](avalanche/) currently supplies:
+Magenta is an early development distribution. General Linux application compatibility, dynamic linking, USB, NVMe, Wi-Fi, HTTPS and a graphical desktop are not provided. See [Avalanche's capability notes](avalanche/images/NOTICE) for the underlying kernel's limits and earlier validation results.
 
-- Up to eight isolated user processes with timer-driven scheduling, background jobs, and process waiting and termination.
-- A userspace shell, file utilities, networking clients, and native application interfaces.
-- A persistent filesystem, with a volatile RAM fallback when no recognized disk is mounted.
-- ATA, AHCI, and legacy VirtIO storage; RTL8139, E1000, and legacy VirtIO networking.
-- A limited Linux i386 static-ELF and system-call compatibility layer.
+## Repository
 
-The existing [kernel ISO](avalanche/images/avalanche.iso) and [data disk](avalanche/images/avalanche-data.img) are Avalanche development images, not Magenta releases. See the [capability and validation notes](avalanche/images/NOTICE) for exact limits and checks already performed.
+- `magenta/` — distribution boot configuration, welcome file, build entry point and packaged images.
+- `avalanche/` — kernel, hardware drivers, userspace applications and build tools.
+- `index.html` — drawing Inc, the separate browser drawing game.
 
-## Completion criteria
-
-Magenta's first release is complete when its own image boots into the text interface, the listed actions operate on real files and processes, supported networking can be configured, and saved files survive a restart when writable storage is attached. Verify the distribution's BIOS and UEFI boot paths and report the hardware configurations exercised.
-
-## Repository contents
-
-- `avalanche/` — kernel, drivers, application sources, build tools, and development images.
-- `index.html` — drawing Inc, the separate browser drawing game previously created in this repository.
-
-Avalanche source licensing and bundled bootloader notices are available in [LICENSE](avalanche/LICENSE) and [GRUB-COPYRIGHT](avalanche/images/GRUB-COPYRIGHT).
+Source is covered by [Avalanche's MIT license](avalanche/LICENSE). Bundled GRUB retains its [own licensing](avalanche/images/GRUB-COPYRIGHT), with corresponding source included in [grub-source](avalanche/images/grub-source/).

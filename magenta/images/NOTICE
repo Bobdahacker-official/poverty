@@ -1,0 +1,21 @@
+Magenta 0.1 is a text-based userspace distribution of Avalanche Kernel.
+Source and applications are covered by ../../avalanche/LICENSE (MIT).
+
+The ISO additionally contains GNU GRUB 2.12-9+deb13u2. Its licensing and
+copyright notices are in ../../avalanche/images/GRUB-COPYRIGHT, and the
+corresponding upstream source and Debian build rules/patches are included
+in ../../avalanche/images/grub-source/. The MIT license does not relicense
+GRUB. Kernel capability limits are in ../../avalanche/images/NOTICE.
+
+The ISO boots directly into Magenta; a second boot entry opens the rescue
+console. The separate writable data image contains Magenta, the userspace
+shell and utilities, Linux ABI examples, and a welcome file. Without a
+recognized writable disk, files use RAM. Network settings are per-session.
+Menus call implemented kernel services; there are no simulated file,
+process, network, device or power actions. The text editor supports ASCII
+text and files up to 64 KiB. Binary files have a bounded hexadecimal view.
+
+Magenta and its extended kernel were compiled and images were packaged.
+No Magenta boot, runtime, firmware, UI, storage or network tests were run,
+at the user's request. Earlier Avalanche validation does not validate
+these new distribution images. Physical hardware remains unverified.

@@ -14,6 +14,7 @@ APP(udp);
 APP(ush);
 APP(http);
 APP(worker);
+APP(magenta);
 APP(linuxhello);
 APP(linuxfork);
 struct builtin {
@@ -21,6 +22,7 @@ struct builtin {
   const uint8_t *start, *end;
 };
 static const struct builtin builtins[] = {
+    {"magenta", app_magenta_start, app_magenta_end},
     {"hello", app_hello_start, app_hello_end},
     {"cat", app_cat_start, app_cat_end},
     {"udp", app_udp_start, app_udp_end},
@@ -979,17 +981,101 @@ void user_syscall(struct trap_frame *f) {
     char program[32], args[256];
     if (user_string(f->ebx, program, sizeof(program)) &&
         user_string(f->ecx, args, sizeof(args)))
-      result = user_spawn(program, args, false);
+      result = user_spawn(program, args, f->edx == 1);
     break;
   }
   case AV_WAIT:
-    result = process_wait(t, (int)f->ebx, 0, false);
+    if (f->ecx && !range(f->ecx, 4, true))
+      result = -14;
+    else
+      result = process_wait(t, (int)f->ebx, f->ecx, false);
     break;
   case AV_GETPID:
     result = t->pid;
     break;
   case AV_KILL:
     result = user_kill((int)f->ebx, (int)f->ecx);
+    break;
+  case AV_STATUS: {
+    struct av_status status;
+    kernel_status(&status);
+    result = process_copyout(t, f->ebx, &status, sizeof(status)) ? 0 : -14;
+    break;
+  }
+  case AV_REPORT:
+    switch (f->ebx) {
+    case AV_REPORT_FILESYSTEM:
+      fs_info();
+      result = 0;
+      break;
+    case AV_REPORT_PROCESSES:
+      user_list();
+      result = 0;
+      break;
+    case AV_REPORT_NETWORK:
+      net_info();
+      result = 0;
+      break;
+    case AV_REPORT_DEVICES:
+      devices_list();
+      result = 0;
+      break;
+    case AV_REPORT_DATE:
+      rtc_print();
+      result = 0;
+      break;
+    default:
+      result = -22;
+      break;
+    }
+    break;
+  case AV_CLEAR:
+    console_clear();
+    result = 0;
+    break;
+  case AV_COLOR:
+    if (f->ebx <= 1) {
+      console_color(f->ebx);
+      result = 0;
+    } else
+      result = -22;
+    break;
+  case AV_FILE_ENTRY: {
+    struct av_file_entry item;
+    memset(&item, 0, sizeof(item));
+    if (f->ebx >= 32) {
+      result = -22;
+      break;
+    }
+    if (!fs_entry(f->ebx, item.name, &item.size)) {
+      result = 0;
+      break;
+    }
+    result = process_copyout(t, f->ecx, &item, sizeof(item)) ? 1 : -14;
+    break;
+  }
+  case AV_DHCP:
+    result = net_dhcp();
+    break;
+  case AV_NET_CONFIG: {
+    uint32_t config[4];
+    if (process_copyin(t, config, f->ebx, sizeof(config))) {
+      net_config(config[0], config[1], config[2], config[3]);
+      result = 0;
+    } else
+      result = -14;
+    break;
+  }
+  case AV_PING:
+    result = net_ping(f->ebx);
+    break;
+  case AV_POWER:
+    if (f->ebx > AV_POWER_HALT) {
+      result = -22;
+      break;
+    }
+    kernel_power(f->ebx);
+    result = -5;
     break;
   default:
     result = -38;

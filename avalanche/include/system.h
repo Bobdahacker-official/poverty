@@ -1,6 +1,7 @@
 #ifndef AVALANCHE_SYSTEM_H
 #define AVALANCHE_SYSTEM_H
 #include "avalanche.h"
+#include "magenta.h"
 static inline void io_out8(uint16_t p, uint8_t v) {
   __asm__ volatile("outb %0,%1" ::"a"(v), "Nd"(p));
 }
@@ -38,6 +39,9 @@ void print_hex(uint32_t n);
 char console_input(void);
 char console_getchar(void);
 void console_clear(void);
+void console_color(uint32_t);
+void kernel_status(struct av_status *);
+void kernel_power(unsigned);
 void console_size(uint16_t *, uint16_t *);
 uint32_t parse_uint(const char *, bool *);
 uint32_t crc32(const void *, size_t);
@@ -81,6 +85,8 @@ void fs_init(void);
 int fs_mount(unsigned);
 int fs_format(unsigned);
 void fs_info(void);
+int fs_mounted_disk(void);
+bool fs_writable(void);
 void fs_list(void);
 int fs_read(const char *, void *, uint32_t);
 int fs_write(const char *, const void *, uint32_t);

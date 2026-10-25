@@ -34,3 +34,8 @@ app_linuxhello_end:
 .global app_linuxfork_start,app_linuxfork_end
 app_linuxfork_start: .incbin "build/user/linuxfork.elf"
 app_linuxfork_end:
+.section .rodata
+.balign 16
+.global app_magenta_start,app_magenta_end
+app_magenta_start: .incbin "build/user/magenta.elf"
+app_magenta_end:

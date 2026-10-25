@@ -107,6 +107,15 @@ static uint32_t pitch, fw, fh, fg, bg;
 static uint8_t bytespp, rpos, gpos, bpos, rbits, gbits, bbits;
 static uint32_t col, row, cols = 80, rows = 25;
 static bool serial;
+static void serial_sequence(const char *s) {
+  if (!serial)
+    return;
+  while (*s) {
+    for (unsigned i = 0; i < 100000 && !(inb(0x3fd) & 0x20); i++) {
+    }
+    outb(0x3f8, (uint8_t)*s++);
+  }
+}
 /* Original 5x7 bitmap alphabet. Lowercase is displayed as uppercase. */
 static const uint8_t glyphs[36][7] = {
     {14, 17, 17, 31, 17, 17, 17}, {30, 17, 17, 30, 17, 17, 30},
@@ -192,6 +201,7 @@ static void cell(uint32_t x, uint32_t y, char c) {
     }
 }
 void console_clear(void) {
+  serial_sequence("\033[2J\033[H");
   if (fb)
     for (uint32_t y = 0; y < fh; ++y)
       for (uint32_t x = 0; x < fw; ++x)
@@ -373,6 +383,34 @@ static void reboot(void) {
     if (!(inb(0x64) & 2))
       break;
   outb(0x64, 0xfe);
+}
+void kernel_status(struct av_status *s) {
+  *s = (struct av_status){clock_ticks(), available * 4,     used * 4,
+                          disk_count(),  fs_mounted_disk(), fs_writable()};
+}
+void console_color(uint32_t color) {
+  if (color == 1) {
+    if (fb)
+      fg = rgb(238, 124, 228);
+    if (serial)
+      serial_sequence("\033[95m");
+  } else {
+    if (fb)
+      fg = rgb(205, 225, 247);
+    if (serial)
+      serial_sequence("\033[0m");
+  }
+}
+void kernel_power(unsigned action) {
+  if (action == AV_POWER_REBOOT) {
+    reboot();
+    return;
+  }
+  if (action == AV_POWER_HALT) {
+    console_write("System halted. Reset or power off the machine.\n");
+    for (;;)
+      __asm__ volatile("cli; hlt");
+  }
 }
 static uint8_t file_buffer[FS_MAX_FILE + 1];
 static void result(int code) {
@@ -610,11 +648,23 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
       __asm__ volatile("hlt");
   }
   uint32_t end = mbi + total;
+  bool magenta_boot = false;
   for (struct tag *t = (void *)(mbi + 8); (uint32_t)t <= end - 8;) {
     if (t->size < 8 || t->size > end - (uint32_t)t)
       break;
     if (t->type == 0)
       break;
+    if (t->type == 1 && t->size >= 18) {
+      const char *text = (const char *)t + 8;
+      uint32_t n = t->size - 8;
+      for (uint32_t i = 0; i + 9 < n; i++) {
+        if (i && text[i - 1] != ' ')
+          continue;
+        if (!__builtin_memcmp(text + i, "--magenta", 9) &&
+            (text[i + 9] == 0 || text[i + 9] == ' '))
+          magenta_boot = true;
+      }
+    }
     if (t->type == 6 && t->size >= 16) {
       uint32_t step = *(uint32_t *)((uint8_t *)t + 8);
       if (step >= 24)
@@ -701,6 +751,14 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     console_write("No supported RGB framebuffer. Using serial console.\n");
   console_write("Type help. Use run ush for the userspace shell.\n\n");
   fs_info();
+  if (magenta_boot) {
+    console_write("Starting Magenta...\n");
+    int code = user_exec("magenta", "");
+    console_color(0);
+    console_write("Magenta exited. Rescue console ready.\n");
+    if (code < 0)
+      result(code);
+  }
   char line[4096];
   for (;;) {
     console_write("avalanche> ");
