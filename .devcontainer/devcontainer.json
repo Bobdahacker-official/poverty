@@ -1,0 +1,14 @@
+{
+  "name": "Magenta browser desktop",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-data seabios ipxe-qemu novnc websockify curl",
+  "postStartCommand": "bash tools/boot-browser.sh",
+  "forwardPorts": [6080],
+  "portsAttributes": {
+    "6080": {
+      "label": "Magenta desktop",
+      "protocol": "http",
+      "onAutoForward": "openBrowser"
+    }
+  }
+}
