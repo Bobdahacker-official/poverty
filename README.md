@@ -14,6 +14,25 @@ The Magenta program, extended kernel, BIOS/UEFI ISO and writable data image have
 
 The ISO is read-only boot media. Attach the separate writable data disk for persistent files. Without a recognized disk, the interface uses RAM storage and identifies it as temporary.
 
+## VirtualBox
+
+Magenta's BIOS boot image and Intel E1000 network driver are configured for VirtualBox. Create a VM manually with 256 MiB of memory, attach `magenta.iso` as an IDE optical drive, attach `magenta-data.img` as a virtual hard disk, and select the Intel PRO/1000 MT Desktop (`82540EM`) network adapter with NAT.
+
+The included [`copy.sh`](copy.sh) copies both release files to a directory:
+
+```sh
+./copy.sh /path/to/Magenta
+```
+
+It can also create and register a complete VirtualBox machine. This requires VirtualBox's `VBoxManage` command and converts a copy of the data image to VDI, keeping the packaged image unchanged:
+
+```sh
+./copy.sh --virtualbox Magenta
+VBoxManage startvm Magenta
+```
+
+The data disk is where saved files live. Keep its generated `magenta-data.vdi` when upgrading the ISO; replacing it starts a fresh installation.
+
 ## Interface
 
 The default boot entry is configured to start Magenta automatically. Choose a numbered option and press Enter:
