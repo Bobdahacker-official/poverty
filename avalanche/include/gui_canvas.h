@@ -4,6 +4,7 @@
 void gui_canvas_init(unsigned, unsigned);
 void gui_canvas_wallpaper(uint32_t, unsigned);
 void gui_canvas_begin(void);
+bool gui_canvas_changed(struct nk_context *, bool);
 void gui_canvas_shadow(struct nk_rect);
 void gui_canvas_open(unsigned);
 void gui_canvas_commands(struct nk_context *, bool);

@@ -52,7 +52,7 @@ try:
         raise AssertionError('compositor pixels do not match the light settings panel, glass dock and dark wallpaper')
     storage.report('compositor screenshot and pixel checks',screenshot)
     mouse_position=[0,0]
-    def click(x,y):
+    def move(x,y):
         dx,dy=x-mouse_position[0],y-mouse_position[1]
         while dx or dy:
             step_x=max(-60,min(60,dx));step_y=max(-60,min(60,dy))
@@ -60,6 +60,8 @@ try:
             dx-=step_x;dy-=step_y;time.sleep(.04)
         mouse_position[:]=[x,y]
         time.sleep(.2)
+    def click(x,y):
+        move(x,y)
         qmp('human-monitor-command',{'command-line':'mouse_button 1'})
         time.sleep(.25)
         qmp('human-monitor-command',{'command-line':'mouse_button 0'})
@@ -88,6 +90,21 @@ try:
             if (min(sample)>160)==expected:return
             time.sleep(.1)
         raise AssertionError('window maximize/restore did not update its bounds')
+    def cursor_restoration():
+        for old_x,new_x in ((0,40),(40,70)):
+            move(new_x,400)
+            deadline=time.monotonic()+10
+            while time.monotonic()<deadline:
+                qmp('screendump',{'filename':str(folder/'cursor.ppm')})
+                _,dimensions,_,pixels=(folder/'cursor.ppm').read_bytes().split(b'\n',3)
+                width,height=map(int,dimensions.split())
+                old_y=0 if old_x==0 else 400
+                old=pixels[((old_y+10)*width+old_x+5)*3:((old_y+10)*width+old_x+5)*3+3]
+                new=pixels[(410*width+new_x+5)*3:(410*width+new_x+5)*3+3]
+                if max(old)<150 and min(new)>200:break
+                time.sleep(.1)
+            else:raise AssertionError('cursor movement left stale pixels or failed to update')
+    storage.report('cached desktop cursor movement and restoration',cursor_restoration)
     click(839,108)
     storage.report('window maximize button',lambda: expanded(True))
     qmp('human-monitor-command',{'command-line':'sendkey ctrl-m'})

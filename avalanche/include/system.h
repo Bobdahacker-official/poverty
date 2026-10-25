@@ -64,6 +64,8 @@ int graphics_key_event(void);
 void graphics_console_capture(void (*)(char));
 bool graphics_size(unsigned *, unsigned *);
 void graphics_present(const uint32_t *, unsigned, unsigned);
+void graphics_present_region(const uint32_t *, unsigned, unsigned, unsigned,
+                             unsigned, unsigned, unsigned);
 uint8_t graphics_glyph(char, unsigned);
 int gui_run(void);
 void kernel_capture(char *, char *, unsigned);

@@ -775,26 +775,35 @@ bool graphics_size(unsigned *width, unsigned *height) {
 }
 uint8_t graphics_glyph(char c, unsigned y) { return glyph(c, y); }
 void graphics_present(const uint32_t *pixels, unsigned width, unsigned height) {
-  if (!fb || width > fw || height > fh)
+  graphics_present_region(pixels, width, height, 0, 0, width, height);
+}
+void graphics_present_region(const uint32_t *pixels, unsigned width,
+                             unsigned height, unsigned x, unsigned y,
+                             unsigned region_width, unsigned region_height) {
+  if (!fb || width > fw || height > fh || x >= width || y >= height)
     return;
+  if (region_width > width - x)
+    region_width = width - x;
+  if (region_height > height - y)
+    region_height = height - y;
   if (bytespp == 4 && rpos == 16 && gpos == 8 && bpos == 0 && rbits == 8 &&
       gbits == 8 && bbits == 8) {
-    for (unsigned y = 0; y < height; y++) {
-      void *destination = (void *)(uintptr_t)(fb + y * pitch);
-      const void *source = pixels + y * width;
-      size_t count = width / 2;
+    for (unsigned row = y; row < y + region_height; row++) {
+      void *destination = (void *)(uintptr_t)(fb + row * pitch + x * 4);
+      const void *source = pixels + row * width + x;
+      size_t count = region_width / 2;
       __asm__ volatile("rep movsq"
                        : "+D"(destination), "+S"(source),
                          "+c"(count)::"memory");
-      if (width & 1)
+      if (region_width & 1)
         *(volatile uint32_t *)destination = *(const uint32_t *)source;
     }
     return;
   }
-  for (unsigned y = 0; y < height; y++)
-    for (unsigned x = 0; x < width; x++) {
-      uint32_t color = pixels[y * width + x];
-      pixel(x, y, rgb(color >> 16, color >> 8, color));
+  for (unsigned row = y; row < y + region_height; row++)
+    for (unsigned column = x; column < x + region_width; column++) {
+      uint32_t color = pixels[row * width + column];
+      pixel(column, row, rgb(color >> 16, color >> 8, color));
     }
 }
 void kernel_main(uint32_t magic, uint32_t mbi) {

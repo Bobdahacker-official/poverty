@@ -5,6 +5,10 @@
   "postStartCommand": "bash tools/boot-browser.sh",
   "forwardPorts": [6080],
   "portsAttributes": {
+    "5901": {
+      "label": "Internal QEMU display",
+      "onAutoForward": "ignore"
+    },
     "6080": {
       "label": "Magenta desktop",
       "protocol": "http",

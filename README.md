@@ -40,6 +40,8 @@ The data disk is where saved files live. Keep its generated `magenta-data.vdi` w
 
 To boot Magenta through a browser, [open this repository in GitHub Codespaces](https://codespaces.new/Bobdahacker-official/poverty). The included configuration installs QEMU and noVNC, starts Magenta automatically, and opens the desktop on forwarded port **6080**. The virtual machine runs in the Codespace; the browser controls its display. Its writable disk is retained in `avalanche/build/browser-session/data.img` across restarts of that Codespace.
 
+The launcher selects KVM when available and otherwise uses QEMU's software emulator. The desktop caches unchanged drawing commands and updates the cursor separately; noVNC uses compressed display updates. After pulling an update, run `bash tools/boot-browser.sh --restart` to boot the new image with the existing writable disk.
+
 Copy.sh's v86 emulator does not implement x86-64 long mode and cannot run these new 64-bit images. The [browser page](copy.sh.html) explains this limitation and links to the downloads. Use VirtualBox with a 64-bit VM type, or QEMU's `qemu-system-x86_64`. The old 32-bit images have been replaced; the repository does not present them as the 64-bit build.
 
 ## Interface

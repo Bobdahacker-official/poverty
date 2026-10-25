@@ -7,6 +7,52 @@ static int clip_x, clip_y, clip_right, clip_bottom;
 static uint32_t opened_at[16];
 static bool opened[16];
 static unsigned command_alpha = 255;
+static uint64_t previous_commands[32768];
+static size_t previous_size;
+static unsigned wallpaper_revision, previous_wallpaper;
+static bool previous_glass, cache_valid, scene_repaint;
+static uint32_t cursor_under[32 * 32];
+static int cursor_x, cursor_y, presented_x, presented_y;
+static bool cursor_drawn, cursor_moved;
+static void copy_pixels(uint32_t *destination, const uint32_t *source,
+                        size_t count) {
+  size_t words = count / 2;
+  __asm__ volatile("rep movsq"
+                   : "+D"(destination), "+S"(source), "+c"(words)::"memory");
+  if (count & 1)
+    *destination = *source;
+}
+bool gui_canvas_changed(struct nk_context *ctx, bool glass) {
+  nk__begin(ctx);
+  const uint8_t *commands = nk_buffer_memory_const(&ctx->memory);
+  size_t size = ctx->memory.allocated;
+  bool changed = !cache_valid || size != previous_size ||
+                 wallpaper_revision != previous_wallpaper ||
+                 glass != previous_glass || size > sizeof(previous_commands);
+  if (!changed) {
+    const uint64_t *words = (const void *)commands;
+    for (size_t i = 0; i < size / 8; i++)
+      if (words[i] != previous_commands[i]) {
+        changed = true;
+        break;
+      }
+    for (size_t i = size & ~(size_t)7; !changed && i < size; i++)
+      changed = commands[i] != ((const uint8_t *)previous_commands)[i];
+  }
+  if (size <= sizeof(previous_commands)) {
+    if (changed)
+      memcpy(previous_commands, commands, size);
+    cache_valid = true;
+  } else
+    cache_valid = false;
+  previous_size = size;
+  previous_wallpaper = wallpaper_revision;
+  previous_glass = glass;
+  for (unsigned i = 1; i < 16; i++)
+    if (opened[i] && (uint32_t)(clock_ticks() - opened_at[i]) <= 20)
+      changed = true;
+  return changed;
+}
 void gui_canvas_open(unsigned id) {
   if (id < 16) {
     opened[id] = true;
@@ -35,29 +81,51 @@ static void point(int x, int y, struct nk_color c) {
     return;
   pixels[y * width + x] = blend(pixels[y * width + x], color(c), c.a);
 }
-static bool rounded(int x, int y, int w, int h, int radius) {
-  if (x < 0 || y < 0 || x >= w || y >= h)
-    return false;
+static int corner_inset(int y, int w, int h, int radius) {
   if (radius > w / 2)
     radius = w / 2;
   if (radius > h / 2)
     radius = h / 2;
-  int dx = x < radius ? radius - x : x >= w - radius ? x - (w - radius - 1) : 0;
   int dy = y < radius ? radius - y : y >= h - radius ? y - (h - radius - 1) : 0;
-  return dx * dx + dy * dy <= radius * radius;
+  int inset = 0;
+  while ((radius - inset) * (radius - inset) + dy * dy > radius * radius)
+    inset++;
+  return inset;
+}
+static void span(int left, int right, int y, struct nk_color c) {
+  if (left < clip_x)
+    left = clip_x;
+  if (right > clip_right)
+    right = clip_right;
+  if (left >= right || !c.a)
+    return;
+  unsigned alpha = c.a * command_alpha / 255;
+  uint32_t value = color(c), *row = pixels + y * width;
+  if (alpha == 255)
+    for (int x = left; x < right; x++)
+      row[x] = value;
+  else if (alpha)
+    for (int x = left; x < right; x++)
+      row[x] = blend(row[x], value, alpha);
 }
 static void rectangle(int x, int y, int w, int h, int radius, struct nk_color c,
                       int stroke) {
-  int left = x < clip_x ? clip_x : x, top = y < clip_y ? clip_y : y;
-  int right = x + w > clip_right ? clip_right : x + w,
-      bottom = y + h > clip_bottom ? clip_bottom : y + h;
-  for (int j = top; j < bottom; j++)
-    for (int i = left; i < right; i++)
-      if (rounded(i - x, j - y, w, h, radius) &&
-          (!stroke ||
-           !rounded(i - x - stroke, j - y - stroke, w - stroke * 2,
-                    h - stroke * 2, radius > stroke ? radius - stroke : 0)))
-        point(i, j, c);
+  if (w <= 0 || h <= 0)
+    return;
+  int top = y < clip_y ? clip_y : y;
+  int bottom = y + h > clip_bottom ? clip_bottom : y + h;
+  for (int row = top; row < bottom; row++) {
+    int inset = corner_inset(row - y, w, h, radius);
+    int left = x + inset, right = x + w - inset;
+    if (stroke && w > stroke * 2 && h > stroke * 2 && row >= y + stroke &&
+        row < y + h - stroke) {
+      int inner = corner_inset(row - y - stroke, w - stroke * 2, h - stroke * 2,
+                               radius > stroke ? radius - stroke : 0);
+      span(left, x + stroke + inner, row, c);
+      span(x + w - stroke - inner, right, row, c);
+    } else
+      span(left, right, row, c);
+  }
 }
 static void line(int x0, int y0, int x1, int y1, unsigned thickness,
                  struct nk_color c) {
@@ -143,7 +211,7 @@ static void polygon(const struct nk_vec2i *points, unsigned count,
 static void blur(int x, int y, int w, int h) {
   if (w < 180 || h < 100)
     return;
-  memcpy(scratch, pixels, width * height * 4);
+  copy_pixels(scratch, pixels, width * height);
   for (int j = y; j < y + h; j++)
     for (int i = x; i < x + w; i++) {
       if (i < 4 || j < 4 || i + 4 >= (int)width || j + 4 >= (int)height)
@@ -165,8 +233,10 @@ void gui_canvas_init(unsigned w, unsigned h) {
   clip_x = clip_y = 0;
   clip_right = width;
   clip_bottom = height;
+  cache_valid = cursor_drawn = cursor_moved = false;
 }
 void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
+  wallpaper_revision++;
   uint32_t top = variant == 1 ? 0x17181e : variant == 2 ? 0x10222d : 0x181322;
   uint32_t bottom = variant == 1   ? 0x2e3039
                     : variant == 2 ? 0x142e42
@@ -201,7 +271,9 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
 }
 void gui_canvas_begin(void) {
   command_alpha = 255;
-  memcpy(pixels, wallpaper, width * height * 4);
+  copy_pixels(pixels, wallpaper, width * height);
+  scene_repaint = true;
+  cursor_drawn = false;
   clip_x = clip_y = 0;
   clip_right = width;
   clip_bottom = height;
@@ -470,6 +542,19 @@ void gui_canvas_commands(struct nk_context *ctx, bool glass) {
   clip_bottom = height;
 }
 void gui_canvas_cursor(int x, int y) {
+  if (cursor_drawn && cursor_x == x && cursor_y == y)
+    return;
+  if (cursor_drawn)
+    for (unsigned row = 0; row < 32 && cursor_y + row < height; row++)
+      for (unsigned col = 0; col < 32 && cursor_x + col < width; col++)
+        pixels[(cursor_y + row) * width + cursor_x + col] =
+            cursor_under[row * 32 + col];
+  cursor_x = x;
+  cursor_y = y;
+  for (unsigned row = 0; row < 32 && y + row < height; row++)
+    for (unsigned col = 0; col < 32 && x + col < width; col++)
+      cursor_under[row * 32 + col] = pixels[(y + row) * width + x + col];
+  cursor_drawn = cursor_moved = true;
   struct nk_vec2i border[7] = {
       {x, y},           {x + 1, y + 23},  {x + 7, y + 17}, {x + 12, y + 27},
       {x + 16, y + 25}, {x + 11, y + 15}, {x + 20, y + 14}};
@@ -479,7 +564,18 @@ void gui_canvas_cursor(int x, int y) {
       {x + 14, y + 23}, {x + 9, y + 12}, {x + 15, y + 12}};
   polygon(inside, 7, nk_rgb(250, 250, 255));
 }
-void gui_canvas_present(void) { graphics_present(pixels, width, height); }
+void gui_canvas_present(void) {
+  if (scene_repaint)
+    graphics_present(pixels, width, height);
+  else if (cursor_moved) {
+    graphics_present_region(pixels, width, height, presented_x, presented_y, 32,
+                            32);
+    graphics_present_region(pixels, width, height, cursor_x, cursor_y, 32, 32);
+  }
+  presented_x = cursor_x;
+  presented_y = cursor_y;
+  scene_repaint = cursor_moved = false;
+}
 void gui_canvas_icon(struct nk_command_buffer *b, struct nk_rect r,
                      unsigned kind, struct nk_color c) {
   float x = r.x + (r.w - 24) / 2, y = r.y + (r.h - 24) / 2;

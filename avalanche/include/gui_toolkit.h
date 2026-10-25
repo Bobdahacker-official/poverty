@@ -4,6 +4,7 @@
 void gui_toolkit_assert(const char *, const char *, unsigned);
 #define NK_INCLUDE_FIXED_TYPES
 #define NK_INCLUDE_COMMAND_USERDATA
+#define NK_ZERO_COMMAND_MEMORY
 #define NK_MEMCPY memcpy
 #define NK_MEMSET memset
 #define NK_ASSERT(expr)                                                        \

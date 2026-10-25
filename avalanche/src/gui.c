@@ -1597,7 +1597,7 @@ int gui_run(void) {
   open_app(SETTINGS);
   notification_until = 0;
   console_write("Magenta graphical desktop ready\n");
-  uint32_t last_frame = clock_ticks() - 4;
+  uint32_t last_frame = clock_ticks() - 2;
   last_status = last_save = clock_ticks();
   while (running) {
     for (unsigned i = 0; i < 64; i++)
@@ -1610,11 +1610,10 @@ int gui_run(void) {
       update_status();
       last_status = clock_ticks();
     }
-    if ((uint32_t)(clock_ticks() - last_frame) >= 4) {
+    if ((uint32_t)(clock_ticks() - last_frame) >= 2) {
       inputs();
       if (theme_dirty)
         style();
-      gui_canvas_begin();
       nk_set_user_data(&ui, nk_handle_id(0));
       top_panel();
       for (unsigned i = 0; i < APP_COUNT; i++)
@@ -1636,9 +1635,6 @@ int gui_run(void) {
         escape_requested = false;
       }
       modal_dialogs();
-      for (unsigned i = 0; i < APP_COUNT; i++)
-        if (apps[i].visible && !nk_window_is_collapsed(&ui, app_names[i]))
-          gui_canvas_shadow(apps[i].bounds);
       if (focus_request >= 0) {
         nk_window_set_focus(&ui, app_names[focus_request]);
         focus_request = -1;
@@ -1647,7 +1643,13 @@ int gui_run(void) {
         save_editor();
         save_requested = false;
       }
-      gui_canvas_commands(&ui, preferences.blur);
+      if (gui_canvas_changed(&ui, preferences.blur)) {
+        gui_canvas_begin();
+        for (unsigned i = 0; i < APP_COUNT; i++)
+          if (apps[i].visible && !nk_window_is_collapsed(&ui, app_names[i]))
+            gui_canvas_shadow(apps[i].bounds);
+        gui_canvas_commands(&ui, preferences.blur);
+      }
       int x, y;
       uint8_t buttons;
       mouse_state(&x, &y, &buttons);
