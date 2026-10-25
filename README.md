@@ -1,20 +1,36 @@
 # Magenta
 
-**Magenta 0.1** is a small text-based distribution built on [Avalanche Kernel](avalanche/). Its interface is a native C userspace program with numbered menus and magenta headings, backed by kernel system calls.
+**Magenta 0.1** is a small, text-based operating system distribution powered by [Avalanche Kernel](avalanche/). It includes a native userspace interface, bundled applications, a BIOS/UEFI boot image, and a separate writable data disk.
+
+The interface uses numbered menus, keyboard input, and magenta headings. File operations, process management, networking, and system information use implemented kernel services.
 
 The Magenta program, extended kernel, BIOS/UEFI ISO and writable data image have been compiled and packaged. **Magenta has not been booted or runtime-tested**, following the request to omit testing. Earlier Avalanche test results do not establish that these new images work at runtime.
 
 ## Downloads
 
-- [Magenta BIOS/UEFI ISO](magenta/images/magenta.iso) — boot media with a default Magenta entry and a separate rescue-console entry.
-- [Magenta writable data disk](magenta/images/magenta-data.img) — bundled applications and the `welcome` file in an Avalanche filesystem.
+- [Download Magenta BIOS/UEFI ISO](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/magenta/images/magenta.iso) — boot media with a default Magenta entry and a separate rescue-console entry.
+- [Download Magenta writable data disk](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/magenta/images/magenta-data.img) — bundled applications and the `welcome` file in an Avalanche filesystem.
 - [Distribution notes](magenta/images/NOTICE) — validation status, limits and licensing.
 
 The ISO is read-only boot media. Attach the separate writable data disk for persistent files. Without a recognized disk, the interface uses RAM storage and identifies it as temporary.
 
 ## Interface
 
-Choose a numbered option and press Enter:
+The default boot entry is configured to start Magenta automatically. Choose a numbered option and press Enter:
+
+```text
+MAGENTA 0.1 | Home
+
+1  Files       Read, create, edit and delete
+2  Programs    Run applications
+3  Processes   View and manage tasks
+4  Network     Configure and connect
+5  System      Devices, memory and uptime
+6  Shell       Open a command prompt
+0  Power       Restart, halt or rescue
+
+Magenta>
+```
 
 | Screen | Implemented actions |
 | --- | --- |
@@ -26,19 +42,49 @@ Choose a numbered option and press Enter:
 | Shell | Open the userspace shell; `exit` returns to Magenta. |
 | Power | Confirm restart, halt or exit to the rescue console. |
 
-The text editor accepts ASCII text, up to 511 characters per entered line and 64 KiB per file. `.save` writes changes; `.cancel` discards them. The interface rejects binary files for editing. Network configuration lasts for the session.
+The text editor accepts ASCII text, up to 511 characters per entered line and 64 KiB per file. `.save` writes changes; `.cancel` discards them. The interface rejects binary files for editing; its reader shows a bounded hexadecimal view instead. Prefix a command with another dot to insert it literally, such as `..save`. Network configuration lasts for the session.
+
+## Bundled applications
+
+| Program | Purpose |
+| --- | --- |
+| `magenta` | The text-based distribution interface. |
+| `ush` | Interactive shell; type `help` for its commands. |
+| `hello` | Display arguments and uptime ticks. |
+| `cat` | Read a file supplied as an argument. |
+| `udp` | Send a message to an IPv4 address and UDP port. |
+| `http` | Fetch an HTTP resource on port 80. |
+| `worker` | CPU-bound background application. |
+| `linuxhello` | Exercise the supported Linux i386 file, memory and TLS APIs. |
+| `linuxfork` | Demonstrate Linux-style fork, wait and private process memory. |
+
+The data disk also contains a `welcome` text file. Foreground programs return to Magenta when they exit. Background jobs can be viewed in Processes; wait for completed children to reclaim their process slots.
 
 ## Implementation and builds
 
 [Magenta's interface](avalanche/user/magenta.c) runs in ring 3. Hardware access, storage, process isolation and networking remain in the kernel. The default boot entry passes `--magenta`; the kernel then launches the interface. The Magenta executable is also embedded as a fallback when no data disk is attached.
 
-`make -C magenta` builds the distribution under `avalanche/build/`. `make -C magenta package` publishes local build artifacts into `magenta/images/`, creating a fresh release data disk. Existing writable disks under `avalanche/build/` are preserved by ordinary builds.
+Build the distribution:
+
+```sh
+make -C magenta
+```
+
+Outputs are `avalanche/build/magenta.iso` and `avalanche/build/magenta-data.img`. Ordinary builds retain an existing writable data image, including any files already saved in it.
+
+Package fresh distribution artifacts:
+
+```sh
+make -C magenta package
+```
+
+This replaces the release artifacts in `magenta/images/` and creates a fresh release data disk from the bundled applications and welcome file. It does not refresh applications inside an existing working data disk.
 
 Build prerequisites are GCC/binutils with freestanding i386 support, GNU Make, Python 3, GRUB BIOS and x86-64 EFI modules, xorriso and mtools. `GRUB_LIB` can select an alternative GRUB module directory.
 
 ## Scope
 
-Avalanche supports up to eight isolated user processes and a limited static Linux i386 ABI subset. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. The filesystem has 32 flat files, each limited to 64 KiB.
+Avalanche supports up to eight isolated user processes and a limited static Linux i386 ABI subset. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. The filesystem has 32 flat files, each limited to 64 KiB. The kernel is 32-bit x86; its UEFI loader targets x86-64 firmware. Secure Boot signatures are not included.
 
 Magenta is an early development distribution. General Linux application compatibility, dynamic linking, USB, NVMe, Wi-Fi, HTTPS and a graphical desktop are not provided. See [Avalanche's capability notes](avalanche/images/NOTICE) for the underlying kernel's limits and earlier validation results.
 
