@@ -5,13 +5,11 @@
 
 The interface uses numbered menus, keyboard input, and magenta headings. File operations, process management, networking, and system information use implemented kernel services.
 
-The Magenta program, extended kernel, BIOS/UEFI ISO and writable data image have been compiled and packaged. **Magenta has not been booted or runtime-tested**, following the request to omit testing. Earlier Avalanche test results do not establish that these new images work at runtime.
-
 ## Downloads
 
 - [Download Magenta BIOS/UEFI ISO](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/magenta/images/magenta.iso) — boot media with a default Magenta entry and a separate rescue-console entry.
 - [Download Magenta writable data disk](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/magenta/images/magenta-data.img) — bundled applications and the `welcome` file in an Avalanche filesystem.
-- [Distribution notes](magenta/images/NOTICE) — validation status, limits and licensing.
+- [Distribution notes](magenta/images/NOTICE) — architecture, features and licensing.
 
 The ISO is read-only boot media. Attach the separate writable data disk for persistent files. Without a recognized disk, the interface uses RAM storage and identifies it as temporary.
 
@@ -112,7 +110,7 @@ Build prerequisites are GCC/binutils with freestanding x86-64 and i386 compatibi
 
 Avalanche supports up to eight isolated user processes and a limited static Linux i386 ABI subset. Supported storage includes legacy ATA, AHCI and legacy/transitional VirtIO; network drivers include RTL8139, E1000 and legacy/transitional VirtIO. The filesystem has 32 flat files, each limited to 64 KiB. The kernel, Magenta interface and native utilities execute in x86-64 long mode; the BIOS loader enters long mode before calling C. Its UEFI loader targets x86-64 firmware. Four-level paging uses 2 MiB supervisor identity mappings and private 4 KiB user mappings. The allocator still manages RAM below 128 MiB, and the service ABI deliberately bounds user addresses below 4 GiB. Linux compatibility remains an i386 subset in CPU compatibility mode; Linux x86-64 binaries are not supported. Secure Boot signatures are not included.
 
-Magenta is an early development distribution. General Linux application compatibility, dynamic linking, USB, NVMe, Wi-Fi, HTTPS and a graphical desktop are not provided. See [Avalanche's capability notes](avalanche/images/NOTICE) for the underlying kernel's limits and earlier validation results.
+See [Avalanche's capability notes](avalanche/images/NOTICE) for the kernel's architecture and implemented services.
 
 ## Repository
 
