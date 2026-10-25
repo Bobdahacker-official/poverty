@@ -308,6 +308,34 @@ static const char keys[128] = {
     [38] = 'l', [39] = ';',  [40] = '\'', [41] = '`',  [43] = '\\', [44] = 'z',
     [45] = 'x', [46] = 'c',  [47] = 'v',  [48] = 'b',  [49] = 'n',  [50] = 'm',
     [51] = ',', [52] = '.',  [53] = '/',  [57] = ' '};
+static uint8_t keyboard_queue[512];
+static unsigned keyboard_head, keyboard_count;
+void console_keyboard_poll(void) {
+  if ((inb(0x64) & 0x21) != 1)
+    return;
+  uint8_t scancode = inb(0x60);
+  if (keyboard_count < sizeof(keyboard_queue)) {
+    keyboard_queue[(keyboard_head + keyboard_count) % sizeof(keyboard_queue)] = scancode;
+    keyboard_count++;
+  }
+}
+static bool keyboard_scancode(uint8_t *scancode) {
+  uintptr_t flags;
+  __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags)::"memory");
+  bool present = false;
+  if (keyboard_count) {
+    *scancode = keyboard_queue[keyboard_head];
+    keyboard_head = (keyboard_head + 1) % sizeof(keyboard_queue);
+    keyboard_count--;
+    present = true;
+  } else if ((inb(0x64) & 0x21) == 1) {
+    *scancode = inb(0x60);
+    present = true;
+  }
+  if (flags & (1u << 9))
+    __asm__ volatile("sti" ::: "memory");
+  return present;
+}
 char console_getchar(void) {
   static bool left_shift, right_shift, left_ctrl, right_ctrl, caps, extended;
   for (;;) {
@@ -319,15 +347,11 @@ char console_getchar(void) {
         return '\b';
       return c;
     }
-    if (!(inb(0x64) & 1)) {
-      return 0;
-    }
-    uint8_t status = inb(0x64);
-    if (status & 0x20) {
+    uint8_t s;
+    if (!keyboard_scancode(&s)) {
       devices_poll();
       return 0;
     }
-    uint8_t s = inb(0x60);
     if (s == 0xe0) {
       extended = true;
       continue;

@@ -38,6 +38,7 @@ void print_uint(uint32_t n);
 void print_hex(uint32_t n);
 char console_input(void);
 char console_getchar(void);
+void console_keyboard_poll(void);
 void console_clear(void);
 void console_color(uint32_t);
 void kernel_status(struct av_status *);

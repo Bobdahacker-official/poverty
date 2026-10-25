@@ -1,0 +1,54 @@
+#magenta-mobile-toolbar {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: max(8px, env(safe-area-inset-left));
+    bottom: 8px;
+    max-width: calc(100% - 16px);
+    padding: 6px;
+    gap: 6px;
+    flex-direction: column;
+    align-items: stretch;
+    box-sizing: border-box;
+    border: 1px solid #575169;
+    border-radius: 12px;
+    background: #211b2e;
+    box-shadow: 0 4px 16px #0006;
+    color: #fff;
+    font: 14px system-ui, sans-serif;
+}
+.noVNC_connected #magenta-mobile-toolbar {
+    display: flex;
+}
+#magenta-mobile-toolbar.keyboard-open {
+    width: min(600px, calc(100% - 16px));
+}
+#magenta-mobile-keys {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+}
+#magenta-mobile-keys[hidden] {
+    display: none;
+}
+#magenta-mobile-toolbar button {
+    flex-shrink: 0;
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+    padding: 8px;
+    border: 1px solid #625873;
+    border-radius: 8px;
+    background: #373044;
+    color: #fff;
+    font: inherit;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+#magenta-mobile-toolbar button[aria-pressed="true"] {
+    border-color: #ff7abc;
+    background: #ba0066;
+}
+#noVNC_keyboardinput {
+    font-size: 16px;
+}

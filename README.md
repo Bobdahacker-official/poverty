@@ -42,6 +42,8 @@ To boot Magenta through a browser, [open this repository in GitHub Codespaces](h
 
 The launcher selects KVM when available and otherwise uses QEMU's software emulator. The desktop caches unchanged drawing commands and updates the cursor separately. noVNC uses lossless compressed updates, fits smaller screens, and keeps the desktop at its native size on larger screens. An absolute virtual pointer maps touch coordinates directly to the desktop; physical machines retain PS/2 input. Minimize, maximize/restore, and close controls share 36-pixel square hit areas. After pulling an update, run `bash tools/boot-browser.sh --restart` to boot the new image with the existing writable disk.
 
+Tap **Keyboard** in the viewer to open your phone or tablet keyboard. Tap a text field in Magenta to type there; the viewer keeps the keyboard open. Its toolbar also provides Enter, Backspace, Tab, Esc, arrows, and toggleable Ctrl/Alt keys. **Hide keyboard** dismisses it. `bash tools/boot-browser.sh --restart-vnc` restarts only the browser viewer and keeps the OS and applications running; `--restart` restarts both the viewer and the VM.
+
 Copy.sh's v86 emulator does not implement x86-64 long mode and cannot run these new 64-bit images. The [browser page](copy.sh.html) explains this limitation and links to the downloads. Use VirtualBox with a 64-bit VM type, or QEMU's `qemu-system-x86_64`. The old 32-bit images have been replaced; the repository does not present them as the 64-bit build.
 
 ## Interface

@@ -16,12 +16,14 @@ for asset in vnc.html app core vendor defaults.json mandatory.json; do
     cp -RL "$novnc_web/$asset" "$runtime/web/"
   fi
 done
+cp "$repo_root/tools/novnc-mobile.js" "$runtime/web/magenta-mobile.js"
+cp "$repo_root/tools/novnc-mobile.css" "$runtime/web/magenta-mobile.css"
 python3 - "$runtime/web/vnc.html" <<'PY'
 from pathlib import Path
 import sys
 page = Path(sys.argv[1])
 content = page.read_text()
-style = '<style>#noVNC_container{max-width:1024px;max-height:768px;margin:auto}#noVNC_container canvas{image-rendering:auto}</style>'
+style = '<style>#noVNC_container{max-width:1024px;max-height:768px;margin:auto}#noVNC_container canvas{image-rendering:auto}</style><link rel="stylesheet" href="magenta-mobile.css"><script type="module" src="magenta-mobile.js"></script>'
 page.write_text(content.replace('</head>', style + '</head>', 1))
 PY
 cat > "$runtime/web/index.html" <<'HTML'
@@ -36,24 +38,44 @@ cat > "$runtime/web/index.html" <<'HTML'
 HTML
 
 running() {
-  test -f "$1" || return 1
   local process_id
-  process_id=$(cat "$1")
+  process_id=$(cat "$1" 2>/dev/null) || return 1
   kill -0 "$process_id" 2>/dev/null || return 1
   [[ $(ps -p "$process_id" -o stat=) != Z* ]]
 }
 
-if [[ ${1:-} == --restart ]] && running "$runtime/qemu.pid"; then
-  kill "$(cat "$runtime/qemu.pid")"
+stop_service() {
+  local pid_file=$1 process_id
+  running "$pid_file" || return 0
+  process_id=$(cat "$pid_file" 2>/dev/null) || return 0
+  if [[ $(ps -p "$process_id" -o pgid= | tr -d ' ') == "$process_id" ]]; then
+    kill -- "-$process_id"
+  else
+    pkill -TERM -P "$process_id" 2>/dev/null || true
+    kill "$process_id"
+  fi
   for attempt in {1..50}; do
-    running "$runtime/qemu.pid" || break
+    running "$pid_file" || break
     sleep 0.1
   done
-  if running "$runtime/qemu.pid"; then
-    printf 'The previous VM is still shutting down. Run the launcher again.\n' >&2
+  if running "$pid_file"; then
+    printf 'The previous service is still shutting down. Run the launcher again.\n' >&2
     exit 1
   fi
-fi
+  rm -f "$pid_file"
+}
+
+case ${1:-} in
+  --restart)
+    stop_service "$runtime/websockify.pid"
+    stop_service "$runtime/qemu.pid"
+    ;;
+  --restart-vnc)
+    stop_service "$runtime/websockify.pid"
+    ;;
+  '') ;;
+  *) printf 'Usage: %s [--restart | --restart-vnc]\n' "$0" >&2; exit 2 ;;
+esac
 
 if ! running "$runtime/qemu.pid"; then
   if ! test -f "$runtime/data.img"; then
@@ -73,7 +95,7 @@ if ! running "$runtime/qemu.pid"; then
 fi
 
 if ! running "$runtime/websockify.pid"; then
-  nohup "$proxy" --web="$runtime/web" 127.0.0.1:6080 127.0.0.1:5901 \
+  nohup setsid "$proxy" --web="$runtime/web" 127.0.0.1:6080 127.0.0.1:5901 \
     > "$runtime/websockify.log" 2>&1 < /dev/null &
   echo "$!" > "$runtime/websockify.pid"
 fi

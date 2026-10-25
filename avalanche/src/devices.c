@@ -374,8 +374,12 @@ void devices_poll(void) {
 }
 void devices_tick(void) {
   if (mouse_irq_poll)
-    for (unsigned i = 0; i < 8; i++)
-      mouse_poll();
+    for (unsigned i = 0; i < 32; i++) {
+      if (io_in8(0x64) & 0x20)
+        mouse_poll();
+      else
+        console_keyboard_poll();
+    }
 }
 void mouse_print(void) {
   if (!mouse_ready) {
