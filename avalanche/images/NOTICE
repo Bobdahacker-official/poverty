@@ -1,13 +1,34 @@
-Avalanche Kernel source and avalanche.elf are under ../LICENSE (MIT).
+Avalanche Kernel 0.2.0 source, user applications, avalanche.elf and the
+Avalanche filesystem image are covered by ../LICENSE (MIT).
+
 avalanche.iso additionally contains unmodified GNU GRUB 2.12-9+deb13u2
-binaries from Debian, distributed under their respective licenses in
+binaries from Debian, distributed under the respective licenses in
 GRUB-COPYRIGHT. Corresponding upstream source and Debian patches/build
 rules are included in grub-source/. GRUB is a separate bootloader, not
-part of the Avalanche kernel. The kernel MIT license does not relicense GRUB.
+part of the Avalanche kernel. The MIT license does not relicense GRUB.
 
-This is an early x86 32-bit kernel, not a Linux-compatible distribution.
-The ISO includes BIOS and x86-64 UEFI bootloaders; Secure Boot signatures
-are not provided. Console input supports PS/2 and COM1 serial, not native
-USB. Files are volatile RAM files. There is no userspace, scheduler,
-persistent disk filesystem, network stack, or package manager.
-Images were compiled but have not been boot-tested.
+Implemented: x86 ring-3 static ELF32 execution; supervisor/user paging;
+checked int 0x80 system calls; user fault termination and CPU budget;
+userspace shell, hello, cat, UDP and HTTP programs; PIT and PIC; PCI;
+legacy ATA and AHCI SATA; checksummed copy-on-write Avalanche FS v2;
+RTL8139 and E1000 Ethernet; ARP, IPv4, ICMP, UDP, DHCP, DNS, and an
+active-open TCP stream with an HTTP/1.0 client; PS/2 keyboard/mouse;
+COM1 serial, CMOS RTC, PC speaker, and RGB framebuffer console.
+
+Limits: one user process and one TCP connection at a time. No POSIX or
+Linux ABI, multiprocess scheduler, dynamic linker, TCP listener, TLS,
+IPv6, IP fragmentation/reassembly, native USB, NVMe, Wi-Fi, audio mixer,
+or GPU acceleration. DHCP leases require manual renewal. TCP uses
+in-order receive, stop-and-wait sending and bounded retries; it does not
+implement SACK, window scaling, congestion control or a TIME_WAIT table.
+FS v2 has a flat namespace, 32 files of at most 64 KiB each, and requires
+its own MBR partition type 0x7f. Without a recognized disk, files use RAM.
+AHCI uses the first discovered controller and at most eight SATA ports.
+Storage drivers require 512-byte logical sectors.
+The page allocator manages usable RAM below 128 MiB. An x86 CPU with PSE
+is required. The kernel is 32-bit; the UEFI loader targets x86-64 firmware.
+Secure Boot signatures are not supplied. These are development images,
+not a complete general-purpose distribution.
+
+The ISO, kernel, user programs and data disk were built. No boot, runtime,
+network, storage or automated tests were run at the user's request.

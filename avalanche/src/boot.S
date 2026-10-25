@@ -58,7 +58,7 @@ exception_\num:
  pushl $0
  .endif
  pushl $\num
- jmp exception_common
+ jmp trap_common
 .endm
 EXCEPTION 0
 EXCEPTION 1
@@ -92,17 +92,6 @@ EXCEPTION 28
 EXCEPTION 29,1
 EXCEPTION 30,1
 EXCEPTION 31
-exception_common:
- cld
- pushal
- mov %esp,%eax
- and $-16,%esp
- sub $12,%esp
- push %eax
- call exception_panic
- cli
-2: hlt
- jmp 2b
 .section .rodata
 .global exception_table
 exception_table:
