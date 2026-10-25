@@ -33,6 +33,12 @@ VBoxManage startvm Magenta
 
 The data disk is where saved files live. Keep its generated `magenta-data.vdi` when upgrading the ISO; replacing it starts a fresh installation.
 
+## Browser emulator (Copy.sh)
+
+[Launch Magenta in Copy.sh](copy.sh.html) to boot the distribution in the browser through Copy.sh's v86 emulator. The page loads the project ISO and data image, uses the emulator's VirtIO network adapter, and needs no local installation. Click the display after it starts to direct keyboard input to Magenta.
+
+The packaged data disk is read-only to the browser. Changes made in this emulator are retained only for its current browser session; use the VirtualBox data disk for persistent saved files.
+
 ## Interface
 
 The default boot entry is configured to start Magenta automatically. Choose a numbered option and press Enter:
