@@ -40,6 +40,8 @@ int main(void) {
       puts_u("\n");
     } else if (ueq(cmd, "ls"))
       av_call(AV_FILE_LIST, 0, 0, 0, 0);
+    else if (ueq(cmd, "pkg"))
+      av_call(AV_PACKAGE, (uintptr_t)rest, 0, 0, 0);
     else if (ueq(cmd, "cat")) {
       char *name = word_u(&rest);
       int n = read_u(name, data, 65536);
@@ -89,7 +91,15 @@ int main(void) {
         puts_u(data);
         puts_u("\n");
       }
-    } else
-      puts_u("Unknown command.\n");
+    } else {
+      const char *program = cmd;
+      if (ueq(cmd, "run"))
+        program = word_u(&rest);
+      int pid = av_call(AV_SPAWN, (uintptr_t)program, (uintptr_t)rest, 1, 0);
+      if (pid < 0)
+        puts_u("Unknown command or executable.\n");
+      else if (av_call(AV_WAIT, pid, 0, 0, 0) < 0)
+        puts_u("Wait failed.\n");
+    }
   }
 }

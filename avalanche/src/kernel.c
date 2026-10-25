@@ -226,6 +226,16 @@ static void newline(void) {
 }
 static char *capture_buffer;
 static unsigned capture_size, capture_used;
+static void (*console_observer)(char);
+static int gui_key;
+void graphics_console_capture(void (*observer)(char)) {
+  console_observer = observer;
+}
+int graphics_key_event(void) {
+  int key = gui_key;
+  gui_key = 0;
+  return key;
+}
 void console_putc(char c) {
   if (capture_buffer) {
     if (capture_used + 1 < capture_size) {
@@ -240,6 +250,10 @@ void console_putc(char c) {
     if (c == '\n')
       outb(0x3f8, '\r');
     outb(0x3f8, (uint8_t)c);
+  }
+  if (console_observer) {
+    console_observer(c);
+    return;
   }
   if (c == '\n') {
     newline();
@@ -308,15 +322,22 @@ char console_getchar(void) {
     if (!(inb(0x64) & 1)) {
       return 0;
     }
-    uint8_t status = inb(0x64), s = inb(0x60);
-    if (status & 0x20)
-      continue;
+    uint8_t status = inb(0x64);
+    if (status & 0x20) {
+      devices_poll();
+      return 0;
+    }
+    uint8_t s = inb(0x60);
     if (s == 0xe0) {
       extended = true;
       continue;
     }
     if (extended) {
       extended = false;
+      if (console_observer && !(s & 128) &&
+          (s == 0x4b || s == 0x4d || s == 0x48 || s == 0x50 || s == 0x47 ||
+           s == 0x4f || s == 0x53))
+        gui_key = s;
       if (s == 29 || s == 157)
         right_ctrl = s == 29;
       continue;

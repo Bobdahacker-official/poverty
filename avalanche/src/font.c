@@ -1,6 +1,11 @@
 #include "font.h"
 extern const uint8_t font_start[], font_end[];
-static uint8_t atlas[95][12 * 18];
+static uint8_t atlas[95][FONT_WIDTH * FONT_HEIGHT];
+static uint8_t large_atlas[95][27 * 30];
+static unsigned metric_units[95];
+static int raster_size = 16, raster_width = FONT_WIDTH,
+           raster_height = FONT_HEIGHT;
+static unsigned advances[95];
 static uint32_t glyf, loca, cmap;
 static unsigned units, glyphs;
 static bool long_offsets, ready;
@@ -62,9 +67,11 @@ static unsigned glyph_for(unsigned code) {
 static bool line(struct point a, struct point b) {
   if (edge_count == sizeof(edges) / sizeof(edges[0]))
     return false;
-  edges[edge_count++] = (struct edge){
-      a.x * 16 * 64 / (int)units + 32, 14 * 64 - a.y * 16 * 64 / (int)units,
-      b.x * 16 * 64 / (int)units + 32, 14 * 64 - b.y * 16 * 64 / (int)units};
+  edges[edge_count++] =
+      (struct edge){a.x * raster_size * 64 / (int)units + raster_size * 2,
+                    56 * raster_size - a.y * raster_size * 64 / (int)units,
+                    b.x * raster_size * 64 / (int)units + raster_size * 2,
+                    56 * raster_size - b.y * raster_size * 64 / (int)units};
   return true;
 }
 static bool outline(unsigned glyph) {
@@ -193,11 +200,11 @@ static bool outline(unsigned glyph) {
   return true;
 }
 static void raster(uint8_t *pixels) {
-  memset(pixels, 0, 12 * 18);
-  for (int y = 0; y < 18; y++)
+  memset(pixels, 0, raster_width * raster_height);
+  for (int y = 0; y < raster_height; y++)
     for (int sample_y = 0; sample_y < 4; sample_y++) {
       int scan = y * 64 + sample_y * 16 + 8;
-      for (int x = 0; x < 12; x++)
+      for (int x = 0; x < raster_width; x++)
         for (int sample_x = 0; sample_x < 4; sample_x++) {
           int scan_x = x * 64 + sample_x * 16 + 8, winding = 0;
           for (unsigned i = 0; i < edge_count; i++) {
@@ -211,18 +218,27 @@ static void raster(uint8_t *pixels) {
             }
           }
           if (winding)
-            pixels[y * 12 + x]++;
+            pixels[y * raster_width + x]++;
         }
     }
-  for (unsigned i = 0; i < 12 * 18; i++)
+  for (int i = 0; i < raster_width * raster_height; i++)
     pixels[i] = pixels[i] * 255 / 16;
 }
 bool font_init(void) {
   if (ready)
     return true;
+  raster_size = 16;
+  raster_width = FONT_WIDTH;
+  raster_height = FONT_HEIGHT;
   if (!range(0, 12) || read32(font_start) != 0x10000)
     return false;
   uint32_t head = table("head"), maxp = table("maxp"), mapping = table("cmap");
+  uint32_t hhea = table("hhea"), metrics = table("hmtx");
+  if (!hhea || !metrics || !range(hhea, 36))
+    return false;
+  unsigned metric_count = read16(font_start + hhea + 34);
+  if (!metric_count || !range(metrics, (uint64_t)metric_count * 4))
+    return false;
   glyf = table("glyf");
   loca = table("loca");
   if (!head || !maxp || !mapping || !glyf || !loca || !range(head, 54) ||
@@ -252,14 +268,51 @@ bool font_init(void) {
   if (!cmap)
     return false;
   for (unsigned c = 32; c < 127; c++) {
+    unsigned glyph = glyph_for(c);
+    unsigned metric = glyph < metric_count ? glyph : metric_count - 1;
+    metric_units[c - 32] = read16(font_start + metrics + metric * 4);
+    advances[c - 32] =
+        (read16(font_start + metrics + metric * 4) * 16 + units / 2) / units;
+    if (!advances[c - 32])
+      advances[c - 32] = 1;
+    edge_count = 0;
+    if (!outline(glyph))
+      return false;
+    raster(atlas[c - 32]);
+  }
+  raster_size = 24;
+  raster_width = 27;
+  raster_height = 30;
+  for (unsigned c = 32; c < 127; c++) {
     edge_count = 0;
     if (!outline(glyph_for(c)))
       return false;
-    raster(atlas[c - 32]);
+    raster(large_atlas[c - 32]);
   }
   ready = true;
   return true;
 }
 const uint8_t *font_character(char c) {
   return ready && c >= 32 && c < 127 ? atlas[(unsigned)c - 32] : NULL;
+}
+unsigned font_advance(char c) {
+  return ready && c >= 32 && c < 127 ? advances[(unsigned)c - 32] : 8;
+}
+const uint8_t *font_scaled(char c, unsigned size, unsigned *width,
+                           unsigned *height) {
+  if (size >= 20) {
+    *width = 27;
+    *height = 30;
+    return ready && c >= 32 && c < 127 ? large_atlas[(unsigned)c - 32] : NULL;
+  }
+  *width = FONT_WIDTH;
+  *height = FONT_HEIGHT;
+  return font_character(c);
+}
+unsigned font_scaled_advance(char c, unsigned size) {
+  if (!ready || c < 32 || c >= 127)
+    return size / 2;
+  if (size == 16)
+    return advances[(unsigned)c - 32];
+  return (metric_units[(unsigned)c - 32] * size + units / 2) / units;
 }

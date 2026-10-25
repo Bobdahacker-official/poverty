@@ -60,8 +60,8 @@ class Machine:
         self.folder = folder
         self.logfile = folder / f'serial-{len(list(folder.glob("serial-*.log")))}.log'
 
-    def until(self, needle):
-        deadline = time.monotonic()+45
+    def until(self, needle, timeout=45):
+        deadline = time.monotonic()+timeout
         while needle not in self.pending:
             if time.monotonic() >= deadline:
                 raise RuntimeError(f'timed out waiting for {needle!r}: {self.pending[-2000:]!r}')

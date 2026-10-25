@@ -1,5 +1,6 @@
 #include "abi.h"
 #include "ext4.h"
+#include "package.h"
 #include "process.h"
 static uint64_t kernel_root[512] __attribute__((aligned(4096)));
 static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
@@ -794,6 +795,35 @@ void user_yield_kernel(void) {
 }
 static char tty[256];
 static unsigned tty_head, tty_count;
+static bool external_tty;
+void user_tty_external(bool enabled) {
+  external_tty = enabled;
+  tty_head = tty_count = 0;
+}
+void user_tty_input(char c) {
+  if (c == 3 || c == 28) {
+    for (unsigned i = 0; i < PROCESS_MAX; i++)
+      if (tasks[i].foreground && tasks[i].state != TASK_EMPTY &&
+          tasks[i].state != TASK_ZOMBIE)
+        process_exit(&tasks[i], c == 3 ? 130 : 131, c == 3 ? 2 : 3);
+    tty_head = tty_count = 0;
+    console_write(c == 3 ? "^C\n" : "^\\\n");
+    return;
+  }
+  if (tty_count < sizeof(tty)) {
+    tty[(tty_head + tty_count) % sizeof(tty)] = c;
+    tty_count++;
+  }
+}
+bool user_task_info(unsigned index, struct task_info *out) {
+  if (index >= PROCESS_MAX || tasks[index].state == TASK_EMPTY)
+    return false;
+  struct process *t = &tasks[index];
+  *out = (struct task_info){t->pid,   t->parent,    t->state, t->priority,
+                            t->pages, t->cpu_ticks, {0}};
+  memcpy(out->name, t->name, sizeof(out->name));
+  return true;
+}
 void user_poll(void) {
   if (tcp_cleanup) {
     net_tcp_close();
@@ -808,22 +838,13 @@ void user_poll(void) {
       foreground = true;
   if (!foreground)
     return;
-  for (unsigned k = 0; k < 64; k++) {
+  for (unsigned k = 0; !external_tty && k < 64; k++) {
     char c = console_getchar();
     if (!c)
       break;
-    if (c == 3 || c == 28) {
-      for (unsigned i = 0; i < PROCESS_MAX; i++)
-        if (tasks[i].foreground)
-          process_exit(&tasks[i], c == 3 ? 130 : 131, c == 3 ? 2 : 3);
-      tty_head = tty_count = 0;
-      console_write(c == 3 ? "^C\n" : "^\\\n");
+    user_tty_input(c);
+    if (c == 3 || c == 28)
       return;
-    }
-    if (tty_count < sizeof(tty)) {
-      tty[(tty_head + tty_count) % sizeof(tty)] = c;
-      tty_count++;
-    }
   }
   for (unsigned i = 0; i < PROCESS_MAX && tty_count; i++) {
     struct process *t = &tasks[i];
@@ -1045,6 +1066,14 @@ void user_syscall(struct trap_frame *f) {
   char name[32];
   int result = -1;
   switch (f->eax) {
+  case AV_PACKAGE: {
+    char arguments[512];
+    if (user_string(f->ebx, arguments, sizeof(arguments))) {
+      package_command(arguments);
+      result = 0;
+    }
+    break;
+  }
   case AV_EXIT:
     process_exit(t, (int)f->ebx, 0);
     result = 0;

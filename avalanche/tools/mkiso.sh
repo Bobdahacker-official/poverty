@@ -7,6 +7,12 @@ grub_config=${2:-boot/grub/grub.cfg}
 output=${3:-build/avalanche.iso}
 label=${4:-AVALANCHE}
 mkdir -p "$iso_root/boot/grub/i386-pc" "$iso_root/EFI/BOOT"
+mkdir -p "$iso_root/licenses"
+cp LICENSE "$iso_root/licenses/AVALANCHE-MIT.txt"
+cp assets/FONT-LICENSE "$iso_root/licenses/FONT-LICENSE.txt"
+cp vendor/nuklear/LICENSE "$iso_root/licenses/NUKLEAR-LICENSE.txt"
+cp vendor/nuklear/CATPPUCCIN-LICENSE "$iso_root/licenses/CATPPUCCIN-LICENSE.txt"
+cp images/GRUB-COPYRIGHT "$iso_root/licenses/GRUB-COPYRIGHT.txt"
 cp build/avalanche.elf "$iso_root/boot/"
 cp "$grub_config" "$iso_root/boot/grub/grub.cfg"
 cat > "$iso_root/early.cfg" <<'CFG'

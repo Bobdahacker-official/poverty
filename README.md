@@ -3,7 +3,9 @@
 
 **Magenta 0.1** is a native x86-64 operating system distribution powered by [Avalanche Kernel](avalanche/). It includes a graphical desktop, a text interface, bundled applications, a BIOS/UEFI boot image, and persistent storage.
 
-The graphical desktop uses the #E6007E magenta accent, translucent rounded windows, blurred backgrounds, shadows, glossy title bars, window fades, and notifications. Its TrueType renderer draws antialiased text from the bundled DejaVu Sans Mono font. Terminal, Files, Text editor, Tasks, Network, and Packages launch from the taskbar. File operations, process management, networking, and system information call kernel services.
+The graphical desktop uses [Nuklear](https://github.com/Immediate-Mode-UI/Nuklear), an open-source C UI toolkit, with its existing [Catppuccin](https://github.com/catppuccin/palette) themes and a #E6007E magenta accent. Its layout takes inspiration from [COSMIC](https://github.com/pop-os/cosmic-epoch): a centered dock, searchable launcher, and Appearance settings with a sidebar and theme cards. The native compositor draws translucent rounded windows, blurred backgrounds, shadows, glossy highlights, opening animations, and notifications. Antialiased DejaVu Sans text is rendered directly from TrueType outlines.
+
+Terminal, Files, Text editor, Tasks, Network, Packages, and Settings launch from the dock. Terminal runs the ring-3 shell; Files browses directories and launches executables; the editor saves documents and confirms unsaved changes. Tasks manages live processes and priorities, Network configures the adapter and runs diagnostics, and Packages installs, upgrades, removes, and downloads packages. Settings saves the palette, accent, wallpaper, transparency, blur, and pointer speed to the writable disk. Windows support dragging, resizing, minimizing, maximizing, and closing.
 
 ![Magenta desktop running in QEMU](magenta/images/desktop.png)
 
@@ -40,7 +42,7 @@ Copy.sh's v86 emulator does not implement x86-64 long mode and cannot run these 
 
 ## Interface
 
-The default entry starts the graphical desktop when a suitable framebuffer is present. Escape opens the text interface. Ctrl-T, Ctrl-F, Ctrl-E, Ctrl-K, Ctrl-N, and Ctrl-P open Terminal, Files, Text editor, Tasks, Network, and Packages. Ctrl-S saves an editor document. In the text interface, choose a numbered option and press Enter:
+The default entry starts the graphical desktop when a suitable framebuffer is present. Escape opens the text interface after confirming unsaved changes. Ctrl-T, Ctrl-F, Ctrl-E, Ctrl-K, Ctrl-N, Ctrl-P, and Ctrl-O open Terminal, Files, Text editor, Tasks, Network, Packages, and Settings. Ctrl-S saves an editor document; Ctrl-M maximizes or restores the active window. In the text interface, choose a numbered option and press Enter:
 
 ```text
 MAGENTA 0.1 | Home
@@ -126,4 +128,4 @@ See [Avalanche's capability notes](avalanche/images/NOTICE) for the kernel's arc
 
 Source is covered by [Avalanche's MIT license](avalanche/LICENSE). Bundled GRUB retains its [own licensing](avalanche/images/GRUB-COPYRIGHT), with corresponding source included in [grub-source](avalanche/images/grub-source/). The included Copy.sh v86 runtime and BIOS files retain their [BSD-2-Clause license](emulator/v86/LICENSE).
 
-The bundled DejaVu font retains its [font license](avalanche/assets/FONT-LICENSE).
+Nuklear and its bundled Catppuccin themes retain their [MIT license](avalanche/vendor/nuklear/LICENSE), alongside the [Catppuccin MIT license](avalanche/vendor/nuklear/CATPPUCCIN-LICENSE). Exact upstream revisions and file origins are recorded in [ORIGIN.md](avalanche/vendor/nuklear/ORIGIN.md). The bundled DejaVu fonts retain their [font license](avalanche/assets/FONT-LICENSE). The ISO includes these notices in `/licenses`.

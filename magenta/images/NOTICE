@@ -9,10 +9,19 @@ GRUB. Kernel capabilities are described in ../../avalanche/images/NOTICE.
 
 The ISO starts the graphical desktop on framebuffer-equipped machines,
 with a text desktop available through Escape. The graphical desktop has
-Terminal, Files, Text editor, Tasks, Network and Packages windows.
+Terminal, Files, Text editor, Tasks, Network, Packages and Settings windows.
 TrueType fonts, alpha blending, blur, shadows, rounded corners and window
 fades are rendered by the native compositor. The DejaVu font license is
 in ../../avalanche/assets/FONT-LICENSE.
+
+Widgets use the Nuklear C toolkit and its Catppuccin themes under the MIT
+licenses in ../../avalanche/vendor/nuklear/. ORIGIN.md records the upstream
+revisions. The desktop layout draws inspiration from COSMIC. Appearance
+settings persist themes, accents, wallpapers, transparency, blur and pointer
+speed. The native shell runs in Terminal; the editor protects unsaved changes.
+Windows can be moved, resized, minimized, maximized and closed. License
+notices for the toolkit, palette, fonts, kernel and bootloader are in the
+ISO's /licenses directory.
 
 The ISO boots directly into Magenta; a second boot entry opens the rescue
 console. The separate writable data image contains Magenta, the userspace

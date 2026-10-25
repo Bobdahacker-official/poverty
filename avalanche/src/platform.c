@@ -142,6 +142,7 @@ struct trap_frame *trap_dispatch(struct trap_frame *f) {
   }
   if (f->vector == 32) {
     ++ticks;
+    devices_tick();
     io_out8(0x20, 0x20);
     return user_timer(f);
   }

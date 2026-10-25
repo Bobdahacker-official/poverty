@@ -201,6 +201,31 @@ bool disk_raw_flush(unsigned n) {
 static bool mouse_ready;
 static uint8_t packet[3], packet_n;
 static int mouse_x, mouse_y;
+static volatile bool mouse_irq_poll;
+static struct mouse_event {
+  int x, y;
+  uint8_t buttons;
+} mouse_events[32];
+static unsigned mouse_event_head, mouse_event_count;
+static uint8_t mouse_gui_buttons;
+static bool mouse_release_stage;
+void mouse_interrupt_poll(bool enabled) {
+  mouse_irq_poll = false;
+  mouse_event_head = mouse_event_count = 0;
+  mouse_gui_buttons = 0;
+  mouse_release_stage = false;
+  mouse_irq_poll = enabled;
+}
+static unsigned mouse_width = 4096, mouse_height = 4096, mouse_speed = 100;
+static int mouse_x_fraction, mouse_y_fraction;
+void mouse_configure(unsigned width, unsigned height, unsigned speed) {
+  if (width)
+    mouse_width = width;
+  if (height)
+    mouse_height = height;
+  if (speed >= 25 && speed <= 250)
+    mouse_speed = speed;
+}
 static uint8_t mouse_buttons;
 static bool ps2_wait_write(void) {
   for (unsigned i = 0; i < 100000; i++)
@@ -243,14 +268,16 @@ static void mouse_init(void) {
     return;
   io_out8(0x60, cfg & ~0x22);
   mouse_ready = mouse_command(0xf6) && mouse_command(0xf4);
+  console_write(mouse_ready ? "PS/2 mouse ready\n"
+                            : "PS/2 mouse initialization failed\n");
 }
-void devices_poll(void) {
-  if (!mouse_ready)
-    return;
+static void mouse_poll(void) {
   uint8_t status = io_in8(0x64);
   if ((status & 0x21) != 0x21)
     return;
   uint8_t b = io_in8(0x60);
+  if (!mouse_ready)
+    return;
   if (!packet_n && !(b & 8))
     return;
   packet[packet_n++] = b;
@@ -260,18 +287,41 @@ void devices_poll(void) {
       return;
     int dx = (int)packet[1] - ((packet[0] & 0x10) ? 256 : 0),
         dy = (int)packet[2] - ((packet[0] & 0x20) ? 256 : 0);
-    mouse_x += dx;
-    mouse_y -= dy;
+    mouse_x_fraction += dx * (int)mouse_speed;
+    mouse_y_fraction += dy * (int)mouse_speed;
+    mouse_x += mouse_x_fraction / 100;
+    mouse_y -= mouse_y_fraction / 100;
+    mouse_x_fraction %= 100;
+    mouse_y_fraction %= 100;
     if (mouse_x < 0)
       mouse_x = 0;
     if (mouse_y < 0)
       mouse_y = 0;
-    if (mouse_x > 4095)
-      mouse_x = 4095;
-    if (mouse_y > 4095)
-      mouse_y = 4095;
-    mouse_buttons = packet[0] & 7;
+    if (mouse_x >= (int)mouse_width)
+      mouse_x = mouse_width - 1;
+    if (mouse_y >= (int)mouse_height)
+      mouse_y = mouse_height - 1;
+    uint8_t buttons = packet[0] & 7;
+    if (mouse_irq_poll && buttons != mouse_buttons) {
+      if (mouse_event_count == 32) {
+        mouse_event_head = (mouse_event_head + 1) % 32;
+        mouse_event_count--;
+      }
+      mouse_events[(mouse_event_head + mouse_event_count) % 32] =
+          (struct mouse_event){mouse_x, mouse_y, buttons};
+      mouse_event_count++;
+    }
+    mouse_buttons = buttons;
   }
+}
+void devices_poll(void) {
+  if (!mouse_irq_poll)
+    mouse_poll();
+}
+void devices_tick(void) {
+  if (mouse_irq_poll)
+    for (unsigned i = 0; i < 8; i++)
+      mouse_poll();
 }
 void mouse_print(void) {
   if (!mouse_ready) {
@@ -290,6 +340,32 @@ void mouse_state(int *x, int *y, uint8_t *buttons) {
   *x = mouse_x;
   *y = mouse_y;
   *buttons = mouse_buttons;
+}
+void mouse_input_state(int *x, int *y, uint8_t *buttons) {
+  uintptr_t flags;
+  __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags)::"memory");
+  if (mouse_event_count) {
+    struct mouse_event e = mouse_events[mouse_event_head];
+    *x = e.x;
+    *y = e.y;
+    if ((mouse_gui_buttons & ~e.buttons) && !mouse_release_stage) {
+      *buttons = mouse_gui_buttons;
+      mouse_release_stage = true;
+    } else {
+      *buttons = e.buttons;
+      mouse_gui_buttons = e.buttons;
+      mouse_event_head = (mouse_event_head + 1) % 32;
+      mouse_event_count--;
+      mouse_release_stage = false;
+    }
+  } else {
+    *x = mouse_x;
+    *y = mouse_y;
+    *buttons = mouse_buttons;
+    mouse_gui_buttons = mouse_buttons;
+  }
+  if (flags & (1u << 9))
+    __asm__ volatile("sti" ::: "memory");
 }
 static uint8_t cmos(uint8_t r) {
   io_out8(0x70, r);

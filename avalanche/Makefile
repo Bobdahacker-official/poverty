@@ -1,7 +1,7 @@
 CC = gcc
 LD = ld
 CFLAGS = -m64 -mno-red-zone -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -msoft-float -Iinclude
-SOURCES = kernel platform devices ahci fs net user linux virtio block_cache ext4 gui package sha256 font
+SOURCES = kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
 OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o
 APPS = magenta hello cat udp ush http worker linuxhello linuxfork
 APP_ELFS = $(addprefix build/user/,$(addsuffix .elf,$(APPS)))
@@ -11,11 +11,17 @@ build build/user:
 	mkdir -p $@
 build/%.o: src/%.c include/avalanche.h include/system.h include/abi.h include/process.h include/magenta.h include/ext4.h | build
 	$(CC) $(CFLAGS) -c $< -o $@
+build/gui.o: src/gui.c include/gui_canvas.h include/gui_style.h include/gui_toolkit.h include/font.h vendor/nuklear/nuklear.h vendor/nuklear/style.h | build
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+build/gui_toolkit.o: src/gui_toolkit.c include/gui_toolkit.h vendor/nuklear/nuklear.h | build
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -Wno-unused-function -Wno-unused-parameter -c $< -o $@
+build/gui_canvas.o: src/gui_canvas.c include/gui_canvas.h include/gui_toolkit.h include/font.h vendor/nuklear/nuklear.h | build
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/boot.o: src/boot.S | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/platform_asm.o: src/platform.S | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
-build/font_data.o: src/font_data.S assets/DejaVuSansMono.ttf | build
+build/font_data.o: src/font_data.S assets/DejaVuSans.ttf | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/user/crt.o: user/crt.S | build/user
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@

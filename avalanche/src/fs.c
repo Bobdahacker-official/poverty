@@ -206,6 +206,9 @@ void fs_init(void) {
       return;
 }
 int fs_size(const char *name) {
+  if (!mounted_ext4)
+    while (*name == '/')
+      name++;
   if (mounted_ext4) {
     struct ext4_inode inode;
     int r = ext4_lookup(&root_ext4, name, &inode);
@@ -219,6 +222,9 @@ int fs_size(const char *name) {
   return i < 0 ? -1 : (int)ram[i].size;
 }
 int fs_read(const char *name, void *buffer, uint32_t capacity) {
+  if (!mounted_ext4)
+    while (*name == '/')
+      name++;
   if (mounted_ext4) {
     struct ext4_inode inode;
     int r = ext4_lookup(&root_ext4, name, &inode);
@@ -263,6 +269,9 @@ int fs_read(const char *name, void *buffer, uint32_t capacity) {
   return size;
 }
 int fs_write(const char *name, const void *data, uint32_t size) {
+  if (!mounted_ext4)
+    while (*name == '/')
+      name++;
   if (mounted_ext4)
     return ext4_replace(&root_ext4, name, data, size);
   if (!valid_name(name) || size > FS_MAX_FILE)
@@ -335,6 +344,9 @@ int fs_write(const char *name, const void *data, uint32_t size) {
   return commit(candidate) ? (int)size : -3;
 }
 int fs_remove(const char *name) {
+  if (!mounted_ext4)
+    while (*name == '/')
+      name++;
   if (mounted_ext4)
     return ext4_remove(&root_ext4, name);
   if (mounted < 0) {
@@ -433,4 +445,46 @@ bool fs_writable(void) {
   const struct block_device *d =
       mounted < 0 ? NULL : disk_get((unsigned)mounted);
   return mounted < 0 || (d && !d->read_only);
+}
+int fs_directory(const char *path) {
+  if (!mounted_ext4)
+    return str_eq(path, "/") ? 0 : -2;
+  struct ext4_inode inode;
+  int r = ext4_lookup(&root_ext4, path, &inode);
+  return r ? r : ((inode.mode & 0xf000) == 0x4000 ? 0 : -20);
+}
+int fs_browse(const char *path, unsigned index, char name[256], uint64_t *size,
+              bool *directory) {
+  if (mounted_ext4) {
+    int r = ext4_entry(&root_ext4, path, index, name, size);
+    if (r)
+      return r;
+    char full[1024];
+    unsigned length = strlen(path), count = strlen(name);
+    if (length + count + 2 > sizeof(full))
+      return -36;
+    memcpy(full, path, length);
+    if (!length || full[length - 1] != '/')
+      full[length++] = '/';
+    memcpy(full + length, name, count + 1);
+    struct ext4_inode inode;
+    r = ext4_lookup(&root_ext4, full, &inode);
+    if (r)
+      return r;
+    *directory = (inode.mode & 0xf000) == 0x4000;
+    return 0;
+  }
+  if (!str_eq(path, "/"))
+    return -2;
+  for (unsigned slot = 0, ordinal = 0; slot < FILE_COUNT; slot++) {
+    uint32_t length;
+    char entry[32];
+    if (fs_entry(slot, entry, &length) && ordinal++ == index) {
+      memcpy(name, entry, strlen(entry) + 1);
+      *size = length;
+      *directory = false;
+      return 0;
+    }
+  }
+  return -2;
 }

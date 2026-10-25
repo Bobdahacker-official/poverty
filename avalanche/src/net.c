@@ -578,6 +578,16 @@ void net_info(void) {
   print_uint(drop_count);
   console_putc('\n');
 }
+void net_snapshot(struct network_info *out) {
+  *out = (struct network_info){ip,         mask,     gateway,
+                               dns_server, rx_count, tx_count,
+                               drop_count, nic != 0, {0}};
+  const char *name = nic == VIRTIO    ? "VirtIO"
+                     : nic == RTL8139 ? "RTL8139"
+                     : nic == E1000   ? "Intel E1000"
+                                      : "No Ethernet adapter";
+  memcpy(out->adapter, name, strlen(name) + 1);
+}
 int net_ping(uint32_t dest) {
   if (!ip || !link_ready)
     return -1;

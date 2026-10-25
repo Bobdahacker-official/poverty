@@ -17,6 +17,12 @@ Fork uses reference-counted copy-on-write pages. Anonymous mappings are
 allocated on demand. The graphical Magenta compositor supports rounded,
 translucent windows, blurred panels, shadows, animations and TrueType text.
 The bundled DejaVu font retains its license in ../assets/FONT-LICENSE.
+The graphical desktop uses Nuklear and its Catppuccin themes under the
+MIT licenses in ../vendor/nuklear/. Source revisions are in ORIGIN.md.
+Seven applications provide a native shell terminal, directory browser,
+text editor, process manager, network tools, package manager and settings.
+Appearance preferences persist on the writable disk. The ISO includes
+the toolkit, palette and font license notices in /licenses.
 
 The ext4 root backend supports 4096-byte blocks, extent trees, 64-bit
 filesystem descriptors, flex_bg layouts, sparse file growth beyond 4 GiB,
