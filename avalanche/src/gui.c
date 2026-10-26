@@ -1792,19 +1792,6 @@ static void launcher_view(void) {
       nk_window_is_hidden(&ui, "Applications"))
     launcher = false;
 }
-static void notification_view(void) {
-  if ((int32_t)(notification_until - clock_ticks()) <= 0)
-    return;
-  if (nk_begin(&ui, "Notification", nk_rect(width - 340, 70, 320, 94),
-               NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_BACKGROUND |
-                   NK_WINDOW_NO_INPUT)) {
-    nk_layout_row_dynamic(&ui, 20, 1);
-    nk_label_colored(&ui, "Magenta", NK_TEXT_LEFT, rgb(accent()));
-    nk_layout_row_dynamic(&ui, 42, 1);
-    nk_label_wrap(&ui, notification);
-  }
-  nk_end(&ui);
-}
 static void modal_dialogs(void) {
   const char *name = power_dialog       ? "Session"
                      : deleting_file    ? "Delete item"
@@ -2067,7 +2054,6 @@ int gui_run(void) {
       dock();
       launcher_view();
       shortcut_menu();
-      notification_view();
       if (escape_requested) {
         if (launcher)
           launcher = false;

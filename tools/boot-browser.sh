@@ -23,7 +23,7 @@ from pathlib import Path
 import sys
 page = Path(sys.argv[1])
 content = page.read_text()
-style = '<style>#noVNC_container{width:100%;height:100%;max-width:1280px;max-height:800px;margin:auto}#noVNC_container canvas{image-rendering:auto}</style><link rel="stylesheet" href="magenta-mobile.css"><script type="module" src="magenta-mobile.js"></script>'
+style = '<style>#noVNC_container{width:100%;height:100%;margin:auto}#noVNC_container canvas{image-rendering:auto}</style><link rel="stylesheet" href="magenta-mobile.css"><script type="module" src="magenta-mobile.js"></script>'
 page.write_text(content.replace('</head>', style + '</head>', 1))
 PY
 cat > "$runtime/web/index.html" <<'HTML'

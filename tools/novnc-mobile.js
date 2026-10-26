@@ -150,3 +150,29 @@ if (window.visualViewport) {
 }
 window.addEventListener('resize', positionToolbar);
 positionToolbar();
+
+// Refit the live framebuffer after monitor, orientation, browser zoom, or keyboard changes.
+function fitDesktop() {
+    const rfb = UI.rfb;
+    if (!UI.connected || !rfb) return;
+    rfb.scaleViewport = true;
+    rfb.clipViewport = false;
+    // Servers supporting desktop resizing can negotiate a new native mode.
+    rfb.resizeSession = true;
+    rfb.qualityLevel = 9;
+    rfb.compressionLevel = 3;
+    window.dispatchEvent(new Event('resize'));
+}
+let fitTimer;
+function scheduleDesktopFit() {
+    clearTimeout(fitTimer);
+    fitTimer = setTimeout(fitDesktop, 100);
+}
+const desktopContainer = document.getElementById('noVNC_container');
+if (desktopContainer) new ResizeObserver(scheduleDesktopFit).observe(desktopContainer);
+window.addEventListener('orientationchange', scheduleDesktopFit);
+window.visualViewport?.addEventListener('resize', scheduleDesktopFit);
+new MutationObserver(scheduleDesktopFit).observe(document.documentElement, {
+    attributes: true, attributeFilter: ['class'],
+});
+scheduleDesktopFit();
