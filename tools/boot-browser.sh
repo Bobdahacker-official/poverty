@@ -78,6 +78,10 @@ case ${1:-} in
 esac
 
 if ! running "$runtime/qemu.pid"; then
+  if command -v ss >/dev/null && ss -ltn '( sport = :5901 )' | rg -q 'LISTEN'; then
+    printf 'Port 5901 is occupied by another QEMU session; close that session before starting Magenta.\n' >&2
+    exit 1
+  fi
   if ! test -f "$runtime/data.img"; then
     cp "$repo_root/Images/magenta-data.img" "$runtime/data.img"
   fi
@@ -95,6 +99,10 @@ if ! running "$runtime/qemu.pid"; then
 fi
 
 if ! running "$runtime/websockify.pid"; then
+  if command -v ss >/dev/null && ss -ltn '( sport = :6080 )' | rg -q 'LISTEN'; then
+    printf 'Port 6080 is occupied by another viewer; close that session before starting Magenta.\n' >&2
+    exit 1
+  fi
   nohup setsid "$proxy" --web="$runtime/web" 127.0.0.1:6080 127.0.0.1:5901 \
     > "$runtime/websockify.log" 2>&1 < /dev/null &
   echo "$!" > "$runtime/websockify.pid"
@@ -103,6 +111,8 @@ fi
 for attempt in {1..25}; do
   if curl --fail --silent --output /dev/null http://127.0.0.1:6080/vnc.html; then
     printf 'Magenta desktop: http://localhost:6080/\n'
+    printf 'Repository revision: %s\n' "$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || printf unknown)"
+    printf 'Boot image SHA-256: %s\n' "$(sha256sum "$repo_root/Images/magenta.iso" | cut -d ' ' -f 1)"
     exit 0
   fi
   sleep 0.2
