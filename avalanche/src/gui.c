@@ -233,7 +233,9 @@ static void style(void) {
   ui.style.window.header.normal = ui.style.window.header.hover =
       ui.style.window.header.active =
           nk_style_item_color(alpha_color(p->mantle, 250));
-  ui.style.window.header.padding = nk_vec2(14, 12);
+  ui.style.window.header.padding = nk_vec2(14, 18);
+  ui.style.window.scrollbar_size = nk_vec2(6, 6);
+  ui.style.scrollv.rounding = ui.style.scrollh.rounding = 3;
   ui.style.window.header.label_padding = nk_vec2(6, 2);
   ui.style.window.header.label_normal = ui.style.window.header.label_hover =
       ui.style.window.header.label_active = text;
@@ -602,9 +604,9 @@ static void terminal_view(void) {
     shell_submit();
 }
 static void file_contents_view(void) {
-  float toolbar[] = {0.1f, 0.65f, 0.12f, 0.13f};
+  float toolbar[] = {0.12f, 0.53f, 0.12f, 0.23f};
   nk_layout_row(&ui, NK_DYNAMIC, 34, 4, toolbar);
-  if (nk_button_symbol(&ui, NK_SYMBOL_CHEVRON_LEFT)) {
+  if (nk_button_label(&ui, "Up")) {
     char parent[256];
     copy(parent, browser_path, sizeof(parent));
     unsigned n = strlen(parent);
@@ -622,7 +624,7 @@ static void file_contents_view(void) {
   bool go = nk_button_label(&ui, "Go");
   if ((entered & NK_EDIT_COMMITTED) || go)
     browse(browser_address);
-  if (nk_button_symbol(&ui, NK_SYMBOL_CIRCLE_OUTLINE))
+  if (nk_button_label(&ui, "Refresh"))
     refresh_files();
   nk_layout_row_dynamic(&ui, 32, 3);
   if (nk_button_label(&ui, "New file")) {
@@ -676,12 +678,13 @@ static void file_contents_view(void) {
     refresh_files();
   }
   float area =
-      nk_window_get_content_region(&ui).h - (creating_file ? 202 : 158);
+      nk_window_get_content_region(&ui).h - (creating_file ? 244 : 200);
   if (area < 80)
     area = 80;
   nk_layout_row_dynamic(&ui, area, 1);
   if (nk_group_begin(&ui, "Folder contents", 0)) {
-    nk_layout_row_dynamic(&ui, 24, 2);
+    float heading_columns[] = {0.72f, 0.28f};
+    nk_layout_row(&ui, NK_DYNAMIC, 24, 2, heading_columns);
     caption("NAME");
     caption("SIZE / TYPE");
     for (unsigned i = 0; i < file_count; i++) {
@@ -724,8 +727,8 @@ static void file_contents_view(void) {
   }
 }
 static void files_view(void) {
-  float columns[] = {0.22f, 0.78f};
-  nk_layout_row(&ui, NK_DYNAMIC, nk_window_get_content_region(&ui).h, 2,
+  float columns[] = {0.27f, 0.73f};
+  nk_layout_row(&ui, NK_DYNAMIC, nk_window_get_content_region(&ui).h - 12, 2,
                 columns);
   if (nk_group_begin(&ui, "File locations", NK_WINDOW_NO_SCROLLBAR)) {
     nk_layout_row_dynamic(&ui, 30, 1);
@@ -760,7 +763,7 @@ static void files_view(void) {
     caption(fs_mounted_disk() < 0 ? "Session storage" : "Persistent disk");
     nk_group_end(&ui);
   }
-  if (nk_group_begin(&ui, "File browser", 0)) {
+  if (nk_group_begin(&ui, "File browser", NK_WINDOW_NO_SCROLLBAR)) {
     file_contents_view();
     nk_group_end(&ui);
   }
@@ -1238,16 +1241,28 @@ static void maximize(unsigned id) {
 }
 static struct nk_rect window_control_bounds(unsigned id, unsigned control) {
   struct nk_rect r = apps[id].bounds;
-  return nk_rect(r.x + r.w - 120 + control * 40, r.y + 4, 36, 36);
+  return nk_rect(r.x + r.w - 144 + control * 44, r.y + 6, 40, 44);
 }
 static int window_controls(unsigned id) {
   struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
   struct nk_rect clip = canvas->clip;
   nk_push_scissor(canvas, nk_rect(0, 0, width, height));
-  gui_canvas_gloss(
-      canvas,
-      nk_rect(apps[id].bounds.x, apps[id].bounds.y, apps[id].bounds.w, 44), 22);
+  struct nk_rect bounds = apps[id].bounds;
   bool active = nk_window_is_active(&ui, app_names[id]);
+  nk_fill_rect(canvas, nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55),
+               9, rgb(palette()->mantle));
+  gui_canvas_gloss(canvas, nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
+  gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28), id,
+                   active ? rgb(accent()) : rgb(palette()->muted));
+  nk_draw_text(canvas, nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
+               app_names[id], strlen(app_names[id]), &body_font,
+               nk_rgba(0, 0, 0, 0), rgb(palette()->text));
+  nk_draw_text(canvas, nk_rect(bounds.x + 56, bounds.y + 30, bounds.w - 216, 18),
+               app_summaries[id], strlen(app_summaries[id]), &body_font,
+               nk_rgba(0, 0, 0, 0), rgb(palette()->muted));
+  nk_stroke_line(canvas, bounds.x + 16, bounds.y + 55,
+                   bounds.x + bounds.w - 16, bounds.y + 55, 1,
+                   alpha_color(palette()->surface, 120));
   int action = -1;
   for (unsigned control = 0; control < 3; control++) {
     struct nk_rect r = window_control_bounds(id, control);
@@ -1262,17 +1277,13 @@ static int window_controls(unsigned id) {
         action = control;
       held_control_app = held_control = -1;
     }
-    static const uint32_t traffic[] = {0xf2c252, 0x49c68a, 0xf26378};
-    struct nk_color fill =
-        hover ? alpha_color(palette()->surface, 180) : nk_rgba(0, 0, 0, 0);
-    struct nk_color ink =
-        hover && control == 2 ? nk_rgb(255, 255, 255) : rgb(palette()->text);
+    struct nk_color fill = hover
+        ? alpha_color(control == 2 ? 0xe54868 : palette()->surface, held ? 255 : 180)
+        : nk_rgba(0, 0, 0, 0);
+    struct nk_color ink = hover && control == 2 ? nk_rgb(255, 255, 255)
+                                                : rgb(palette()->muted);
     nk_fill_rect(canvas, r, 8, fill);
-    nk_fill_circle(canvas, nk_rect(r.x + 7, r.y + 7, 22, 22),
-                   active ? rgb(traffic[control]) : rgb(palette()->muted));
-    if (held && hover)
-      nk_stroke_rect(canvas, r, 8, 2, rgb(accent()));
-    float x = r.x + 12, y = r.y + 12;
+    float x = r.x + 14, y = r.y + 16;
     if (control == 0)
       nk_stroke_line(canvas, x, y + 8, x + 12, y + 8, 2, ink);
     else if (control == 1) {
@@ -1292,7 +1303,7 @@ static void application(unsigned id) {
     return;
   nk_set_user_data(&ui, nk_handle_id(id + 1));
   nk_flags flags = NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
-                   NK_WINDOW_TITLE;
+                   NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR;
   bool control_press = false;
   for (unsigned control = 0; control < 3; control++)
     if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&
@@ -1408,7 +1419,7 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
   nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
                nk_rgba(0, 0, 0, 65));
   nk_fill_rect(canvas, r, 10, base);
-  gui_canvas_gloss(canvas, r, 90);
+  gui_canvas_gloss(canvas, r, 34);
   nk_stroke_line(canvas, r.x + 10, r.y + r.h - 3, r.x + r.w - 10, r.y + r.h - 3,
                  1, nk_rgba(0, 0, 0, 80));
   gui_canvas_icon(canvas, r, kind, nk_rgb(250, 250, 255));
@@ -1416,7 +1427,7 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
 static void desktop_shortcuts(void) {
   nk_style_push_style_item(&ui, &ui.style.window.fixed_background,
                            nk_style_item_color(nk_rgba(0, 0, 0, 0)));
-  if (nk_begin(&ui, "Desktop shortcuts", nk_rect(10, 58, 100, 210),
+  if (nk_begin(&ui, "Desktop shortcuts", nk_rect(6, 58, 116, 230),
                NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR)) {
     for (unsigned i = 0; i < 2; i++) {
       nk_layout_row_dynamic(&ui, 54, 1);
@@ -1488,7 +1499,14 @@ static void launcher_view(void) {
   float h = height > 650 ? 560 : height - 110;
   float w = width > 740 ? 680 : width - 40;
   if (nk_begin(&ui, "Applications", nk_rect(20, 52, w, h),
-               NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_CLOSABLE)) {
+               NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
+    float title_columns[] = {0.78f, 0.22f};
+    nk_layout_row(&ui, NK_DYNAMIC, 44, 2, title_columns);
+    nk_style_push_font(&ui, &heading_font);
+    nk_label(&ui, "Applications", NK_TEXT_LEFT);
+    nk_style_pop_font(&ui);
+    if (nk_button_label(&ui, "Close"))
+      launcher = false;
     nk_layout_row_dynamic(&ui, 34, 1);
     nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, launcher_search,
                                    sizeof(launcher_search), nk_filter_default);

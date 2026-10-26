@@ -653,12 +653,15 @@ void gui_canvas_gloss(struct nk_command_buffer *b, struct nk_rect r,
                       unsigned strength) {
   struct nk_rect old = b->clip;
   nk_push_scissor(b, nk_rect(0, 0, width, height));
-  nk_fill_rect_multi_color(
-      b, nk_rect(r.x + 4, r.y + 2, r.w - 8, r.h / 2),
-      nk_rgba(255, 255, 255, strength), nk_rgba(255, 255, 255, strength),
-      nk_rgba(255, 255, 255, 0), nk_rgba(255, 255, 255, 0));
-  nk_stroke_rect(b, nk_rect(r.x + 1, r.y + 1, r.w - 2, r.h - 2), 10, 1,
-                 nk_rgba(255, 255, 255, strength + 12));
+  unsigned rows = (unsigned)(r.h / 2);
+  for (unsigned y = 0; y < rows; y++) {
+    float inset = y < 8 ? (float)(8 - y) : 2;
+    unsigned opacity = strength * (rows - y) * (rows - y) / (rows * rows);
+    nk_fill_rect(b, nk_rect(r.x + inset, r.y + 1 + y, r.w - inset * 2, 1),
+                 0, nk_rgba(255, 255, 255, opacity));
+  }
+  nk_stroke_line(b, r.x + 10, r.y + 1, r.x + r.w - 10, r.y + 1,
+                   1, nk_rgba(255, 255, 255, strength));
   nk_push_scissor(b, old);
 }
 void gui_canvas_icon(struct nk_command_buffer *b, struct nk_rect r,
