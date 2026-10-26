@@ -268,20 +268,20 @@ static void preference_save(bool announce) {
 }
 static void preference_load(void) {
   preferences_saved = false;
-  preferences = (struct preferences){0x4d475549, 3, 3, 0, 0, 248, 1, 100, 0};
+  preferences = (struct preferences){0x4d475549, 4, 3, 0, 2, 248, 1, 100, 0};
   struct preferences saved;
   if (fs_read("gui-style", &saved, sizeof(saved)) == (int)sizeof(saved) &&
       saved.magic == preferences.magic &&
-      (saved.version >= 1 && saved.version <= 3) && saved.theme < 4 &&
+      (saved.version >= 1 && saved.version <= 4) && saved.theme < 4 &&
       saved.accent < 5 && saved.wallpaper < 3 && saved.alpha >= 195 &&
       saved.alpha <= 255 && saved.blur <= 1 && saved.pointer_speed >= 25 &&
       saved.pointer_speed <= 250 &&
       saved.checksum == crc32(&saved, offsetof(struct preferences, checksum))) {
     preferences = saved;
-    if (saved.version < 3) {
-      preferences.version = 3;
+    if (saved.version < 4) {
+      preferences.version = 4;
       preferences.theme = 3;
-      preferences.wallpaper = 0;
+      preferences.wallpaper = 2;
     }
     preferences_saved = true;
   }
@@ -1231,7 +1231,7 @@ static void appearance_view(void) {
   }
   nk_layout_row_dynamic(&ui, 24, 1);
   nk_label(&ui, "Desktop background", NK_TEXT_LEFT);
-  const char *wallpapers[] = {"Ribbon", "Graphite", "Aurora"};
+  const char *wallpapers[] = {"Ribbon", "Graphite", "Mountains"};
   nk_layout_row_dynamic(&ui, 32, 3);
   for (unsigned i = 0; i < 3; i++) {
     nk_bool chosen = preferences.wallpaper == i;

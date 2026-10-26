@@ -270,10 +270,10 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
   static int ridges[5][1920];
   for (unsigned layer = 0; layer < 5; layer++)
     for (unsigned x = 0; x < width; x++) {
-      float phase = x / (100.0f + layer * 24) + layer * 1.7f;
-      ridges[layer][x] =
-          height * (47 + (int)layer * 9) / 100 + sine(phase) * (height / 24) +
-          sine(phase * 2.3f) * (height / 52) - (int)x * (int)layer / 26;
+      float u = (float)x / width;
+      float phase = u * 5.5f + layer * 1.1f;
+      ridges[layer][x] = height * (0.45f + layer * 0.095f +
+          sine(phase) * 0.035f + sine(phase * 2.1f) * 0.018f);
     }
   uint32_t top = variant == 1 ? 0x17181e : variant == 2 ? 0x10222d : 0x181322;
   uint32_t bottom = variant == 1   ? 0x2e3039
@@ -295,38 +295,30 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
         int sun_x = width * 27 / 100, sun_y = height * 43 / 100;
         int dx = (int)x - sun_x, dy = (int)y - sun_y;
         int distance = dx * dx + dy * dy;
-        if (distance < 10000)
-          base = blend(base, 0xfff0b7, (10000 - distance) * 90 / 10000);
-        if (distance < 420)
+        int glow = height / 8, radius = height / 38;
+        if (distance < glow * glow)
+          base = blend(base, 0xfff0b7, (glow * glow - distance) * 90 / (glow * glow));
+        if (distance < radius * radius)
           base = 0xfff5ca;
         for (unsigned layer = 0; layer < 5; layer++) {
           int ridge = ridges[layer][x];
-          if ((int)y > ridge) {
+          if ((int)y >= ridge - 1) {
             static const uint32_t mountains[] = {0x71b7b7, 0x3d919f, 0x246b80,
                                                  0x16485d, 0x102f42};
-            base = mountains[layer];
+            base = blend(base, mountains[layer], (int)y == ridge - 1 ? 85 : (int)y == ridge ? 190 : 255);
           }
         }
-        if (y > height * 68 / 100) {
-          int depth = y - height * 68 / 100;
-          int center = width * 32 / 100 - depth / 3;
-          int half = width / 45 + depth / 3;
-          if ((int)x > center - half && (int)x < center + half)
-            base = blend(0x78b6bc, 0x326f84,
-                         (y - height * 68 / 100) * 255 / (height * 32 / 100));
-        }
-        if (x > width * 69 / 100) {
-          int tree_x = ((int)x + 19) % 120 - 60;
-          int ground = height * 87 / 100;
-          int tree_top = height * (38 + ((x + 19) / 120) % 4 * 6) / 100;
-          int offset = (int)y - tree_top;
-          if (offset > 0 && (int)y < ground) {
-            int tier = offset % 36;
-            int spread = 6 + offset / 7 + tier / 2;
-            if (spread > 42)
-              spread = 42;
-            if (tree_x > -spread && tree_x < spread)
-              base = 0x102f42;
+        /* The river narrows continuously to its source and flows off the bottom. */
+        float depth = ((float)y / height - 0.62f) / 0.38f;
+        if (depth > 0) {
+          float center = width * (0.53f - depth * 0.23f + sine(depth * 5) * 0.035f);
+          float half = width * 0.105f * depth * depth;
+          float delta = x - center;
+          if (delta < 0) delta = -delta;
+          if (delta < half + 1) {
+            unsigned coverage = delta <= half - 1 ? 255 : (half + 1 - delta) * 127;
+            uint32_t water = blend(0x91c7c9, 0x39788a, depth * 255);
+            base = blend(base, water, coverage);
           }
         }
       } else {
@@ -440,6 +432,8 @@ static float sine(float x) {
     x -= 6.2831853f;
   while (x < -3.14159265f)
     x += 6.2831853f;
+  if (x > 1.57079633f) x = 3.14159265f - x;
+  if (x < -1.57079633f) x = -3.14159265f - x;
   float squared = x * x;
   return x * (1.0f - squared / 6.0f + squared * squared / 120.0f -
               squared * squared * squared / 5040.0f);
