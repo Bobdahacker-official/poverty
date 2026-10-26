@@ -906,7 +906,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
       if (f->kind == 1 && (f->bpp == 24 || f->bpp == 32) && f->width >= 120 &&
           f->height >= 32 && f->width <= 4096 && f->height <= 2160 &&
           f->pitch >= f->width * (f->bpp / 8) && f->addr + span >= f->addr &&
-          f->addr + span <= 0xffffffffu && f->rs && f->rs <= 8 && f->gs &&
+          f->addr + span <= ((uint64_t)IDENTITY_ENTRIES << 21) && f->rs && f->rs <= 8 && f->gs &&
           f->gs <= 8 && f->bs && f->bs <= 8 && f->rp + f->rs <= f->bpp &&
           f->gp + f->gs <= f->bpp && f->bp + f->bs <= f->bpp) {
         fb = (void *)(uintptr_t)f->addr;
@@ -957,6 +957,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   console_clear();
   user_init();
   platform_enable();
+  pci_ecam_init(mbi,end);
   devices_init();
   net_init();
   fs_init();

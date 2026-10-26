@@ -1,17 +1,25 @@
 #include "system.h"
 #include "virtio.h"
 #define PCI_MAX 192
+extern uint64_t pci_ecam_bus(unsigned);
 static struct pci_device pci[PCI_MAX];
 static unsigned pci_count;
 static struct block_device disks[16];
 static unsigned ndisks;
 uint32_t pci_read(const struct pci_device *d, uint8_t r) {
+  uint64_t base = pci_ecam_bus(d->bus);
+  if (base) return *(volatile uint32_t *)(uintptr_t)(base + ((unsigned)d->slot<<15) + ((unsigned)d->function<<12) + (r&0xfc));
   io_out32(0xcf8, 0x80000000u | ((uintptr_t)d->bus << 16) |
                       ((uintptr_t)d->slot << 11) |
                       ((uintptr_t)d->function << 8) | (r & 0xfc));
   return io_in32(0xcfc);
 }
 void pci_write(const struct pci_device *d, uint8_t r, uint32_t v) {
+  uint64_t base = pci_ecam_bus(d->bus);
+  if (base) {
+    *(volatile uint32_t *)(uintptr_t)(base + ((unsigned)d->slot<<15) + ((unsigned)d->function<<12) + (r&0xfc)) = v;
+    return;
+  }
   io_out32(0xcf8, 0x80000000u | ((uintptr_t)d->bus << 16) |
                       ((uintptr_t)d->slot << 11) |
                       ((uintptr_t)d->function << 8) | (r & 0xfc));
@@ -538,7 +546,7 @@ void devices_init(void) {
   mouse_init();
 }
 void devices_list(void) {
-  console_write("PCI configuration mechanism 1: ");
+  console_write(pci_ecam_bus(0) ? "PCI Express ECAM: " : "PCI configuration ports: ");
   print_uint(pci_count);
   console_write(" devices\n");
   for (unsigned i = 0; i < pci_count; i++) {
@@ -568,5 +576,5 @@ void devices_list(void) {
   console_write(
       "Drivers: PCI, ATA PIO/LBA28, AHCI SATA/DMA48, VirtIO block/network, "
       "PS/2 keyboard/mouse, "
-      "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000.\n");
+      "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000, AMD PCnet.\n");
 }

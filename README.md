@@ -6,7 +6,7 @@ Magenta is an x86-64 operating system written in C and assembly, built on [Avala
 
 ## Download
 
-Get [Magenta 0.2.0 — Mountains](https://github.com/Bobdahacker-official/poverty/releases/tag/magenta-v0.2.0). The release includes boot ISOs, writable disks, source, screenshots, and checksums.
+Get [Magenta 0.2.0 — Mountains](https://github.com/Bobdahacker-official/poverty/releases/tag/magenta-v0.2.0). The release includes boot ISOs, writable disks, source, and checksums.
 
 - [Magenta ISO](https://github.com/Bobdahacker-official/poverty/releases/download/magenta-v0.2.0/magenta.iso)
 - [Magenta data disk](https://github.com/Bobdahacker-official/poverty/releases/download/magenta-v0.2.0/magenta-data.img)
@@ -54,7 +54,7 @@ Ctrl-T opens Terminal; Ctrl-F opens Files; Ctrl-E opens the editor. Ctrl-K, Ctrl
 
 ## Browser and registry
 
-Browser reads HTTP pages and local documents through Magenta's network and file APIs. Press Ctrl-B to open it and Ctrl-L to edit the address. It follows links, keeps a session history, reloads pages, and saves their source to `/download.html`. Addresses can include a port, such as `http://10.0.2.2:8080/`. Use `file:/path` to read a file. The browser displays document text and links; HTTPS, JavaScript, and CSS are outside its current format support.
+Browser reads HTTPS and HTTP pages and local documents through Magenta's network and file APIs. Press Ctrl-B to open it and Ctrl-L to edit the address. It follows links, keeps a session history, reloads pages, and saves their source to `/download.html`. Addresses can include a port, such as `http://10.0.2.2:8080/`. Use `file:/path` to read a file. It checks TLS certificates and runs embedded JavaScript through Elk. It renders basic CSS colors, type sizes, spacing, classes, IDs, and inline styles, and loads linked CSS and scripts. Its HTML and CSS coverage is still small.
 
 ![Magenta Browser](Images/browser.png)
 
@@ -76,7 +76,7 @@ The build writes to `avalanche/build/`. Packaging copies the boot ISO and a fres
 
 ## Kernel
 
-Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, and transitional VirtIO; network drivers include RTL8139, E1000, and transitional VirtIO.
+Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The kernel manages physical memory through 16 GiB of address space.
 
 The package manager installs, removes, upgrades, lists, queries, and searches packages. It downloads packages over HTTP and keeps its database on ext4. The shell and native programs run in ring 3. The included `linuxhello` and `linuxfork` programs use the Linux i386 compatibility ABI.
 
@@ -88,4 +88,4 @@ See [kernel details](avalanche/images/NOTICE) and [distribution details](magenta
 
 The desktop uses [Nuklear](https://github.com/Immediate-Mode-UI/Nuklear), [Catppuccin](https://github.com/catppuccin/palette), [Lucide](https://lucide.dev/), and DejaVu fonts. Its layout takes ideas from elementary, COSMIC, Linux Mint, and macOS.
 
-Avalanche source uses the [MIT license](avalanche/LICENSE). GRUB, Nuklear, Catppuccin, Lucide, DejaVu, and v86 keep their own licenses. Their notices are included with the source and in the ISO's `/licenses` directory. GRUB source and Debian patches are in [grub-source](avalanche/images/grub-source/).
+Avalanche source uses the [MIT license](avalanche/LICENSE). The linked Elk engine is licensed under [AGPL-3.0](avalanche/vendor/elk/AGPL-3.0.txt); its source is included in this repository. BearSSL and printf carry their own MIT licenses. GRUB, Nuklear, Catppuccin, Lucide, DejaVu, and v86 keep their own licenses. Their notices are included with the source and in the ISO's `/licenses` directory. GRUB source and Debian patches are in [grub-source](avalanche/images/grub-source/).

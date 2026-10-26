@@ -286,12 +286,13 @@ void user_init(void) {
     kernel_directory[i] = ((uint64_t)i << 21) | 0x83;
   activate(kernel_directory);
 }
-bool platform_mmio(uint32_t address, uint32_t size) {
-  if (!size || size - 1 > 0xffffffffu - address)
+bool platform_mmio(uint64_t address, uint32_t size) {
+  if (!size || address >= ((uint64_t)IDENTITY_ENTRIES << 21) ||
+      size - 1 >= ((uint64_t)IDENTITY_ENTRIES << 21) - address)
     return false;
   unsigned first = address >> 21, last = (address + size - 1) >> 21;
   for (unsigned i = first; i <= last; i++)
-    if (process_address(i << 21, 0x200000))
+    if (i < 2048 && process_address(i << 21, 0x200000))
       return false;
   for (unsigned i = first; i <= last; i++) {
     kernel_directory[i] |= 0x18;

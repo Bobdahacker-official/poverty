@@ -1,7 +1,7 @@
 #include "system.h"
 #include "virtio.h"
 /* Poll-driven Ethernet. DMA memory is identity mapped and supervisor-only. */
-static enum { NONE, RTL8139, E1000, VIRTIO } nic;
+static enum { NONE, RTL8139, E1000, VIRTIO, PCNET } nic;
 static uint16_t rtl_port;
 static volatile uint32_t *e1000;
 static uint8_t mac[6];
@@ -72,6 +72,12 @@ static bool same_mac(const uint8_t *a, const uint8_t *b) {
 static bool ethernet_send(const void *frame, uint32_t n) {
   if (!link_ready || n > 1514 || n < 14)
     return false;
+  if (nic == PCNET) {
+    bool ok = pcnet_send(frame, n);
+    if (ok)
+      tx_count++;
+    return ok;
+  }
   if (nic == VIRTIO) {
     bool ok = virtio_net_send(frame, n);
     if (ok)
@@ -215,6 +221,11 @@ static bool e1000_init(const struct pci_device *d) {
 void net_init(void) {
   if (virtio_net_init(mac)) {
     nic = VIRTIO;
+    link_ready = true;
+    return;
+  }
+  if (pcnet_init(mac)) {
+    nic = PCNET;
     link_ready = true;
     return;
   }
@@ -443,6 +454,10 @@ void net_poll(void) {
   devices_poll();
   if (!link_ready)
     return;
+  if (nic == PCNET) {
+    pcnet_poll(receive);
+    return;
+  }
   if (nic == VIRTIO) {
     virtio_net_poll(receive);
     return;
@@ -556,6 +571,7 @@ void net_info(void) {
   console_write(nic == VIRTIO    ? "VirtIO legacy net"
                 : nic == RTL8139 ? "RTL8139"
                 : nic == E1000   ? "Intel E1000"
+                : nic == PCNET   ? "AMD PCnet"
                                  : "none supported");
   console_write(" MAC ");
   for (unsigned i = 0; i < 6; i++) {
@@ -587,6 +603,7 @@ void net_snapshot(struct network_info *out) {
   const char *name = nic == VIRTIO    ? "VirtIO"
                      : nic == RTL8139 ? "RTL8139"
                      : nic == E1000   ? "Intel E1000"
+                : nic == PCNET   ? "AMD PCnet"
                                       : "No Ethernet adapter";
   memcpy(out->adapter, name, strlen(name) + 1);
 }

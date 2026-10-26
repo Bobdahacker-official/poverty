@@ -80,6 +80,7 @@ uint32_t pci_read(const struct pci_device *, uint8_t);
 void pci_write(const struct pci_device *, uint8_t, uint32_t);
 const struct pci_device *pci_find(uint16_t vendor, uint16_t device);
 const struct pci_device *pci_find_class(uint8_t, uint8_t, uint8_t);
+void pci_ecam_init(uint32_t mbi, uint32_t end);
 void pci_enable(const struct pci_device *, uint16_t);
 struct block_device {
   uint16_t port, control;
@@ -116,6 +117,9 @@ int fs_mkdir(const char *);
 int fs_rename(const char *, const char *);
 int fs_size(const char *);
 bool fs_entry(unsigned, char *, uint32_t *);
+bool pcnet_init(uint8_t mac[6]);
+bool pcnet_send(const void *,unsigned);
+void pcnet_poll(void (*receive)(const uint8_t *,uint32_t));
 void net_init(void);
 void net_poll(void);
 void net_info(void);
@@ -149,7 +153,7 @@ _Static_assert(offsetof(struct trap_frame, vector) == 160,
                "interrupt frame ABI");
 _Static_assert(sizeof(struct trap_frame) == 216, "iretq frame ABI");
 void user_init(void);
-bool platform_mmio(uint32_t, uint32_t);
+bool platform_mmio(uint64_t, uint32_t);
 int user_run(const void *, uint32_t, const char *);
 int user_exec(const char *, const char *);
 int user_install(void);
