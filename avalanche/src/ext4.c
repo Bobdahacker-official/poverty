@@ -971,7 +971,9 @@ static int directory_add(struct ext4_volume *v, const struct ext4_inode *parent,
     little32(output + used, number);
     little16(output + used + 4, limit - used);
     output[used + 6] = size;
-    output[used + 7] = 1;
+    uint8_t *added_inode = inode_edit(v, number);
+    output[used + 7] =
+        added_inode && (u16(added_inode) & 0xf000) == 0x4000 ? 2 : 1;
     memcpy(output + used + 8, name, size);
   } else if (used)
     little16(output + last_entry + 4, limit - last_entry);
@@ -1137,13 +1139,14 @@ static int release_inode(struct ext4_volume *v, uint32_t number) {
   if (!inode || !super)
     return -12;
   super += 1024;
-  if ((u16(inode) & 0xf000) != 0x8000 ||
+  bool directory_inode = (u16(inode) & 0xf000) == 0x4000;
+  if (((u16(inode) & 0xf000) != 0x8000 && !directory_inode) ||
       (u32(inode + 32) & (0x10 | 0x20 | 0x800)))
     return -1;
   unsigned links = u16(inode + 26);
   if (!links)
     return -5;
-  if (links > 1) {
+  if (links > 1 && !directory_inode) {
     little16(inode + 26, links - 1);
     inode_checksum(v, number, inode, super);
     return 0;
@@ -1227,6 +1230,124 @@ abort_replace:
   transaction_count = 0;
   return r;
 }
+int ext4_mkdir(struct ext4_volume *v, const char *path) {
+  struct ext4_inode existing, parent;
+  char name[256];
+  if (ext4_lookup(v, path, &existing) == 0)
+    return -17;
+  int r = resolve_parent(v, path, &parent, name);
+  if (r)
+    return r;
+  begin_transaction(v);
+  uint32_t number = allocate_inode(v);
+  if (!number) {
+    r = -28;
+    goto fail_mkdir;
+  }
+  uint8_t data[4096] = {0};
+  uint8_t *super = edit_block(v, 0);
+  if (!super) {
+    r = -12;
+    goto fail_mkdir;
+  }
+  super += 1024;
+  bool tail = (u32(super + 100) & 0x400) != 0;
+  unsigned limit = tail ? 4084 : 4096;
+  little32(data, number);
+  little16(data + 4, 12);
+  data[6] = 1;
+  data[7] = 2;
+  data[8] = '.';
+  little32(data + 12, parent.number);
+  little16(data + 16, limit - 12);
+  data[18] = 2;
+  data[19] = 2;
+  data[20] = '.';
+  data[21] = '.';
+  r = grow_file(v, number, 0, data, sizeof(data));
+  if (r < 0)
+    goto fail_mkdir;
+  uint8_t *inode = inode_edit(v, number);
+  if (!inode) {
+    r = -12;
+    goto fail_mkdir;
+  }
+  little16(inode, 0x41ed);
+  little16(inode + 26, 2);
+  inode_checksum(v, number, inode, super);
+  if (tail) {
+    struct ext4_inode view;
+    r = ext4_inode_read(v, number, &view);
+    if (r)
+      goto fail_mkdir;
+    uint64_t physical;
+    r = extent(v, &view, 0, &physical);
+    if (r || !physical) {
+      r = -5;
+      goto fail_mkdir;
+    }
+    uint8_t *block = edit_block(v, physical);
+    if (!block) {
+      r = -12;
+      goto fail_mkdir;
+    }
+    little16(block + 4088, 12);
+    block[4090] = 0;
+    block[4091] = 0xde;
+    little32(block + 4092,
+             checksum(inode_seed(super, number, inode), block, 4084));
+  }
+  r = directory_add(v, &parent, name, number);
+  if (r)
+    goto fail_mkdir;
+  uint8_t *parent_inode = inode_edit(v, parent.number);
+  if (!parent_inode) {
+    r = -12;
+    goto fail_mkdir;
+  }
+  little16(parent_inode + 26, u16(parent_inode + 26) + 1);
+  inode_checksum(v, parent.number, parent_inode, super);
+  uint8_t *descriptor = descriptor_edit(v, (number - 1) / v->inodes_per_group);
+  if (!descriptor) {
+    r = -12;
+    goto fail_mkdir;
+  }
+  little16(descriptor + 16, u16(descriptor + 16) + 1);
+  descriptor_checksum(v, (number - 1) / v->inodes_per_group, descriptor, super);
+  return commit_transaction(v);
+fail_mkdir:
+  transaction_volume = NULL;
+  transaction_count = 0;
+  return r;
+}
+int ext4_rename(struct ext4_volume *v, const char *old_path,
+                const char *new_path) {
+  struct ext4_inode old, parent, destination_parent, existing;
+  char old_name[256], new_name[256];
+  int r = ext4_lookup(v, old_path, &old);
+  if (r)
+    return r;
+  if (!ext4_lookup(v, new_path, &existing))
+    return -17;
+  r = resolve_parent(v, old_path, &parent, old_name);
+  if (r)
+    return r;
+  r = resolve_parent(v, new_path, &destination_parent, new_name);
+  if (r)
+    return r;
+  if (parent.number != destination_parent.number)
+    return -18;
+  begin_transaction(v);
+  r = directory_add(v, &parent, new_name, old.number);
+  if (!r)
+    r = directory_add(v, &parent, old_name, 0);
+  if (r) {
+    transaction_volume = NULL;
+    transaction_count = 0;
+    return r;
+  }
+  return commit_transaction(v);
+}
 int ext4_remove(struct ext4_volume *v, const char *path) {
   struct ext4_inode old, parent;
   char name[256];
@@ -1236,10 +1357,39 @@ int ext4_remove(struct ext4_volume *v, const char *path) {
   r = resolve_parent(v, path, &parent, name);
   if (r)
     return r;
+  if ((old.mode & 0xf000) == 0x4000) {
+    char entry[256];
+    uint64_t entry_size;
+    if (ext4_entry(v, path, 0, entry, &entry_size) == 0)
+      return -39;
+  }
   begin_transaction(v);
   r = directory_add(v, &parent, name, 0);
+  if (!r && (old.mode & 0xf000) == 0x4000) {
+    uint8_t *super = edit_block(v, 0), *inode = inode_edit(v, parent.number);
+    if (!super || !inode)
+      r = -12;
+    else {
+      super += 1024;
+      little16(inode + 26, u16(inode + 26) - 1);
+      inode_checksum(v, parent.number, inode, super);
+    }
+  }
   if (!r)
     r = release_inode(v, old.number);
+  if (!r && (old.mode & 0xf000) == 0x4000) {
+    uint8_t *super = edit_block(v, 0);
+    uint8_t *descriptor =
+        descriptor_edit(v, (old.number - 1) / v->inodes_per_group);
+    if (!super || !descriptor)
+      r = -12;
+    else {
+      super += 1024;
+      little16(descriptor + 16, u16(descriptor + 16) - 1);
+      descriptor_checksum(v, (old.number - 1) / v->inodes_per_group, descriptor,
+                          super);
+    }
+  }
   if (r) {
     transaction_volume = NULL;
     transaction_count = 0;

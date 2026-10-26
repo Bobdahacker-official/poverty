@@ -142,3 +142,9 @@ See [Avalanche's capability notes](avalanche/images/NOTICE) for the kernel's arc
 Source is covered by [Avalanche's MIT license](avalanche/LICENSE). Bundled GRUB retains its [own licensing](avalanche/images/GRUB-COPYRIGHT), with corresponding source included in [grub-source](avalanche/images/grub-source/). The included Copy.sh v86 runtime and BIOS files retain their [BSD-2-Clause license](emulator/v86/LICENSE).
 
 Nuklear and its bundled Catppuccin themes retain their [MIT license](avalanche/vendor/nuklear/LICENSE), alongside the [Catppuccin MIT license](avalanche/vendor/nuklear/CATPPUCCIN-LICENSE). Exact upstream revisions and file origins are recorded in [ORIGIN.md](avalanche/vendor/nuklear/ORIGIN.md). The bundled DejaVu fonts retain their [font license](avalanche/assets/FONT-LICENSE). The ISO includes these notices in `/licenses`.
+
+## Desktop shortcuts, folders, and registry
+
+In Files, use **New file** or **New folder** to create an item in the current folder. Select an item to **Open**, **Rename**, or **Delete** it. Folders open in Files; deletion requires an empty folder. The browser desktop keeps its writable ext4 disk at `avalanche/build/browser-session/ext4.img` across restarts.
+
+Right-click an app in the launcher or dock and choose **Add shortcut**. Right-click a desktop icon to choose **Remove shortcut**. Settings → Registry edits persistent desktop keys. The Terminal accepts `reg list`, `reg desktop.dock`, and `reg desktop.dock 0` to list, read, and change keys. `desktop.top_bar`, `desktop.dock`, and `desktop.icons` take 0 or 1; `desktop.icons_x`, `desktop.icons_y`, and `desktop.dock_bottom` set positions in pixels; `desktop.shortcuts` stores the shortcut bitmask.

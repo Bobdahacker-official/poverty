@@ -85,6 +85,31 @@ if ! running "$runtime/qemu.pid"; then
   if ! test -f "$runtime/data.img"; then
     cp "$repo_root/Images/magenta-data.img" "$runtime/data.img"
   fi
+  if ! test -f "$runtime/ext4.img"; then
+    stage=$(mktemp -d "$runtime/ext4-files.XXXXXX")
+    python3 - "$repo_root/Images/magenta-data.img" "$stage" <<'PYEXTRACT'
+from pathlib import Path
+import struct, sys
+image = Path(sys.argv[1]).read_bytes()
+target = Path(sys.argv[2])
+start = 2048
+records = image[(start + 1) * 512:(start + 5) * 512]
+for slot in range(32):
+    name, size, _, _, used = struct.unpack_from('<32sIIII', records, slot * 64)
+    if used != 1 or not size:
+        continue
+    name = name.split(b'\0', 1)[0].decode('ascii')
+    if not name or '/' in name or name in ('.', '..'):
+        continue
+    offset = (start + 10 + slot * 256) * 512
+    (target / name).write_bytes(image[offset:offset + size])
+PYEXTRACT
+    command -v mkfs.ext4 >/dev/null || { printf "Install e2fsprogs to create the persistent folder disk.\n" >&2; exit 1; }
+    truncate -s 9G "$runtime/ext4.img"
+    mkfs.ext4 -q -F -b 4096 -L MAGENTA -O extent,dir_index,64bit,flex_bg,has_journal \
+      -E lazy_itable_init=0,lazy_journal_init=0 -d "$stage" "$runtime/ext4.img"
+    rm -rf "$stage"
+  fi
   acceleration=(-accel tcg,thread=multi -cpu max)
   if [[ -r /dev/kvm && -w /dev/kvm ]]; then
     acceleration=(-accel kvm -cpu host)
@@ -92,6 +117,7 @@ if ! running "$runtime/qemu.pid"; then
   "$qemu" "${acceleration[@]}" -machine pc,vmport=on -m 256 -boot d \
     -cdrom "$repo_root/Images/magenta.iso" \
     -drive "file=$runtime/data.img,format=raw,if=ide" \
+    -drive "file=$runtime/ext4.img,format=raw,if=ide" \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-modern=on,romfile= \
     -vga std -display none -vnc 127.0.0.1:1,lossy=off \
     -serial "file:$runtime/serial.log" -monitor none \

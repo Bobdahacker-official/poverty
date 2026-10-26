@@ -343,6 +343,20 @@ int fs_write(const char *name, const void *data, uint32_t size) {
   r->crc = crc32(data, size);
   return commit(candidate) ? (int)size : -3;
 }
+int fs_mkdir(const char *path) {
+  return mounted_ext4 ? ext4_mkdir(&root_ext4, path) : -30;
+}
+int fs_rename(const char *old_path, const char *new_path) {
+  if (mounted_ext4)
+    return ext4_rename(&root_ext4, old_path, new_path);
+  static char rename_buffer[FS_MAX_FILE];
+  int n = fs_read(old_path, rename_buffer, sizeof(rename_buffer));
+  if (n < 0 || fs_size(new_path) >= 0)
+    return -1;
+  if (fs_write(new_path, rename_buffer, n) < 0)
+    return -1;
+  return fs_remove(old_path);
+}
 int fs_remove(const char *name) {
   if (!mounted_ext4)
     while (*name == '/')

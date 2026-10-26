@@ -109,6 +109,8 @@ void fs_list(void);
 int fs_read(const char *, void *, uint32_t);
 int fs_write(const char *, const void *, uint32_t);
 int fs_remove(const char *);
+int fs_mkdir(const char *);
+int fs_rename(const char *, const char *);
 int fs_size(const char *);
 bool fs_entry(unsigned, char *, uint32_t *);
 void net_init(void);

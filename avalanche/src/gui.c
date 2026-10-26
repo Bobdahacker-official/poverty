@@ -85,6 +85,18 @@ static nk_bool installed_only;
 static bool removing_package;
 static char download_host[128], download_path[128];
 static char launcher_search[64];
+struct desktop_registry {
+  uint32_t magic, version, shortcuts, top_bar, dock_bar, desktop_icons;
+  uint32_t icons_x, icons_y, dock_bottom, checksum;
+};
+static struct desktop_registry desktop = {
+    0x4d475247, 1, (1u << FILES) | (1u << TERMINAL), 1, 1, 1, 6, 58, 16, 0};
+static bool desktop_dirty, context_open;
+static int context_app = -1;
+static struct nk_rect context_bounds;
+static char registry_key[48], registry_value[32];
+static bool creating_folder, renaming_file;
+static char rename_name[64];
 
 static void copy(char *out, const char *in, unsigned capacity) {
   unsigned n = 0;
@@ -181,6 +193,63 @@ static void terminal_character(char c) {
 static void terminal_append(const char *text) {
   while (*text)
     terminal_character(*text++);
+}
+static void desktop_save(void) {
+  desktop.checksum =
+      crc32(&desktop, offsetof(struct desktop_registry, checksum));
+  if (fs_write("magenta-registry", &desktop, sizeof(desktop)) >= 0)
+    desktop_dirty = false;
+}
+static void desktop_load(void) {
+  struct desktop_registry saved;
+  if (fs_read("magenta-registry", &saved, sizeof(saved)) ==
+          (int)sizeof(saved) &&
+      saved.magic == desktop.magic && saved.version == 1 &&
+      saved.icons_x < 1024 && saved.icons_y < 1024 && saved.dock_bottom < 256 &&
+      saved.checksum ==
+          crc32(&saved, offsetof(struct desktop_registry, checksum)))
+    desktop = saved;
+}
+static uint32_t *registry_slot(const char *key) {
+  if (str_eq(key, "desktop.shortcuts"))
+    return &desktop.shortcuts;
+  if (str_eq(key, "desktop.top_bar"))
+    return &desktop.top_bar;
+  if (str_eq(key, "desktop.dock"))
+    return &desktop.dock_bar;
+  if (str_eq(key, "desktop.icons"))
+    return &desktop.desktop_icons;
+  if (str_eq(key, "desktop.icons_x"))
+    return &desktop.icons_x;
+  if (str_eq(key, "desktop.icons_y"))
+    return &desktop.icons_y;
+  if (str_eq(key, "desktop.dock_bottom"))
+    return &desktop.dock_bottom;
+  return NULL;
+}
+static bool registry_set(const char *key, const char *value) {
+  uint32_t *slot = registry_slot(key), number = 0;
+  if (!slot || !*value)
+    return false;
+  for (const char *p = value; *p; p++) {
+    if (*p < '0' || *p > '9' || number > 100000)
+      return false;
+    number = number * 10 + *p - '0';
+  }
+  if ((slot == &desktop.top_bar || slot == &desktop.dock_bar ||
+       slot == &desktop.desktop_icons) &&
+      number > 1)
+    return false;
+  if (slot == &desktop.icons_x && number >= width - 100)
+    return false;
+  if (slot == &desktop.icons_y && number >= height - 120)
+    return false;
+  if (slot == &desktop.dock_bottom && number > height - 80)
+    return false;
+  *slot = number;
+  desktop_dirty = true;
+  desktop_save();
+  return true;
 }
 static void preference_save(bool announce) {
   last_save = clock_ticks();
@@ -551,6 +620,45 @@ static void shell_start(void) {
   }
 }
 static void shell_submit(void) {
+  if (str_eq(terminal_line, "reg list") ||
+      str_eq(terminal_line, "registry list")) {
+    static const char *keys[] = {"desktop.shortcuts",  "desktop.top_bar",
+                                 "desktop.dock",       "desktop.icons",
+                                 "desktop.icons_x",    "desktop.icons_y",
+                                 "desktop.dock_bottom"};
+    for (unsigned i = 0; i < 7; i++) {
+      char value[32];
+      number(value, *registry_slot(keys[i]));
+      terminal_append(keys[i]);
+      terminal_append(" = ");
+      terminal_append(value);
+      terminal_append("\n");
+    }
+    terminal_line[0] = 0;
+    return;
+  }
+  if (terminal_line[0] == 'r' && terminal_line[1] == 'e' &&
+      terminal_line[2] == 'g' && terminal_line[3] == ' ') {
+    char *key = terminal_line + 4, *value = key;
+    while (*value && *value != ' ')
+      value++;
+    if (*value)
+      *value++ = 0;
+    if (!*value) {
+      uint32_t *slot = registry_slot(key);
+      if (slot) {
+        char output[32];
+        number(output, *slot);
+        terminal_append(output);
+        terminal_append("\n");
+      } else
+        terminal_append("Unknown registry key\n");
+    } else
+      terminal_append(registry_set(key, value) ? "Registry saved\n"
+                                               : "Invalid registry value\n");
+    terminal_line[0] = 0;
+    return;
+  }
   if (!terminal_pid)
     shell_start();
   if (!terminal_pid)
@@ -626,26 +734,51 @@ static void file_contents_view(void) {
     browse(browser_address);
   if (nk_button_label(&ui, "Refresh"))
     refresh_files();
-  nk_layout_row_dynamic(&ui, 32, 3);
+  nk_layout_row_dynamic(&ui, 32, 2);
   if (nk_button_label(&ui, "New file")) {
-    creating_file = !creating_file;
+    creating_file = true;
+    creating_folder = false;
     new_name[0] = 0;
   }
+  if (nk_button_label(&ui, "New folder")) {
+    creating_file = true;
+    creating_folder = true;
+    new_name[0] = 0;
+  }
+  nk_layout_row_dynamic(&ui, 32, 3);
   bool can_open = selected_file >= 0;
   if (!can_open)
     nk_widget_disable_begin(&ui);
-  if (nk_button_label(&ui, "Open") && selected_file >= 0)
+  if (nk_button_label(&ui, "Open") && can_open)
     open_file(selected_file);
+  if (nk_button_label(&ui, "Rename") && can_open) {
+    copy(rename_name, file_items[selected_file].name, sizeof(rename_name));
+    renaming_file = true;
+  }
+  if (nk_button_label(&ui, "Delete") && can_open)
+    deleting_file = true;
   if (!can_open)
     nk_widget_disable_end(&ui);
-  bool can_delete = selected_file >= 0 && !file_items[selected_file].directory;
-  if (!can_delete)
-    nk_widget_disable_begin(&ui);
-  if (nk_button_label(&ui, "Delete") && selected_file >= 0 &&
-      !file_items[selected_file].directory)
-    deleting_file = true;
-  if (!can_delete)
-    nk_widget_disable_end(&ui);
+  if (renaming_file && selected_file >= 0) {
+    nk_layout_row_dynamic(&ui, 32, 3);
+    nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, rename_name,
+                                   sizeof(rename_name), nk_filter_default);
+    if (accent_button("Rename")) {
+      char old_path[256], new_path[256];
+      if (!*rename_name || contains(rename_name, "/") ||
+          !join_path(old_path, browser_path, file_items[selected_file].name) ||
+          !join_path(new_path, browser_path, rename_name))
+        notify("Enter a valid name");
+      else if (fs_rename(old_path, new_path) < 0)
+        notify("Rename failed");
+      else {
+        renaming_file = false;
+        refresh_files();
+      }
+    }
+    if (nk_button_label(&ui, "Cancel"))
+      renaming_file = false;
+  }
   if (creating_file) {
     nk_layout_row_dynamic(&ui, 32, 3);
     nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, new_name,
@@ -657,8 +790,8 @@ static void file_contents_view(void) {
         notify("Enter a file name");
       else if (fs_size(path) >= 0)
         notify("A file with that name already exists");
-      else if (fs_write(path, "", 0) < 0)
-        notify("File creation failed");
+      else if ((creating_folder ? fs_mkdir(path) : fs_write(path, "", 0)) < 0)
+        notify("Creation failed");
       else {
         creating_file = false;
         refresh_files();
@@ -677,8 +810,8 @@ static void file_contents_view(void) {
     file_page = 0;
     refresh_files();
   }
-  float area =
-      nk_window_get_content_region(&ui).h - (creating_file ? 244 : 200);
+  float area = nk_window_get_content_region(&ui).h -
+               (creating_file || renaming_file ? 276 : 232);
   if (area < 80)
     area = 80;
   nk_layout_row_dynamic(&ui, area, 1);
@@ -1135,9 +1268,9 @@ static void settings_view(void) {
   if (nk_group_begin(&ui, "Settings navigation", NK_WINDOW_NO_SCROLLBAR)) {
     nk_layout_row_dynamic(&ui, 28, 1);
     caption("MAGENTA");
-    const char *pages[] = {"Appearance", "System", "Storage", "Pointer",
-                           "About"};
-    for (unsigned i = 0; i < 5; i++) {
+    const char *pages[] = {"Appearance", "System", "Storage",
+                           "Pointer",    "About",  "Registry"};
+    for (unsigned i = 0; i < 6; i++) {
       nk_layout_row_dynamic(&ui, 38, 1);
       nk_bool selected = settings_page == (int)i;
       if (nk_selectable_label(&ui, pages[i], NK_TEXT_LEFT, &selected))
@@ -1209,6 +1342,35 @@ static void settings_view(void) {
         mouse_configure(width, height, 100);
         preferences_dirty = true;
       }
+    } else if (settings_page == 5) {
+      heading("Registry editor");
+      nk_layout_row_dynamic(&ui, 28, 1);
+      caption("Desktop keys are saved to the disk when edited.");
+      static const char *keys[] = {"desktop.shortcuts",  "desktop.top_bar",
+                                   "desktop.dock",       "desktop.icons",
+                                   "desktop.icons_x",    "desktop.icons_y",
+                                   "desktop.dock_bottom"};
+      for (unsigned i = 0; i < 7; i++) {
+        char label[96], value[32];
+        number(value, *registry_slot(keys[i]));
+        copy(label, keys[i], sizeof(label));
+        append(label, "  =  ", sizeof(label));
+        append(label, value, sizeof(label));
+        nk_layout_row_dynamic(&ui, 27, 1);
+        nk_label(&ui, label, NK_TEXT_LEFT);
+      }
+      nk_layout_row_dynamic(&ui, 30, 1);
+      caption("Set a key and decimal value. Boolean keys use 0 or 1.");
+      nk_layout_row_dynamic(&ui, 35, 2);
+      nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, registry_key,
+                                     sizeof(registry_key), nk_filter_default);
+      nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, registry_value,
+                                     sizeof(registry_value), nk_filter_decimal);
+      nk_layout_row_dynamic(&ui, 36, 1);
+      if (accent_button("Save registry value"))
+        notify(registry_set(registry_key, registry_value)
+                   ? "Registry saved"
+                   : "Invalid key or value");
     } else {
       heading("About Magenta");
       nk_layout_row_dynamic(&ui, 54, 1);
@@ -1249,20 +1411,22 @@ static int window_controls(unsigned id) {
   nk_push_scissor(canvas, nk_rect(0, 0, width, height));
   struct nk_rect bounds = apps[id].bounds;
   bool active = nk_window_is_active(&ui, app_names[id]);
-  nk_fill_rect(canvas, nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55),
-               9, rgb(palette()->mantle));
-  gui_canvas_gloss(canvas, nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
+  nk_fill_rect(canvas, nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 9,
+               rgb(palette()->mantle));
+  gui_canvas_gloss(canvas,
+                   nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
   gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28), id,
-                   active ? rgb(accent()) : rgb(palette()->muted));
-  nk_draw_text(canvas, nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
+                  active ? rgb(accent()) : rgb(palette()->muted));
+  nk_draw_text(canvas,
+               nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
                app_names[id], strlen(app_names[id]), &body_font,
                nk_rgba(0, 0, 0, 0), rgb(palette()->text));
-  nk_draw_text(canvas, nk_rect(bounds.x + 56, bounds.y + 30, bounds.w - 216, 18),
+  nk_draw_text(canvas,
+               nk_rect(bounds.x + 56, bounds.y + 30, bounds.w - 216, 18),
                app_summaries[id], strlen(app_summaries[id]), &body_font,
                nk_rgba(0, 0, 0, 0), rgb(palette()->muted));
-  nk_stroke_line(canvas, bounds.x + 16, bounds.y + 55,
-                   bounds.x + bounds.w - 16, bounds.y + 55, 1,
-                   alpha_color(palette()->surface, 120));
+  nk_stroke_line(canvas, bounds.x + 16, bounds.y + 55, bounds.x + bounds.w - 16,
+                 bounds.y + 55, 1, alpha_color(palette()->surface, 120));
   int action = -1;
   for (unsigned control = 0; control < 3; control++) {
     struct nk_rect r = window_control_bounds(id, control);
@@ -1278,11 +1442,12 @@ static int window_controls(unsigned id) {
         action = control;
       held_control_app = held_control = -1;
     }
-    struct nk_color fill = hover
-        ? alpha_color(control == 2 ? 0xe54868 : palette()->surface, held ? 255 : 180)
-        : nk_rgba(0, 0, 0, 0);
-    struct nk_color ink = hover && control == 2 ? nk_rgb(255, 255, 255)
-                                                : rgb(palette()->muted);
+    struct nk_color fill =
+        hover ? alpha_color(control == 2 ? 0xe54868 : palette()->surface,
+                            held ? 255 : 180)
+              : nk_rgba(0, 0, 0, 0);
+    struct nk_color ink =
+        hover && control == 2 ? nk_rgb(255, 255, 255) : rgb(palette()->muted);
     nk_fill_rect(canvas, r, 8, fill);
     float x = r.x + 14, y = r.y + 16;
     if (control == 0)
@@ -1358,8 +1523,6 @@ static void application(unsigned id) {
     }
     if (id == TERMINAL && terminal_pid)
       user_tty_input(3);
-    if (!apps[id].visible)
-      notify("Window closed");
   }
 }
 static void top_panel(void) {
@@ -1425,7 +1588,19 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                  1, nk_rgba(0, 0, 0, 80));
   gui_canvas_icon(canvas, r, kind, nk_rgb(250, 250, 255));
 }
+static void context_for(int app, struct nk_rect r) {
+  if (nk_input_is_mouse_hovering_rect(&ui.input, r) &&
+      nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_RIGHT)) {
+    context_app = app;
+    context_open = true;
+    float x = ui.input.mouse.pos.x, y = ui.input.mouse.pos.y;
+    context_bounds = nk_rect(x + 170 > width ? width - 176 : x,
+                             y + 92 > height ? height - 98 : y, 170, 92);
+  }
+}
 static void desktop_shortcuts(void) {
+  if (!desktop.desktop_icons)
+    return;
   nk_style_push_style_item(&ui, &ui.style.window.fixed_background,
                            nk_style_item_color(nk_rgba(0, 0, 0, 0)));
   nk_style_push_style_item(&ui, &ui.style.button.normal,
@@ -1433,20 +1608,28 @@ static void desktop_shortcuts(void) {
   nk_style_push_style_item(&ui, &ui.style.button.hover,
                            nk_style_item_color(nk_rgba(255, 255, 255, 25)));
   nk_style_push_float(&ui, &ui.style.button.border, 0);
-  if (nk_begin(&ui, "Desktop shortcuts", nk_rect(6, 58, 116, 230),
+  unsigned count = 0;
+  for (unsigned i = 0; i < APP_COUNT; i++)
+    if (desktop.shortcuts & (1u << i))
+      count++;
+  if (nk_begin(&ui, "Desktop shortcuts",
+               nk_rect(desktop.icons_x, desktop.icons_y, 116, count * 88 + 20),
                NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR)) {
-    for (unsigned i = 0; i < 2; i++) {
+    for (unsigned i = 0; i < APP_COUNT; i++) {
+      if (!(desktop.shortcuts & (1u << i)))
+        continue;
       nk_layout_row_dynamic(&ui, 54, 1);
       struct nk_rect r = nk_widget_bounds(&ui);
       if (nk_button_label(&ui, "")) {
-        if (!i) browse("/");
-        open_app(i ? TERMINAL : FILES);
+        if (i == FILES)
+          browse("/");
+        open_app(i);
       }
-      gui_canvas_icon(nk_window_get_canvas(&ui),
-                      nk_rect(r.x + (r.w - 44) / 2, r.y + 4, 44, 44),
-                      i ? TERMINAL : FILES, nk_rgb(245, 249, 255));
+      context_for(i, r);
+      app_badge(nk_window_get_canvas(&ui),
+                nk_rect(r.x + (r.w - 44) / 2, r.y + 4, 44, 44), i);
       nk_layout_row_dynamic(&ui, 24, 1);
-      nk_label_colored(&ui, i ? "Terminal" : "Home", NK_TEXT_CENTERED,
+      nk_label_colored(&ui, app_names[i], NK_TEXT_CENTERED,
                        nk_rgb(245, 249, 255));
     }
   }
@@ -1456,7 +1639,31 @@ static void desktop_shortcuts(void) {
   nk_style_pop_style_item(&ui);
   nk_style_pop_style_item(&ui);
 }
+static void shortcut_menu(void) {
+  if (!context_open || context_app < 0)
+    return;
+  if (nk_begin(&ui, "Shortcut menu", context_bounds,
+               NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
+    nk_layout_row_dynamic(&ui, 26, 1);
+    nk_label(&ui, app_names[context_app], NK_TEXT_LEFT);
+    nk_layout_row_dynamic(&ui, 34, 1);
+    if (nk_button_label(&ui, desktop.shortcuts & (1u << context_app)
+                                 ? "Remove shortcut"
+                                 : "Add shortcut")) {
+      desktop.shortcuts ^= 1u << context_app;
+      desktop_dirty = true;
+      desktop_save();
+      context_open = false;
+    }
+  }
+  nk_end(&ui);
+  if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&
+      !nk_input_is_mouse_hovering_rect(&ui.input, context_bounds))
+    context_open = false;
+}
 static void dock(void) {
+  if (!desktop.dock_bar)
+    return;
   float dock_width = APP_COUNT * 58 + 58, spacing = 58;
   if (dock_width > width - 28) {
     dock_width = width - 28;
@@ -1464,7 +1671,8 @@ static void dock(void) {
   }
   nk_style_push_vec2(&ui, &ui.style.window.padding, nk_vec2(10, 8));
   if (nk_begin(&ui, "Application dock",
-               nk_rect((width - dock_width) / 2, height - 82, dock_width, 66),
+               nk_rect((width - dock_width) / 2,
+                       height - 66 - desktop.dock_bottom, dock_width, 66),
                NK_WINDOW_NO_SCROLLBAR)) {
     gui_canvas_gloss(nk_window_get_canvas(&ui), nk_window_get_bounds(&ui), 46);
     nk_layout_row_static(&ui, 44, spacing - 12, APP_COUNT + 1);
@@ -1483,6 +1691,8 @@ static void dock(void) {
           open_app(id);
       }
       nk_style_pop_style_item(&ui);
+      if (id >= 0)
+        context_for(id, bounds);
       app_badge(nk_window_get_canvas(&ui),
                 nk_rect(bounds.x + 3, bounds.y + 2, bounds.w - 6, bounds.h - 5),
                 id);
@@ -1543,6 +1753,7 @@ static void launcher_view(void) {
         struct nk_rect r = nk_widget_bounds(&ui);
         if (nk_button_label(&ui, ""))
           open_app(i);
+        context_for(i, r);
         struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
         app_badge(canvas, nk_rect(r.x + (r.w - 48) / 2, r.y + 12, 48, 48), i);
         float label_width = gui_font_width(body_font.userdata, 16, app_names[i],
@@ -1588,7 +1799,7 @@ static void notification_view(void) {
 }
 static void modal_dialogs(void) {
   const char *name = power_dialog       ? "Session"
-                     : deleting_file    ? "Delete file"
+                     : deleting_file    ? "Delete item"
                      : ending_task      ? "End process"
                      : removing_package ? "Remove package"
                      : editor_discard   ? "Discard edits"
@@ -1648,7 +1859,7 @@ static void modal_dialogs(void) {
         char path[256];
         if (join_path(path, browser_path, file_items[selected_file].name)) {
           int r = fs_remove(path);
-          notify(r < 0 ? "File deletion failed" : "File deleted");
+          notify(r < 0 ? "Deletion failed" : "Deleted");
           refresh_files();
         }
       }
@@ -1786,6 +1997,7 @@ int gui_run(void) {
   ui.clip.paste = clipboard_paste;
   gui_canvas_init(width, height);
   preference_load();
+  desktop_load();
   style();
   for (unsigned i = 0; i < APP_COUNT; i++) {
     apps[i].visible = false;
@@ -1838,13 +2050,15 @@ int gui_run(void) {
       if (theme_dirty)
         style();
       nk_set_user_data(&ui, nk_handle_id(0));
-      top_panel();
+      if (desktop.top_bar)
+        top_panel();
       desktop_shortcuts();
       for (unsigned i = 0; i < APP_COUNT; i++)
         application(i);
       nk_set_user_data(&ui, nk_handle_id(0));
       dock();
       launcher_view();
+      shortcut_menu();
       notification_view();
       if (escape_requested) {
         if (launcher)

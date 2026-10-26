@@ -23,6 +23,8 @@ int ext4_write(struct ext4_volume *, const struct ext4_inode *, uint64_t,
                const void *, uint32_t);
 int ext4_create(struct ext4_volume *, const char *, struct ext4_inode *);
 int ext4_replace(struct ext4_volume *, const char *, const void *, uint32_t);
+int ext4_mkdir(struct ext4_volume *, const char *);
+int ext4_rename(struct ext4_volume *, const char *, const char *);
 int ext4_remove(struct ext4_volume *, const char *);
 int ext4_entry(struct ext4_volume *, const char *, unsigned, char[256],
                uint64_t *);
