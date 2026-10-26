@@ -7,7 +7,8 @@ enum { TERMINAL, FILES, EDITOR, TASKS, NETWORK, PACKAGES, SETTINGS, APP_COUNT };
 static struct nk_context ui;
 static uint8_t ui_memory[4 * 1024 * 1024];
 static struct nk_user_font body_font, heading_font;
-static unsigned width, height;
+static unsigned width, height, display_width, display_height;
+static float native_scale = 1;
 static const char *app_names[APP_COUNT] = {"Terminal", "Files",   "Text editor",
                                            "Tasks",    "Network", "Packages",
                                            "Settings"};
@@ -353,7 +354,7 @@ static void style(void) {
       ui.style.progress.cursor_active = nk_style_item_color(color);
   ui.style.window.scaler = nk_style_item_color(muted);
   gui_canvas_wallpaper(accent(), preferences.wallpaper);
-  mouse_configure(width, height, preferences.pointer_speed);
+  mouse_configure(display_width, display_height, preferences.pointer_speed);
   theme_dirty = false;
 }
 static void caption(const char *label) {
@@ -1331,7 +1332,7 @@ static void settings_view(void) {
       int speed = preferences.pointer_speed;
       if (nk_slider_int(&ui, 25, &speed, 250, 5)) {
         preferences.pointer_speed = speed;
-        mouse_configure(width, height, speed);
+        mouse_configure(display_width, display_height, speed);
         preferences_dirty = true;
       }
       nk_layout_row_dynamic(&ui, 28, 1);
@@ -1339,7 +1340,7 @@ static void settings_view(void) {
       nk_layout_row_dynamic(&ui, 34, 1);
       if (nk_button_label(&ui, "Reset pointer speed")) {
         preferences.pointer_speed = 100;
-        mouse_configure(width, height, 100);
+        mouse_configure(display_width, display_height, 100);
         preferences_dirty = true;
       }
     } else if (settings_page == 5) {
@@ -1538,7 +1539,6 @@ static void top_panel(void) {
     nk_layout_row_template_begin(&ui, 26);
     nk_layout_row_template_push_static(&ui, 32);
     nk_layout_row_template_push_static(&ui, 132);
-    nk_layout_row_template_push_static(&ui, 94);
     nk_layout_row_template_push_dynamic(&ui);
     nk_layout_row_template_push_static(&ui, 104);
     nk_layout_row_template_push_static(&ui, width > 800 ? 188 : 0);
@@ -1550,11 +1550,6 @@ static void top_panel(void) {
     gui_canvas_icon(nk_window_get_canvas(&ui), logo, 7, nk_rgb(255, 140, 208));
     if (nk_button_label(&ui, "Applications"))
       launcher = !launcher;
-    if (nk_button_label(&ui, "Desktop")) {
-      for (unsigned i = 0; i < APP_COUNT; i++)
-        if (apps[i].visible)
-          nk_window_collapse(&ui, app_names[i], NK_MINIMIZED);
-    }
     nk_spacer(&ui);
     if (nk_button_label(&ui, network_status.ip ? "Network" : "Offline"))
       open_app(NETWORK);
@@ -1894,6 +1889,8 @@ static void inputs(void) {
   int x, y;
   uint8_t buttons;
   mouse_input_state(&x, &y, &buttons);
+  x /= native_scale;
+  y /= native_scale;
   nk_input_motion(&ui, x, y);
   nk_input_button(&ui, NK_BUTTON_LEFT, x, y, (buttons & 1) != 0);
   nk_input_button(&ui, NK_BUTTON_RIGHT, x, y, (buttons & 2) != 0);
@@ -1990,7 +1987,17 @@ int gui_run(void) {
     return -12;
   ui.clip.copy = clipboard_copy;
   ui.clip.paste = clipboard_paste;
-  gui_canvas_init(width, height);
+  display_width = width;
+  display_height = height;
+  native_scale = width / 1280.0f;
+  if (native_scale > height / 800.0f)
+    native_scale = height / 800.0f;
+  if (native_scale < 1)
+    native_scale = 1;
+  gui_canvas_init(display_width, display_height);
+  gui_canvas_scale(native_scale);
+  width = display_width / native_scale;
+  height = display_height / native_scale;
   preference_load();
   desktop_load();
   style();
@@ -1998,7 +2005,7 @@ int gui_run(void) {
     apps[i].visible = false;
     apps[i].maximized = false;
     float w = width > 900 ? 820 : width - 48,
-          h = height > 650 ? 570 : height - 158;
+          h = height > 800 ? 650 : height - 150;
     apps[i].bounds = nk_rect((width - w) / 2 + (i == SETTINGS ? 0 : 12),
                              (height - h) / 2 - 12, w, h);
   }

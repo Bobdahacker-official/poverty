@@ -1,8 +1,10 @@
 #include "gui_canvas.h"
 #include "font.h"
 #include "system.h"
-static uint32_t pixels[1920 * 1080], wallpaper[1920 * 1080], scratch[1920 * 1080];
+static uint32_t pixels[1920 * 1080], wallpaper[1920 * 1080],
+    scratch[1920 * 1080];
 static unsigned width, height;
+static float desktop_scale = 1;
 static int clip_x, clip_y, clip_right, clip_bottom;
 static uint32_t opened_at[16];
 static bool opened[16];
@@ -11,6 +13,10 @@ static uint64_t previous_commands[32768];
 static size_t previous_size;
 static unsigned wallpaper_revision, previous_wallpaper;
 static bool previous_glass, cache_valid, scene_repaint;
+void gui_canvas_scale(float scale) {
+  desktop_scale = scale;
+  cache_valid = false;
+}
 static uint32_t cursor_under[32 * 32];
 static int cursor_x, cursor_y, presented_x, presented_y;
 static bool cursor_drawn, cursor_moved;
@@ -98,11 +104,15 @@ static void span(int left, int right, int y, struct nk_color c) {
       row[x] = blend(row[x], value, alpha);
 }
 static unsigned rounded_coverage(int px, int py, int w, int h, int radius) {
-  if (radius > w / 2) radius = w / 2;
-  if (radius > h / 2) radius = h / 2;
-  if (px < 0 || py < 0 || px >= w || py >= h) return 0;
+  if (radius > w / 2)
+    radius = w / 2;
+  if (radius > h / 2)
+    radius = h / 2;
+  if (px < 0 || py < 0 || px >= w || py >= h)
+    return 0;
   if (!radius || (px >= radius && px < w - radius) ||
-      (py >= radius && py < h - radius)) return 16;
+      (py >= radius && py < h - radius))
+    return 16;
   int cx = px < radius ? radius * 8 : (w - radius) * 8;
   int cy = py < radius ? radius * 8 : (h - radius) * 8;
   unsigned covered = 0;
@@ -115,9 +125,12 @@ static unsigned rounded_coverage(int px, int py, int w, int h, int radius) {
 }
 static void rectangle(int x, int y, int w, int h, int radius, struct nk_color c,
                       int stroke) {
-  if (w <= 0 || h <= 0) return;
-  if (radius > w / 2) radius = w / 2;
-  if (radius > h / 2) radius = h / 2;
+  if (w <= 0 || h <= 0)
+    return;
+  if (radius > w / 2)
+    radius = w / 2;
+  if (radius > h / 2)
+    radius = h / 2;
   int top = y < clip_y ? clip_y : y;
   int bottom = y + h > clip_bottom ? clip_bottom : y + h;
   for (int row = top; row < bottom; row++) {
@@ -126,12 +139,13 @@ static void rectangle(int x, int y, int w, int h, int radius, struct nk_color c,
       span(x, x + w, row, c);
       continue;
     }
-    for (int col = x < clip_x ? clip_x : x; col < x + w && col < clip_right; col++) {
+    for (int col = x < clip_x ? clip_x : x; col < x + w && col < clip_right;
+         col++) {
       unsigned coverage = rounded_coverage(col - x, ry, w, h, radius);
       if (stroke) {
-        unsigned inner = rounded_coverage(col - x - stroke, ry - stroke,
-                            w - stroke * 2, h - stroke * 2,
-                            radius > stroke ? radius - stroke : 0);
+        unsigned inner = rounded_coverage(
+            col - x - stroke, ry - stroke, w - stroke * 2, h - stroke * 2,
+            radius > stroke ? radius - stroke : 0);
         coverage = coverage > inner ? coverage - inner : 0;
       }
       if (coverage) {
@@ -343,6 +357,10 @@ void gui_canvas_begin(void) {
   clip_bottom = height;
 }
 void gui_canvas_shadow(struct nk_rect r) {
+  r.x *= desktop_scale;
+  r.y *= desktop_scale;
+  r.w *= desktop_scale;
+  r.h *= desktop_scale;
   int x = r.x, y = r.y + 7, w = r.w, h = r.h;
   for (int j = y - 18; j < y + h + 18; j++)
     for (int i = x - 18; i < x + w + 18; i++) {
@@ -397,8 +415,17 @@ static void text(const struct nk_command_text *t) {
     } else if (glyph)
       for (unsigned row = 0; row < glyph_height * scaled / base; row++)
         for (unsigned col = 0; col < glyph_width * scaled / base; col++) {
-          unsigned alpha =
-              glyph[(row * base / scaled) * glyph_width + col * base / scaled];
+          unsigned gx = col * base * 256 / scaled,
+                   gy = row * base * 256 / scaled;
+          unsigned x0 = gx / 256, y0 = gy / 256;
+          unsigned x1 = x0 + 1 < glyph_width ? x0 + 1 : x0;
+          unsigned y1 = y0 + 1 < glyph_height ? y0 + 1 : y0;
+          unsigned fx = gx & 255, fy = gy & 255;
+          unsigned upper = glyph[y0 * glyph_width + x0] * (256 - fx) +
+                           glyph[y0 * glyph_width + x1] * fx;
+          unsigned lower = glyph[y1 * glyph_width + x0] * (256 - fx) +
+                           glyph[y1 * glyph_width + x1] * fx;
+          unsigned alpha = (upper * (256 - fy) + lower * fy) >> 16;
           if (alpha) {
             struct nk_color color = t->foreground;
             color.a = color.a * alpha / 255;
@@ -417,11 +444,133 @@ static float sine(float x) {
   return x * (1.0f - squared / 6.0f + squared * squared / 120.0f -
               squared * squared * squared / 5040.0f);
 }
+static void scale_command(struct nk_command *command) {
+#define S(field) s->field = s->field * desktop_scale
+#define BOX(type)                                                              \
+  struct type *s = (void *)command;                                            \
+  int right = (s->x + s->w) * desktop_scale,                                   \
+      bottom = (s->y + s->h) * desktop_scale;                                  \
+  S(x);                                                                        \
+  S(y);                                                                        \
+  s->w = right - s->x;                                                         \
+  s->h = bottom - s->y
+#define P(field)                                                               \
+  S(field.x);                                                                  \
+  S(field.y)
+  switch (command->type) {
+  case NK_COMMAND_SCISSOR: {
+    BOX(nk_command_scissor);
+    break;
+  }
+  case NK_COMMAND_RECT: {
+    BOX(nk_command_rect);
+    S(rounding);
+    S(line_thickness);
+    break;
+  }
+  case NK_COMMAND_RECT_FILLED: {
+    BOX(nk_command_rect_filled);
+    S(rounding);
+    break;
+  }
+  case NK_COMMAND_RECT_MULTI_COLOR: {
+    BOX(nk_command_rect_multi_color);
+    break;
+  }
+  case NK_COMMAND_CIRCLE: {
+    BOX(nk_command_circle);
+    S(line_thickness);
+    break;
+  }
+  case NK_COMMAND_CIRCLE_FILLED: {
+    BOX(nk_command_circle_filled);
+    break;
+  }
+  case NK_COMMAND_IMAGE: {
+    BOX(nk_command_image);
+    break;
+  }
+  case NK_COMMAND_TEXT: {
+    BOX(nk_command_text);
+    S(height);
+    break;
+  }
+  case NK_COMMAND_LINE: {
+    struct nk_command_line *s = (void *)command;
+    P(begin);
+    P(end);
+    S(line_thickness);
+    break;
+  }
+  case NK_COMMAND_TRIANGLE: {
+    struct nk_command_triangle *s = (void *)command;
+    P(a);
+    P(b);
+    P(c);
+    S(line_thickness);
+    break;
+  }
+  case NK_COMMAND_TRIANGLE_FILLED: {
+    struct nk_command_triangle_filled *s = (void *)command;
+    P(a);
+    P(b);
+    P(c);
+    break;
+  }
+  case NK_COMMAND_CURVE: {
+    struct nk_command_curve *s = (void *)command;
+    P(begin);
+    P(end);
+    P(ctrl[0]);
+    P(ctrl[1]);
+    S(line_thickness);
+    break;
+  }
+  case NK_COMMAND_POLYGON:
+  case NK_COMMAND_POLYLINE: {
+    struct nk_command_polygon *s = (void *)command;
+    for (unsigned i = 0; i < s->point_count; i++) {
+      P(points[i]);
+    }
+    S(line_thickness);
+    break;
+  }
+  case NK_COMMAND_POLYGON_FILLED: {
+    struct nk_command_polygon_filled *s = (void *)command;
+    for (unsigned i = 0; i < s->point_count; i++) {
+      P(points[i]);
+    }
+    break;
+  }
+  case NK_COMMAND_ARC: {
+    struct nk_command_arc *s = (void *)command;
+    S(cx);
+    S(cy);
+    S(r);
+    S(line_thickness);
+    break;
+  }
+  case NK_COMMAND_ARC_FILLED: {
+    struct nk_command_arc_filled *s = (void *)command;
+    S(cx);
+    S(cy);
+    S(r);
+    break;
+  }
+  default:
+    break;
+  }
+#undef P
+#undef BOX
+#undef S
+}
 void gui_canvas_commands(struct nk_context *ctx, bool glass) {
   const struct nk_command *command;
   bool blurred = false;
   uint32_t ticks = clock_ticks();
   nk_foreach(command, ctx) {
+    if (desktop_scale != 1)
+      scale_command((struct nk_command *)command);
     unsigned id = command->userdata.id;
     uint32_t elapsed = id < 16 && opened[id] ? ticks - opened_at[id] : 18;
     command_alpha = id && elapsed < 18 ? elapsed * 255 / 18 : 255;
@@ -583,12 +732,16 @@ void gui_canvas_commands(struct nk_context *ctx, bool glass) {
             unsigned rw = s->img.region[2] ? s->img.region[2] : s->img.w;
             unsigned rh = s->img.region[3] ? s->img.region[3] : s->img.h;
             unsigned total_a = 0, red = 0, green = 0, blue = 0;
-            /* Area sampling retains the antialiased SVG edges when downscaled. */
+            /* Area sampling retains the antialiased SVG edges when downscaled.
+             */
             for (unsigned iy = 0; iy < 4; iy++)
               for (unsigned ix = 0; ix < 4; ix++) {
-                unsigned sx = s->img.region[0] + (x * 8 + ix * 2 + 1) * rw / (s->w * 8);
-                unsigned sy = s->img.region[1] + (y * 8 + iy * 2 + 1) * rh / (s->h * 8);
-                if (sx >= s->img.w || sy >= s->img.h) continue;
+                unsigned sx =
+                    s->img.region[0] + (x * 8 + ix * 2 + 1) * rw / (s->w * 8);
+                unsigned sy =
+                    s->img.region[1] + (y * 8 + iy * 2 + 1) * rh / (s->h * 8);
+                if (sx >= s->img.w || sy >= s->img.h)
+                  continue;
                 uint32_t value = source[sy * s->img.w + sx];
                 unsigned a = value >> 24;
                 total_a += a;
@@ -680,11 +833,11 @@ void gui_canvas_gloss(struct nk_command_buffer *b, struct nk_rect r,
   for (unsigned y = 0; y < rows; y++) {
     float inset = y < 8 ? (float)(8 - y) : 2;
     unsigned opacity = strength * (rows - y) * (rows - y) / (rows * rows);
-    nk_fill_rect(b, nk_rect(r.x + inset, r.y + 1 + y, r.w - inset * 2, 1),
-                 0, nk_rgba(255, 255, 255, opacity));
+    nk_fill_rect(b, nk_rect(r.x + inset, r.y + 1 + y, r.w - inset * 2, 1), 0,
+                 nk_rgba(255, 255, 255, opacity));
   }
-  nk_stroke_line(b, r.x + 10, r.y + 1, r.x + r.w - 10, r.y + 1,
-                   1, nk_rgba(255, 255, 255, strength));
+  nk_stroke_line(b, r.x + 10, r.y + 1, r.x + r.w - 10, r.y + 1, 1,
+                 nk_rgba(255, 255, 255, strength));
   nk_push_scissor(b, old);
 }
 void gui_canvas_icon(struct nk_command_buffer *b, struct nk_rect r,
