@@ -14,25 +14,6 @@ Get [Magenta 0.2.0 — Mountains](https://github.com/Bobdahacker-official/povert
 
 For the latest build, use the files in [Images](Images/). Releases mark version updates; ordinary commits don't create a release.
 
-## Run it in your browser
-
-[Open a Codespace](https://codespaces.new/Bobdahacker-official/poverty). Once it starts, open port **6080** from the Ports tab. QEMU runs Magenta in the Codespace, and noVNC shows the desktop in your browser.
-
-To update an existing Codespace:
-
-```sh
-git pull --ff-only
-bash tools/boot-browser.sh --restart
-```
-
-If Git says local changes would be overwritten, save them with `git stash push -u` before pulling. Refresh the noVNC tab after restarting.
-
-The launcher keeps your ext4 disk in `avalanche/build/browser-session/ext4.img`. Keep that file when updating. It also retains the older Avalanche data disk at `avalanche/build/browser-session/data.img`.
-
-On a phone or tablet, tap **Keyboard** in noVNC to type. The keyboard toolbar has Enter, Backspace, Tab, Esc, arrows, Ctrl, and Alt. `bash tools/boot-browser.sh --restart-vnc` restarts the viewer without restarting Magenta.
-
-Copy.sh's v86 emulator can't run x86-64 images. Use the Codespaces viewer, QEMU, or VirtualBox.
-
 ## Run it in VirtualBox
 
 Create a 64-bit Other/Unknown VM with 256 MiB of RAM. Attach `magenta.iso` as an IDE optical drive and `magenta-data.img` as a hard disk. For networking, choose Intel PRO/1000 MT Desktop (`82540EM`) with NAT.

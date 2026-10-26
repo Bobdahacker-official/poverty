@@ -20,10 +20,9 @@ Terminal, Files, Text editor, Tasks, Network, Packages, and Settings are include
 - **magenta-data.img** and **avalanche-data.img**: writable Avalanche disks with the bundled programs.
 - **avalanche.elf**: the kernel executable.
 - **magenta-source.zip**: source and license files.
-- **magenta-desktop.png**, **magenta-launcher.png**, and **magenta-files.png**: desktop screenshots.
 - **SHA256SUMS**: download checksums.
 
-For a VM, attach the ISO as an optical drive and the matching data image as a hard disk. The Codespaces launcher creates a separate ext4 disk on first start and keeps it across restarts.
+For a VM, attach the ISO as an optical drive and the matching data image as a hard disk.
 
 ## Checks
 

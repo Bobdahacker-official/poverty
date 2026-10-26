@@ -25,3 +25,17 @@ jobs:
               const name = body.split('\n')[0].replace(/^# /, '');
               await github.rest.repos.updateRelease({owner, repo, release_id: release.id, name, body});
             }
+      - name: Remove screenshot downloads and update checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag=magenta-v0.2.0
+          gh release view "$tag" --json assets --jq '.assets[] | select(.name | endswith(".png")) | .name' > /tmp/release-pngs
+          while IFS= read -r asset; do
+            gh release delete-asset "$tag" "$asset" --yes
+          done < /tmp/release-pngs
+          mkdir -p /tmp/release-checksums
+          gh release download "$tag" --pattern SHA256SUMS --dir /tmp/release-checksums --clobber
+          sed -i '/\.png$/d' /tmp/release-checksums/SHA256SUMS
+          gh release upload "$tag" /tmp/release-checksums/SHA256SUMS --clobber
