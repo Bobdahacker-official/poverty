@@ -1594,8 +1594,8 @@ static void context_for(int app, struct nk_rect r) {
     context_app = app;
     context_open = true;
     float x = ui.input.mouse.pos.x, y = ui.input.mouse.pos.y;
-    context_bounds = nk_rect(x + 170 > width ? width - 176 : x,
-                             y + 92 > height ? height - 98 : y, 170, 92);
+    context_bounds = nk_rect(x + 250 > width ? width - 256 : x,
+                             y + 116 > height ? height - 122 : y, 250, 116);
   }
 }
 static void desktop_shortcuts(void) {
@@ -1642,6 +1642,11 @@ static void desktop_shortcuts(void) {
 static void shortcut_menu(void) {
   if (!context_open || context_app < 0)
     return;
+  nk_style_push_style_item(&ui, &ui.style.button.normal,
+                           nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+  nk_style_push_vec2(&ui, &ui.style.button.padding, nk_vec2(8, 6));
+  nk_style_push_flags(&ui, &ui.style.button.text_alignment, NK_TEXT_LEFT);
+  nk_window_set_bounds(&ui, "Shortcut menu", context_bounds);
   if (nk_begin(&ui, "Shortcut menu", context_bounds,
                NK_WINDOW_BORDER | NK_WINDOW_NO_SCROLLBAR)) {
     nk_layout_row_dynamic(&ui, 26, 1);
@@ -1657,6 +1662,9 @@ static void shortcut_menu(void) {
     }
   }
   nk_end(&ui);
+  nk_style_pop_flags(&ui);
+  nk_style_pop_vec2(&ui);
+  nk_style_pop_style_item(&ui);
   if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&
       !nk_input_is_mouse_hovering_rect(&ui.input, context_bounds))
     context_open = false;
