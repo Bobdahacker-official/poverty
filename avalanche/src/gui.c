@@ -1244,6 +1244,9 @@ static int window_controls(unsigned id) {
   struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
   struct nk_rect clip = canvas->clip;
   nk_push_scissor(canvas, nk_rect(0, 0, width, height));
+  gui_canvas_gloss(
+      canvas,
+      nk_rect(apps[id].bounds.x, apps[id].bounds.y, apps[id].bounds.w, 44), 22);
   bool active = nk_window_is_active(&ui, app_names[id]);
   int action = -1;
   for (unsigned control = 0; control < 3; control++) {
@@ -1405,8 +1408,9 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
   nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
                nk_rgba(0, 0, 0, 65));
   nk_fill_rect(canvas, r, 10, base);
-  nk_fill_rect(canvas, nk_rect(r.x + 2, r.y + 2, r.w - 4, r.h / 2 - 2), 8,
-               nk_rgba(255, 255, 255, 30));
+  gui_canvas_gloss(canvas, r, 90);
+  nk_stroke_line(canvas, r.x + 10, r.y + r.h - 3, r.x + r.w - 10, r.y + r.h - 3,
+                 1, nk_rgba(0, 0, 0, 80));
   gui_canvas_icon(canvas, r, kind, nk_rgb(250, 250, 255));
 }
 static void desktop_shortcuts(void) {
@@ -1443,6 +1447,7 @@ static void dock(void) {
   if (nk_begin(&ui, "Application dock",
                nk_rect((width - dock_width) / 2, height - 82, dock_width, 66),
                NK_WINDOW_NO_SCROLLBAR)) {
+    gui_canvas_gloss(nk_window_get_canvas(&ui), nk_window_get_bounds(&ui), 46);
     nk_layout_row_static(&ui, 44, spacing - 12, APP_COUNT + 1);
     for (unsigned slot = 0; slot < APP_COUNT + 1; slot++) {
       int id = slot ? ((int)slot - 1) : -1;

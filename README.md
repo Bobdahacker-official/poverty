@@ -11,6 +11,10 @@ The launcher groups applications into All apps, Work, System, Network, and Favor
 
 ![Magenta desktop running in QEMU](Images/desktop.png)
 
+The glossy desktop uses antialiased [Lucide](https://lucide.dev/) icons, glass highlights, translucent surfaces, and colored window controls. The icon sources, native atlas, and ISC/Feather MIT notices are included in [assets/lucide](avalanche/assets/lucide/). Visual research includes [WhiteSur](https://github.com/vinceliuice/WhiteSur-gtk-theme) and [Papirus](https://github.com/PapirusDevelopmentTeam/papirus-icon-theme).
+
+Three captures of the running desktop: [Glossy desktop](Images/glossy-desktop.png), [application launcher](Images/glossy-launcher.png), and [Files workspace](Images/glossy-files.png).
+
 ## Downloads
 
 - [Download Magenta BIOS/UEFI ISO](https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/Images/magenta.iso) — boot media with a default Magenta entry and a separate rescue-console entry.

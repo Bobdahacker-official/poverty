@@ -21,7 +21,7 @@ build/boot.o: src/boot.S | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/platform_asm.o: src/platform.S | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
-build/font_data.o: src/font_data.S assets/DejaVuSans.ttf | build
+build/font_data.o: src/font_data.S assets/DejaVuSans.ttf assets/lucide/icons.argb | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/user/crt.o: user/crt.S | build/user
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@

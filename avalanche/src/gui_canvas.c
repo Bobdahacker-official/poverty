@@ -451,8 +451,13 @@ void gui_canvas_commands(struct nk_context *ctx, bool glass) {
           uint32_t bottom = blend(color(s->bottom), color(s->right),
                                   s->w ? i * 255 / s->w : 0);
           uint32_t rgb = blend(top, bottom, s->h ? j * 255 / s->h : 0);
+          int ta = s->left.a +
+                   ((int)s->top.a - s->left.a) * (int)i / (s->w ? s->w : 1);
+          int ba = s->bottom.a +
+                   ((int)s->right.a - s->bottom.a) * (int)i / (s->w ? s->w : 1);
+          int alpha = ta + (ba - ta) * (int)j / (s->h ? s->h : 1);
           point(s->x + i, s->y + j,
-                nk_rgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255));
+                nk_rgba((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, alpha));
         }
       break;
     }
@@ -644,8 +649,30 @@ void gui_canvas_present(void) {
   presented_y = cursor_y;
   scene_repaint = cursor_moved = false;
 }
+void gui_canvas_gloss(struct nk_command_buffer *b, struct nk_rect r,
+                      unsigned strength) {
+  struct nk_rect old = b->clip;
+  nk_push_scissor(b, nk_rect(0, 0, width, height));
+  nk_fill_rect_multi_color(
+      b, nk_rect(r.x + 4, r.y + 2, r.w - 8, r.h / 2),
+      nk_rgba(255, 255, 255, strength), nk_rgba(255, 255, 255, strength),
+      nk_rgba(255, 255, 255, 0), nk_rgba(255, 255, 255, 0));
+  nk_stroke_rect(b, nk_rect(r.x + 1, r.y + 1, r.w - 2, r.h - 2), 10, 1,
+                 nk_rgba(255, 255, 255, strength + 12));
+  nk_push_scissor(b, old);
+}
 void gui_canvas_icon(struct nk_command_buffer *b, struct nk_rect r,
                      unsigned kind, struct nk_color c) {
+  extern const uint32_t gui_icons_start[];
+  if (kind < 9) {
+    struct nk_image image =
+        nk_image_ptr((void *)(gui_icons_start + kind * 48 * 48));
+    image.w = image.h = 48;
+    nk_draw_image(b,
+                  nk_rect(r.x + (r.w - 28) / 2, r.y + (r.h - 28) / 2, 28, 28),
+                  &image, c);
+    return;
+  }
   float x = r.x + (r.w - 24) / 2, y = r.y + (r.h - 24) / 2;
   if (kind == 0) {
     nk_stroke_rect(b, nk_rect(x, y + 2, 24, 20), 4, 2, c);

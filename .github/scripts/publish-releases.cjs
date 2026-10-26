@@ -14,6 +14,7 @@ const artifacts = [
   ['avalanche/images/NOTICE', 'avalanche-NOTICE.txt'],
   ['avalanche/images/GRUB-COPYRIGHT', 'GRUB-COPYRIGHT.txt'],
   ['avalanche/assets/FONT-LICENSE', 'FONT-LICENSE.txt'],
+  ['avalanche/assets/lucide/LICENSE', 'LUCIDE-LICENSE.txt'],
   ['avalanche/vendor/nuklear/LICENSE', 'NUKLEAR-LICENSE.txt'],
   ['avalanche/vendor/nuklear/CATPPUCCIN-LICENSE', 'CATPPUCCIN-LICENSE.txt'],
   ['Images/magenta.iso', 'magenta.iso'],
