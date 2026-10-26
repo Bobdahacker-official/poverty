@@ -104,7 +104,10 @@ for slot in range(32):
     offset = (start + 10 + slot * 256) * 512
     (target / name).write_bytes(image[offset:offset + size])
 PYEXTRACT
-    command -v mkfs.ext4 >/dev/null || { printf "Install e2fsprogs to create the persistent folder disk.\n" >&2; exit 1; }
+    if ! command -v mkfs.ext4 >/dev/null; then
+      sudo -n apt-get update -qq
+      sudo -n apt-get install -y -qq e2fsprogs
+    fi
     truncate -s 9G "$runtime/ext4.img"
     mkfs.ext4 -q -F -b 4096 -L MAGENTA -O extent,dir_index,64bit,flex_bg,has_journal \
       -E lazy_itable_init=0,lazy_journal_init=0 -d "$stage" "$runtime/ext4.img"
