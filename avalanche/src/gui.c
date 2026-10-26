@@ -35,6 +35,7 @@ static void shell_start(void);
 static int active_app = SETTINGS, focus_request = -1, editor_focus,
            terminal_focus, settings_page;
 static int held_control_app = -1, held_control = -1;
+static unsigned launcher_category;
 static const uint32_t accents[] = {0xe6007e, 0x7287fd, 0x179299, 0xfe640b,
                                    0x8839ef};
 static const struct palette {
@@ -600,7 +601,7 @@ static void terminal_view(void) {
   if ((flags & NK_EDIT_COMMITTED) || submit)
     shell_submit();
 }
-static void files_view(void) {
+static void file_contents_view(void) {
   float toolbar[] = {0.1f, 0.65f, 0.12f, 0.13f};
   nk_layout_row(&ui, NK_DYNAMIC, 34, 4, toolbar);
   if (nk_button_symbol(&ui, NK_SYMBOL_CHEVRON_LEFT)) {
@@ -680,6 +681,9 @@ static void files_view(void) {
     area = 80;
   nk_layout_row_dynamic(&ui, area, 1);
   if (nk_group_begin(&ui, "Folder contents", 0)) {
+    nk_layout_row_dynamic(&ui, 24, 2);
+    caption("NAME");
+    caption("SIZE / TYPE");
     for (unsigned i = 0; i < file_count; i++) {
       float row[] = {0.72f, 0.28f};
       nk_layout_row(&ui, NK_DYNAMIC, 34, 2, row);
@@ -717,6 +721,48 @@ static void files_view(void) {
   if (nk_button_label(&ui, "Next") && file_more) {
     file_page += 64;
     refresh_files();
+  }
+}
+static void files_view(void) {
+  float columns[] = {0.22f, 0.78f};
+  nk_layout_row(&ui, NK_DYNAMIC, nk_window_get_content_region(&ui).h, 2,
+                columns);
+  if (nk_group_begin(&ui, "File locations", NK_WINDOW_NO_SCROLLBAR)) {
+    nk_layout_row_dynamic(&ui, 30, 1);
+    caption("LOCATIONS");
+    nk_layout_row_dynamic(&ui, 40, 1);
+    if (nk_button_label(&ui, "Home")) {
+      file_filter[0] = 0;
+      browse("/");
+    }
+    nk_layout_row_dynamic(&ui, 40, 1);
+    if (nk_button_label(&ui, "Applications"))
+      launcher = true;
+    nk_layout_row_dynamic(&ui, 40, 1);
+    if (nk_button_label(&ui, "Storage")) {
+      settings_page = 2;
+      open_app(SETTINGS);
+    }
+    nk_layout_row_dynamic(&ui, 30, 1);
+    caption("QUICK ACTIONS");
+    nk_layout_row_dynamic(&ui, 40, 1);
+    if (nk_button_label(&ui, "New document")) {
+      creating_file = true;
+      new_name[0] = 0;
+    }
+    nk_layout_row_dynamic(&ui, 40, 1);
+    if (nk_button_label(&ui, "Refresh"))
+      refresh_files();
+    nk_layout_row_dynamic(&ui, 40, 1);
+    if (nk_button_label(&ui, "Packages"))
+      open_app(PACKAGES);
+    nk_layout_row_dynamic(&ui, 36, 1);
+    caption(fs_mounted_disk() < 0 ? "Session storage" : "Persistent disk");
+    nk_group_end(&ui);
+  }
+  if (nk_group_begin(&ui, "File browser", 0)) {
+    file_contents_view();
+    nk_group_end(&ui);
   }
 }
 static void editor_view(void) {
@@ -1213,12 +1259,14 @@ static int window_controls(unsigned id) {
         action = control;
       held_control_app = held_control = -1;
     }
+    static const uint32_t traffic[] = {0xf2c252, 0x49c68a, 0xf26378};
     struct nk_color fill =
-        hover ? rgb(control == 2 ? 0xd12a56 : palette()->surface)
-              : alpha_color(palette()->surface, 60);
+        hover ? alpha_color(palette()->surface, 180) : nk_rgba(0, 0, 0, 0);
     struct nk_color ink =
         hover && control == 2 ? nk_rgb(255, 255, 255) : rgb(palette()->text);
     nk_fill_rect(canvas, r, 8, fill);
+    nk_fill_circle(canvas, nk_rect(r.x + 7, r.y + 7, 22, 22),
+                   active ? rgb(traffic[control]) : rgb(palette()->muted));
     if (held && hover)
       nk_stroke_rect(canvas, r, 8, 2, rgb(accent()));
     float x = r.x + 12, y = r.y + 12;
@@ -1301,8 +1349,10 @@ static void application(unsigned id) {
 }
 static void top_panel(void) {
   nk_style_push_style_item(&ui, &ui.style.window.fixed_background,
-                           nk_style_item_color(nk_rgba(18, 17, 27, 200)));
+                           nk_style_item_color(nk_rgba(15, 21, 33, 170)));
   nk_style_push_vec2(&ui, &ui.style.window.padding, nk_vec2(10, 6));
+  nk_style_push_style_item(&ui, &ui.style.button.normal,
+                           nk_style_item_color(nk_rgba(0, 0, 0, 0)));
   nk_style_push_vec2(&ui, &ui.style.button.padding, nk_vec2(8, 4));
   nk_style_push_color(&ui, &ui.style.text.color, nk_rgb(235, 232, 244));
   if (nk_begin(&ui, "Desktop panel", nk_rect(0, 0, width, 40),
@@ -1344,6 +1394,7 @@ static void top_panel(void) {
   nk_style_pop_vec2(&ui);
   nk_style_pop_vec2(&ui);
   nk_style_pop_style_item(&ui);
+  nk_style_pop_style_item(&ui);
 }
 static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                       int id) {
@@ -1359,18 +1410,24 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
   gui_canvas_icon(canvas, r, kind, nk_rgb(250, 250, 255));
 }
 static void desktop_shortcuts(void) {
-  nk_style_push_style_item(&ui,&ui.style.window.fixed_background,nk_style_item_color(nk_rgba(0,0,0,0)));
-  if(nk_begin(&ui,"Desktop shortcuts",nk_rect(10,58,100,210),NK_WINDOW_BACKGROUND|NK_WINDOW_NO_SCROLLBAR)) {
-    for(unsigned i=0;i<2;i++) {
-      nk_layout_row_dynamic(&ui,54,1);
-      struct nk_rect r=nk_widget_bounds(&ui);
-      if(nk_button_label(&ui,"")) {
-        if(!i)browse("/");
-        open_app(i?TERMINAL:FILES);
+  nk_style_push_style_item(&ui, &ui.style.window.fixed_background,
+                           nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+  if (nk_begin(&ui, "Desktop shortcuts", nk_rect(10, 58, 100, 210),
+               NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR)) {
+    for (unsigned i = 0; i < 2; i++) {
+      nk_layout_row_dynamic(&ui, 54, 1);
+      struct nk_rect r = nk_widget_bounds(&ui);
+      if (nk_button_label(&ui, "")) {
+        if (!i)
+          browse("/");
+        open_app(i ? TERMINAL : FILES);
       }
-      app_badge(nk_window_get_canvas(&ui),nk_rect(r.x+(r.w-44)/2,r.y+4,44,44),i?TERMINAL:FILES);
-      nk_layout_row_dynamic(&ui,24,1);
-      nk_label_colored(&ui,i?"Terminal":"Home",NK_TEXT_CENTERED,nk_rgb(245,249,255));
+      app_badge(nk_window_get_canvas(&ui),
+                nk_rect(r.x + (r.w - 44) / 2, r.y + 4, 44, 44),
+                i ? TERMINAL : FILES);
+      nk_layout_row_dynamic(&ui, 24, 1);
+      nk_label_colored(&ui, i ? "Terminal" : "Home", NK_TEXT_CENTERED,
+                       nk_rgb(245, 249, 255));
     }
   }
   nk_end(&ui);
@@ -1393,8 +1450,8 @@ static void dock(void) {
       bool selected = id >= 0 && apps[id].visible && active_app == id;
       nk_style_push_style_item(
           &ui, &ui.style.button.normal,
-          nk_style_item_color(selected ? rgb(accent())
-                                       : alpha_color(palette()->mantle, 100)));
+          nk_style_item_color(selected ? alpha_color(accent(), 35)
+                                       : nk_rgba(0, 0, 0, 0)));
       if (nk_button_label(&ui, "")) {
         if (id < 0)
           launcher = !launcher;
@@ -1423,20 +1480,34 @@ static void launcher_view(void) {
   struct nk_window *menu = nk_window_find(&ui, "Applications");
   if (menu)
     menu->flags &= ~(NK_WINDOW_HIDDEN | NK_WINDOW_CLOSED);
-  float h = height > 650 ? 490 : height - 130;
-  float w = width > 740 ? 620 : width - 40;
+  float h = height > 650 ? 560 : height - 110;
+  float w = width > 740 ? 680 : width - 40;
   if (nk_begin(&ui, "Applications", nk_rect(20, 52, w, h),
                NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_CLOSABLE)) {
     nk_layout_row_dynamic(&ui, 34, 1);
     nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, launcher_search,
                                    sizeof(launcher_search), nk_filter_default);
     nk_layout_row_dynamic(&ui, 28, 1);
-    caption("APPLICATIONS");
+    caption("Search by name, or choose a category");
+    const char *categories[] = {"All apps", "Work", "System", "Network",
+                                "Favorites"};
+    nk_layout_row_dynamic(&ui, 32, 5);
+    for (unsigned i = 0; i < 5; i++) {
+      nk_bool chosen = launcher_category == i;
+      if (nk_selectable_label(&ui, categories[i], NK_TEXT_CENTERED, &chosen))
+        launcher_category = i;
+    }
     nk_layout_row_dynamic(&ui, 112, 4);
     unsigned matches = 0;
     for (unsigned i = 0; i < APP_COUNT; i++)
-      if (contains(app_names[i], launcher_search) ||
-          contains(app_summaries[i], launcher_search)) {
+      if ((launcher_category == 0 ||
+           (launcher_category == 1 && (i == FILES || i == EDITOR)) ||
+           (launcher_category == 2 &&
+            (i == TERMINAL || i == TASKS || i == SETTINGS)) ||
+           (launcher_category == 3 && (i == NETWORK || i == PACKAGES)) ||
+           (launcher_category == 4 && i <= EDITOR)) &&
+          (contains(app_names[i], launcher_search) ||
+           contains(app_summaries[i], launcher_search))) {
         matches++;
         struct nk_rect r = nk_widget_bounds(&ui);
         if (nk_button_label(&ui, ""))

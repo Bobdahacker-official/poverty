@@ -7,6 +7,8 @@ The graphical desktop uses [Nuklear](https://github.com/Immediate-Mode-UI/Nuklea
 
 Terminal, Files, Text editor, Tasks, Network, Packages, and Settings launch from the dock. Terminal runs the ring-3 shell; Files browses directories and launches executables; the editor saves documents and confirms unsaved changes. Tasks manages live processes and priorities, Network configures the adapter and runs diagnostics, and Packages installs, upgrades, removes, and downloads packages. Settings saves the palette, accent, wallpaper, transparency, blur, and pointer speed to the writable disk. Windows support dragging, resizing, minimizing, maximizing, and closing.
 
+The launcher groups applications into All apps, Work, System, Network, and Favorites, with search across the selected category. Files has a locations sidebar and quick actions for creating documents, refreshing the current folder, opening storage settings, and managing packages. Colored window controls share the same touch targets, while the menu bar and dock use quieter backgrounds to keep attention on application content.
+
 ![Magenta desktop running in QEMU](Images/desktop.png)
 
 ## Downloads

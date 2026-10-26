@@ -235,8 +235,17 @@ void gui_canvas_init(unsigned w, unsigned h) {
   clip_bottom = height;
   cache_valid = cursor_drawn = cursor_moved = false;
 }
+static float sine(float);
 void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
   wallpaper_revision++;
+  static int ridges[5][1024];
+  for (unsigned layer = 0; layer < 5; layer++)
+    for (unsigned x = 0; x < width; x++) {
+      float phase = x / (100.0f + layer * 24) + layer * 1.7f;
+      ridges[layer][x] =
+          height * (47 + (int)layer * 9) / 100 + sine(phase) * (height / 24) +
+          sine(phase * 2.3f) * (height / 52) - (int)x * (int)layer / 26;
+    }
   uint32_t top = variant == 1 ? 0x17181e : variant == 2 ? 0x10222d : 0x181322;
   uint32_t bottom = variant == 1   ? 0x2e3039
                     : variant == 2 ? 0x142e42
@@ -262,33 +271,31 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
         if (distance < 420)
           base = 0xfff5ca;
         for (unsigned layer = 0; layer < 5; layer++) {
-          int period = 67 + (int)layer * 29;
-          int phase = ((int)x + (int)layer * 79) % (period * 2);
-          int peak = phase < period ? phase : period * 2 - phase;
-          int ridge = (int)height * (48 + (int)layer * 9) / 100 +
-                      peak * (2 + (int)layer) / 5;
-          ridge -= (int)x * (int)layer / 26;
+          int ridge = ridges[layer][x];
           if ((int)y > ridge) {
             static const uint32_t mountains[] = {0x71b7b7, 0x3d919f, 0x246b80,
                                                  0x16485d, 0x102f42};
             base = mountains[layer];
           }
         }
-        if (y > height * 68 / 100 && x < width * 40 / 100 &&
-            x > width * 12 / 100) {
-          int shore = width * 12 / 100 + ((int)height - (int)y) / 2;
-          if ((int)x > shore && x < width * 39 / 100)
+        if (y > height * 68 / 100) {
+          int depth = y - height * 68 / 100;
+          int center = width * 32 / 100 - depth / 3;
+          int half = width / 45 + depth / 3;
+          if ((int)x > center - half && (int)x < center + half)
             base = blend(0x78b6bc, 0x326f84,
                          (y - height * 68 / 100) * 255 / (height * 32 / 100));
         }
         if (x > width * 69 / 100) {
-          int tree_x = ((int)x + 19) % 87 - 43;
+          int tree_x = ((int)x + 19) % 120 - 60;
           int ground = height * 87 / 100;
-          int tree_top = height * (38 + (x / 87) % 4 * 6) / 100;
+          int tree_top = height * (38 + ((x + 19) / 120) % 4 * 6) / 100;
           int offset = (int)y - tree_top;
           if (offset > 0 && (int)y < ground) {
             int tier = offset % 36;
             int spread = 6 + offset / 7 + tier / 2;
+            if (spread > 42)
+              spread = 42;
             if (tree_x > -spread && tree_x < spread)
               base = 0x102f42;
           }
