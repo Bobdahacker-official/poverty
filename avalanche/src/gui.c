@@ -1,7 +1,10 @@
 #include "font.h"
 #include "gui_canvas.h"
 #include "gui_style.h"
+#include "http.h"
 #include "system.h"
+#include "tls.h"
+#include "web.h"
 
 enum {
   TERMINAL,
@@ -1492,109 +1495,31 @@ static int window_controls(unsigned id) {
   return action;
 }
 static char browser_url[512] = "about:home", browser_status[128] = "Ready";
-static char browser_source[65536], browser_text[65536];
+static char browser_source[65536];
+static struct nk_user_font web_fonts[WEB_NODES];
 static char browser_history[16][512];
 static unsigned browser_history_count;
-static struct {
-  char url[512], label[128];
-} browser_links[64];
-static unsigned browser_link_count;
 static bool browser_load_requested;
 static int browser_focus;
-static void browser_parse(void) {
-  unsigned out = 0;
-  bool tag = false, space = false;
-  browser_link_count = 0;
-  for (unsigned i = 0; browser_source[i] && out + 2 < sizeof(browser_text);
-       i++) {
-    char c = browser_source[i];
-    if (c == '<') {
-      tag = true;
-      if (out && browser_text[out - 1] != '\n')
-        browser_text[out++] = '\n';
-      if (browser_link_count < 64 &&
-          (browser_source[i + 1] == 'a' || browser_source[i + 1] == 'A') &&
-          browser_source[i + 2] == ' ') {
-        unsigned at = i + 3;
-        while (at + 5 < sizeof(browser_source) && browser_source[at] &&
-               browser_source[at] != '>') {
-          if (browser_source[at] == 'h' && browser_source[at + 1] == 'r' &&
-              browser_source[at + 2] == 'e' && browser_source[at + 3] == 'f' &&
-              browser_source[at + 4] == '=') {
-            at += 5;
-            char quote = browser_source[at];
-            if (quote == '\'' || quote == '"')
-              at++;
-            else
-              quote = ' ';
-            unsigned n = 0;
-            while (browser_source[at] && browser_source[at] != quote &&
-                   browser_source[at] != '>' && n < 511)
-              browser_links[browser_link_count].url[n++] = browser_source[at++];
-            browser_links[browser_link_count].url[n] = 0;
-            while (browser_source[at] && browser_source[at] != '>')
-              at++;
-            if (browser_source[at])
-              at++;
-            n = 0;
-            while (browser_source[at] && browser_source[at] != '<' && n < 127)
-              browser_links[browser_link_count].label[n++] =
-                  browser_source[at++];
-            browser_links[browser_link_count].label[n] = 0;
-            browser_link_count++;
-            break;
-          }
-          at++;
-        }
-      }
-      continue;
-    }
-    if (c == '>') {
-      tag = false;
-      continue;
-    }
-    if (tag)
-      continue;
-    if (c == '&') {
-      static const char *entities[] = {"&amp;", "&lt;", "&gt;", "&quot;",
-                                       "&nbsp;"};
-      static const char decoded[] = {'&', '<', '>', '"', ' '};
-      for (unsigned e = 0; e < 5; e++) {
-        unsigned n = strlen(entities[e]), k = 0;
-        while (k < n && browser_source[i + k] == entities[e][k])
-          k++;
-        if (k == n) {
-          c = decoded[e];
-          i += n - 1;
-          break;
-        }
-      }
-    }
-    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
-      if (!space)
-        browser_text[out++] = ' ';
-      space = true;
-    } else {
-      browser_text[out++] = c;
-      space = false;
-    }
-  }
-  browser_text[out] = 0;
-}
 static void browser_load(void) {
   browser_load_requested = false;
   browser_source[0] = 0;
-  browser_text[0] = 0;
-  browser_link_count = 0;
+  web_count = 0;
   if (browser_history_count < 16)
     copy(browser_history[browser_history_count++], browser_url, 512);
   if (str_eq(browser_url, "about:home")) {
     copy(browser_source,
-         "<h1>Magenta Browser</h1><p>Enter an http:// address or file:/path to "
-         "read a page. Links appear below the document. Save writes the page "
-         "to /download.html.</p><p>HTTPS pages use encryption, which this "
-         "browser does not support.</p><a href=\"http://example.com/\">Open "
-         "example.com</a>",
+         "<style>body {color:#263044;background:#f5f6fa;padding:16px} h1 "
+         "{color:#e6007e;font-size:32px} .card "
+         "{background:#e8eaf2;padding:12px} #result {color:#125a43}</style>"
+         "<body><h1>Magenta Browser</h1><p class='card'>Enter a web address to "
+         "browse, or open a saved HTML file with file:/path.</p>"
+         "<p id='result'>Ready</p><button "
+         "onclick=\"document.getElementById('result').textContent = 'Button "
+         "clicked';\">Try an interactive button</button>"
+         "<a href='https://example.com/'>Visit example.com securely</a>"
+         "<script>document.getElementById('result').textContent = 'JavaScript "
+         "is running';</script></body>",
          sizeof(browser_source));
   } else if (browser_url[0] == 'f' && browser_url[1] == 'i' &&
              browser_url[2] == 'l' && browser_url[3] == 'e' &&
@@ -1607,83 +1532,22 @@ static void browser_load(void) {
     }
     browser_source[n] = 0;
   } else {
-    char host[256], path[512], request[1024];
-    unsigned at = 0;
-    const char *url = browser_url;
-    if (url[0] == 'h' && url[1] == 't' && url[2] == 't' && url[3] == 'p' &&
-        url[4] == 's') {
-      copy(browser_status,
-           "HTTPS is not supported. Use an HTTP page or a local file.",
-           sizeof(browser_status));
+    int result = http_get(browser_url, browser_source, sizeof(browser_source));
+    if (result < 0) {
+      copy(
+          browser_status,
+          result == -3
+              ? "TLS verification failed: check address, clock and certificates"
+          : result == -4
+              ? "Page exceeds the document limit or connection ended early"
+              : "Could not load the page",
+          sizeof(browser_status));
+      browser_source[0] = 0;
       return;
-    }
-    if (url[0] == 'h' && url[1] == 't' && url[2] == 't' && url[3] == 'p' &&
-        url[4] == ':' && url[5] == '/' && url[6] == '/')
-      url += 7;
-    while (url[at] && url[at] != '/' && at < 255) {
-      host[at] = url[at];
-      at++;
-    }
-    host[at] = 0;
-    copy(path, url[at] ? url + at : "/", sizeof(path));
-    char authority[256];
-    copy(authority, host, sizeof(authority));
-    unsigned port = 80;
-    for (unsigned k = 0; host[k]; k++)
-      if (host[k] == ':') {
-        host[k++] = 0;
-        port = 0;
-        while (authority[k]) {
-          if (authority[k] < '0' || authority[k] > '9' || port > 6553) {
-            port = 0;
-            break;
-          }
-          port = port * 10 + authority[k++] - '0';
-        }
-        break;
-      }
-    if (!port || port > 65535) {
-      copy(browser_status, "Invalid port", sizeof(browser_status));
-      return;
-    }
-    if (!network_status.ip)
-      net_dhcp();
-    uint32_t address;
-    if (net_dns(host, &address) < 0 || net_tcp_connect(address, port) < 0) {
-      copy(browser_status, "Could not connect. Check Network settings.",
-           sizeof(browser_status));
-      return;
-    }
-    copy(request, "GET ", sizeof(request));
-    append(request, path, sizeof(request));
-    append(request, " HTTP/1.0\r\nHost: ", sizeof(request));
-    append(request, authority, sizeof(request));
-    append(request, "\r\nConnection: close\r\n\r\n", sizeof(request));
-    int result = net_tcp_send(request, strlen(request));
-    unsigned count = 0;
-    while (result >= 0 && count + 1 < sizeof(browser_source)) {
-      result = net_tcp_recv(browser_source + count,
-                            sizeof(browser_source) - count - 1, 300);
-      if (result <= 0)
-        break;
-      count += result;
-    }
-    net_tcp_close();
-    browser_source[count] = 0;
-    if (!count) {
-      copy(browser_status, "The server returned no page",
-           sizeof(browser_status));
-      return;
-    }
-    for (unsigned k = 0; k + 3 < count; k++) {
-      if (browser_source[k] == '\r' && browser_source[k + 1] == '\n' &&
-          browser_source[k + 2] == '\r' && browser_source[k + 3] == '\n') {
-        memmove(browser_source, browser_source + k + 4, count - k - 3);
-        break;
-      }
     }
   }
-  browser_parse();
+  web_set_url(browser_url);
+  web_parse(browser_source);
   copy(browser_status, "Page loaded", sizeof(browser_status));
 }
 static void browser_view(void) {
@@ -1721,58 +1585,102 @@ static void browser_view(void) {
   caption(browser_status);
   nk_layout_row_dynamic(&ui, nk_window_get_content_region(&ui).h - 140, 1);
   if (nk_group_begin(&ui, "Web document", 0)) {
-    const char *line = browser_text;
-    while (*line) {
-      char row[96];
-      unsigned n = 0;
-      while (*line && *line != '\n' && n < 85 &&
-             n < (nk_window_get_content_region(&ui).w - 32) / 9)
-        row[n++] = *line++;
-      if (!n && *line)
-        row[n++] = *line++;
-      if (*line && *line != '\n' && n > 20) {
-        unsigned split = n;
-        while (split && row[split - 1] != ' ')
-          split--;
-        if (split > n / 2) {
-          line -= n - split;
-          n = split;
+    for (unsigned i = 0; i < web_count; i++) {
+      struct web_node *node = &web_nodes[i];
+      if (node->style.hidden || !*node->text)
+        continue;
+      web_fonts[i] = body_font;
+      web_fonts[i].height = node->style.size;
+      nk_style_push_font(&ui, &web_fonts[i]);
+      struct nk_color fg = nk_rgb(node->style.color >> 16,
+                                  node->style.color >> 8, node->style.color);
+      struct nk_color bg = nk_rgb(255, 255, 255);
+      int parent = i;
+      while (parent >= 0) {
+        uint32_t c = web_nodes[parent].style.background;
+        if (c != 0xffffffffu) {
+          bg = nk_rgb(c >> 16, c >> 8, c);
+          break;
+        }
+        parent = web_nodes[parent].parent;
+      }
+      if (*node->href || *node->onclick || str_eq(node->tag, "button")) {
+        nk_layout_row_dynamic(&ui, node->style.size + 16, 1);
+        if (nk_button_label(&ui, node->text)) {
+          web_click(i);
+          if (*node->href) {
+            char base[512];
+            copy(base, browser_url, sizeof(base));
+            if (contains(node->href, ":"))
+              copy(browser_url, node->href, sizeof(browser_url));
+            else {
+              unsigned end = strlen(base);
+              if (node->href[0] == '/') {
+                end = contains(base, "https://") ? 8 : 7;
+                while (base[end] && base[end] != '/')
+                  end++;
+              } else {
+                while (end && base[end - 1] != '/')
+                  end--;
+              }
+              base[end] = 0;
+              copy(browser_url, base, sizeof(browser_url));
+              append(browser_url, node->href, sizeof(browser_url));
+            }
+            browser_load_requested = true;
+          }
+        }
+      } else {
+        const char *text = node->text;
+        float available =
+            nk_window_get_content_region(&ui).w - 24 - node->style.padding * 2;
+        if (available < 20)
+          available = 20;
+        while (*text) {
+          unsigned n = 0, split = 0;
+          while (text[n] && n < 1023 &&
+                 gui_font_width(nk_handle_ptr(NULL), node->style.size, text,
+                                n + 1) <= available) {
+            if (text[n] == ' ')
+              split = n;
+            n++;
+          }
+          if (!n)
+            n = 1;
+          if (text[n] && split)
+            n = split;
+          nk_layout_row_dynamic(
+              &ui, node->style.size + 6 + node->style.padding * 2, 1);
+          struct nk_rect bounds;
+          if (nk_widget(&bounds, &ui)) {
+            struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
+            nk_fill_rect(canvas, bounds, 0, bg);
+            bounds.x += node->style.padding;
+            bounds.y += node->style.padding;
+            bounds.w -= node->style.padding * 2;
+            bounds.h -= node->style.padding * 2;
+            if (node->style.center) {
+              float w = gui_font_width(nk_handle_ptr(NULL), node->style.size,
+                                       text, n);
+              bounds.x += (bounds.w - w) / 2;
+              bounds.w = w;
+            }
+            nk_draw_text(canvas, bounds, text, n, &web_fonts[i], bg, fg);
+          }
+          text += n;
+          while (*text == ' ')
+            text++;
         }
       }
-      row[n] = 0;
-      if (*line == '\n')
-        line++;
-      nk_layout_row_dynamic(&ui, 24, 1);
-      nk_label(&ui, row, NK_TEXT_LEFT);
+      nk_style_pop_font(&ui);
+      if (node->style.margin) {
+        nk_layout_row_dynamic(&ui, node->style.margin, 1);
+        nk_spacing(&ui, 1);
+      }
     }
-    for (unsigned i = 0; i < browser_link_count; i++) {
-      nk_layout_row_dynamic(&ui, 32, 1);
-      if (nk_button_label(&ui, *browser_links[i].label
-                                   ? browser_links[i].label
-                                   : browser_links[i].url)) {
-        if (browser_links[i].url[0] == '/') {
-          char base[512];
-          copy(base, browser_url, sizeof(base));
-          unsigned at = 7;
-          while (base[at] && base[at] != '/')
-            at++;
-          base[at] = 0;
-          copy(browser_url, base, sizeof(browser_url));
-          append(browser_url, browser_links[i].url, sizeof(browser_url));
-        } else if (contains(browser_links[i].url, ":")) {
-          copy(browser_url, browser_links[i].url, sizeof(browser_url));
-        } else {
-          char base[512];
-          copy(base, browser_url, sizeof(base));
-          unsigned end = strlen(base);
-          while (end && base[end - 1] != '/')
-            end--;
-          base[end] = 0;
-          copy(browser_url, base, sizeof(browser_url));
-          append(browser_url, browser_links[i].url, sizeof(browser_url));
-        }
-        browser_load_requested = true;
-      }
+    if (*web_message) {
+      nk_layout_row_dynamic(&ui, 24, 1);
+      nk_label(&ui, web_message, NK_TEXT_LEFT);
     }
     nk_group_end(&ui);
   }
@@ -2324,7 +2232,10 @@ int gui_run(void) {
     native_scale = height / 800.0f;
   if (native_scale < 1)
     native_scale = 1;
-  gui_canvas_init(display_width, display_height);
+  if (!gui_canvas_init(display_width, display_height)) {
+    console_write("Insufficient memory for desktop buffers.\n");
+    return -12;
+  }
   gui_canvas_scale(native_scale);
   width = display_width / native_scale;
   height = display_height / native_scale;

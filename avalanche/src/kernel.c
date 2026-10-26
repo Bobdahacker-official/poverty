@@ -1,7 +1,7 @@
 #include "ext4.h"
 #include "package.h"
 #include "system.h"
-#define PAGES 32768u
+#define PAGES PHYSICAL_PAGES
 #define PAGE 4096u
 static inline void outb(uint16_t p, uint8_t v) {
   __asm__ volatile("outb %0,%1" ::"a"(v), "Nd"(p));
@@ -75,7 +75,7 @@ static void mark(uint8_t *b, uint32_t i, bool on) {
 static bool bit(const uint8_t *b, uint32_t i) {
   return b[i / 8] & (1u << (i % 8));
 }
-static void reserve(uint32_t start, uint32_t end) {
+static void reserve(uint64_t start, uint64_t end) {
   uint32_t a = start / PAGE, b = end / PAGE + (end % PAGE != 0);
   if (b > PAGES)
     b = PAGES;
@@ -85,21 +85,26 @@ static void reserve(uint32_t start, uint32_t end) {
       --available;
     }
 }
-void *page_alloc(void) {
-  for (uint32_t i = 0; i < PAGES; ++i)
-    if (bit(usable, i) && !bit(allocated, i)) {
-      mark(allocated, i, true);
-      ++used;
-      void *p = (void *)(uintptr_t)(i * PAGE);
-      memset(p, 0, PAGE);
+void *pages_alloc(unsigned count) {
+  if (!count || count > PAGES) return NULL;
+  unsigned run = 0;
+  for (uint32_t i = 0; i < PAGES; ++i) {
+    if (bit(usable, i) && !bit(allocated, i)) run++; else run = 0;
+    if (run == count) {
+      unsigned first = i + 1 - count;
+      for (unsigned j = first; j <= i; j++) mark(allocated, j, true);
+      used += count;
+      void *p = (void *)((uintptr_t)first * PAGE);
+      memset(p, 0, (size_t)count * PAGE);
       return p;
     }
+  }
   return NULL;
 }
+void *page_alloc(void) { return pages_alloc(1); }
 bool page_free(void *p) {
-  uint32_t a = (uintptr_t)p, i = a / PAGE;
-  if (a % PAGE || i >= PAGES || !bit(allocated, i))
-    return false;
+  uintptr_t a = (uintptr_t)p, i = a / PAGE;
+  if (a % PAGE || i >= PAGES || !bit(allocated, i)) return false;
   mark(allocated, i, false);
   --used;
   return true;
@@ -793,8 +798,8 @@ void kernel_capture(char *line, char *out, unsigned size) {
 bool graphics_size(unsigned *width, unsigned *height) {
   if (!fb || fw < 640 || fh < 480)
     return false;
-  *width = fw > 1920 ? 1920 : fw;
-  *height = fh > 1080 ? 1080 : fh;
+  *width = fw;
+  *height = fh;
   return true;
 }
 uint8_t graphics_glyph(char c, unsigned y) { return glyph(c, y); }
@@ -928,6 +933,10 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   }
   reserve(0, (uintptr_t)&kernel_end);
   reserve(mbi, end);
+  /* User virtual windows replace identity mappings in process CR3s. */
+  reserve(0x08000000, 0x20000000);
+  reserve(0x40000000, 0x40400000);
+  reserve(0xbfc00000, 0xc0000000);
   if (fb)
     reserve((uintptr_t)fb, (uintptr_t)fb + pitch * fh);
   /* Boot modules remain reserved so future distribution payloads are not

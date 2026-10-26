@@ -1,8 +1,8 @@
 #include "gui_canvas.h"
 #include "font.h"
 #include "system.h"
-static uint32_t pixels[1920 * 1080], wallpaper[1920 * 1080],
-    scratch[1920 * 1080];
+static uint32_t *pixels, *wallpaper, *scratch;
+static int *ridges[5];
 static unsigned width, height;
 static float desktop_scale = 1;
 static int clip_x, clip_y, clip_right, clip_bottom;
@@ -256,18 +256,24 @@ static void blur(int x, int y, int w, int h) {
       point(i, j, nk_rgba(r / 9, g / 9, b / 9, 200));
     }
 }
-void gui_canvas_init(unsigned w, unsigned h) {
+bool gui_canvas_init(unsigned w, unsigned h) {
+  unsigned pages = ((size_t)w * h * 4 + 4095) / 4096;
+  pixels = pages_alloc(pages);
+  wallpaper = pages_alloc(pages);
+  scratch = pages_alloc(pages);
+  for (unsigned i = 0; i < 5; i++) ridges[i] = pages_alloc(((size_t)w * sizeof(int) + 4095) / 4096);
+  if (!pixels || !wallpaper || !scratch || !ridges[0] || !ridges[1] || !ridges[2] || !ridges[3] || !ridges[4]) return false;
   width = w;
   height = h;
   clip_x = clip_y = 0;
   clip_right = width;
   clip_bottom = height;
   cache_valid = cursor_drawn = cursor_moved = false;
+  return true;
 }
 static float sine(float);
 void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
   wallpaper_revision++;
-  static int ridges[5][1920];
   for (unsigned layer = 0; layer < 5; layer++)
     for (unsigned x = 0; x < width; x++) {
       float u = (float)x / width;

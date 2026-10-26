@@ -7,7 +7,7 @@ header:
 /* Request an RGB framebuffer, optional so serial-only machines can boot. */
 .short 5, 1
 .long 20
-.long 1920, 1080, 32
+.long 0, 0, 32
 .balign 8
 .short 0, 0
 .long 8
@@ -17,7 +17,7 @@ header_end:
 .balign 4096
 boot_pml4: .skip 4096
 boot_pdpt: .skip 4096
-boot_pd: .skip 16384
+boot_pd: .skip 65536
 .balign 16
 stack_bottom: .skip 65536
 stack_top:
@@ -49,7 +49,7 @@ _start:
  or $3,%eax
  mov %eax,boot_pdpt(,%ecx,8)
  inc %ecx
- cmp $4,%ecx
+ cmp $16,%ecx
  jne 1b
  xor %ecx,%ecx
 2:
@@ -57,8 +57,11 @@ _start:
  shl $21,%eax
  or $0x83,%eax
  mov %eax,boot_pd(,%ecx,8)
+ mov %ecx,%edx
+ shr $11,%edx
+ mov %edx,boot_pd+4(,%ecx,8)
  inc %ecx
- cmp $2048,%ecx
+ cmp $8192,%ecx
  jne 2b
  mov %cr4,%eax
  or $0x20,%eax

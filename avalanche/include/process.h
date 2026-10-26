@@ -22,7 +22,7 @@ enum process_state {
 struct process {
   uint64_t root[512] __attribute__((aligned(4096)));
   uint64_t pdpt[512] __attribute__((aligned(4096)));
-  uint64_t directory[2048] __attribute__((aligned(4096)));
+  uint64_t directory[IDENTITY_ENTRIES] __attribute__((aligned(4096)));
   uint64_t tables[PROCESS_TABLES][512] __attribute__((aligned(4096)));
   uint8_t kernel_stack[PROCESS_STACK] __attribute__((aligned(16)));
   uint16_t indices[PROCESS_TABLES];

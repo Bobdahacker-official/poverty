@@ -1,8 +1,10 @@
 CC = gcc
 LD = ld
 CFLAGS = -m64 -mno-red-zone -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -msoft-float -Iinclude
-SOURCES = kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
-OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o
+SOURCES = http nvme web_runtime web tls kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
+BEAR_SOURCES = $(wildcard vendor/bearssl/*.c)
+BEAR_OBJECTS = $(patsubst vendor/bearssl/%.c,build/bearssl/%.o,$(BEAR_SOURCES))
+OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o build/elk.o build/printf.o
 APPS = magenta hello cat udp ush http worker linuxhello linuxfork
 APP_ELFS = $(addprefix build/user/,$(addsuffix .elf,$(APPS)))
 .PHONY: all iso disk magenta clean
@@ -41,8 +43,14 @@ build/user/linuxfork.elf: build/user/linuxfork.o user/linux.ld
 	$(LD) -m elf_i386 -T user/linux.ld -nostdlib -o $@ $<
 build/embed.o: user/embed.S $(APP_ELFS)
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
-build/avalanche.elf: $(OBJECTS) linker.ld
-	$(LD) -m elf_x86_64 -T linker.ld -nostdlib -o $@ $(OBJECTS)
+build/bearssl/%.o: vendor/bearssl/%.c vendor/bearssl/config.h
+	mkdir -p build/bearssl
+	$(CC) $(CFLAGS) -Wno-error -Ivendor/bearssl -c $< -o $@
+build/bearssl.a: $(BEAR_OBJECTS)
+	ar rcs $@ $(BEAR_OBJECTS)
+build/tls.o: include/trust_anchors.h
+build/avalanche.elf: $(OBJECTS) build/bearssl.a linker.ld
+	$(LD) -m elf_x86_64 -T linker.ld -nostdlib -o $@ $(OBJECTS) build/bearssl.a
 iso: build/avalanche.iso
 build/avalanche.iso: build/avalanche.elf boot/grub/grub.cfg tools/mkiso.sh
 	sh tools/mkiso.sh
@@ -56,3 +64,12 @@ build/magenta-data.img: tools/mkdisk.py $(APP_ELFS) ../magenta/files/welcome.txt
 	python3 tools/mkdisk.py $@ $(APP_ELFS) ../magenta/files/welcome.txt
 clean:
 	rm -rf build
+
+build/elk.o: vendor/elk/elk.c vendor/elk/elk.h
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -DNDEBUG -Wno-error -c $< -o $@
+build/printf.o: vendor/printf/printf.c vendor/printf/printf.h
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+build/web_runtime.o: src/web_runtime.c
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+build/web.o: src/web.c include/web.h
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@

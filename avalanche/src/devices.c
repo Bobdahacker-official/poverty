@@ -144,6 +144,7 @@ static bool ata_select(unsigned n, uint32_t lba) {
   return true;
 }
 bool disk_raw_read(unsigned n, uint32_t lba, void *buf) {
+  if (n < ndisks && disks[n].backend == 3) return lba < disks[n].sectors && nvme_transfer(disks[n].unit,lba,buf,false);
   if (n < ndisks && disks[n].backend == 2)
     return lba < disks[n].sectors && virtio_block_transfer(lba, buf, false);
   if (n < ndisks && disks[n].backend == 1)
@@ -163,6 +164,7 @@ bool disk_raw_read(unsigned n, uint32_t lba, void *buf) {
   return ata_wait(d, false);
 }
 bool disk_raw_write(unsigned n, uint32_t lba, const void *buf) {
+  if (n < ndisks && disks[n].backend == 3) return !disks[n].read_only && lba < disks[n].sectors && nvme_transfer(disks[n].unit,lba,(void *)buf,true);
   if (n < ndisks && disks[n].read_only)
     return false;
   if (n < ndisks && disks[n].backend == 2)
@@ -185,6 +187,7 @@ bool disk_raw_write(unsigned n, uint32_t lba, const void *buf) {
   return ata_wait(d, false);
 }
 bool disk_raw_flush(unsigned n) {
+  if (n < ndisks && disks[n].backend == 3) return nvme_flush(disks[n].unit);
   if (n < ndisks && disks[n].backend == 2)
     return virtio_block_flush();
   if (n < ndisks && disks[n].backend == 1)
@@ -430,6 +433,46 @@ static uint8_t cmos(uint8_t r) {
   return io_in8(0x71);
 }
 static uint8_t decimal(uint8_t n) { return (n >> 4) * 10 + (n & 15); }
+bool rtc_time(uint32_t *days, uint32_t *seconds) {
+  uint8_t a[7], b[7];
+  const uint8_t regs[] = {0, 2, 4, 7, 8, 9, 11};
+  bool stable = false;
+  for (unsigned tries = 0; tries < 100; tries++) {
+    if (cmos(10) & 0x80)
+      continue;
+    for (unsigned i = 0; i < 7; i++)
+      a[i] = cmos(regs[i]);
+    if (cmos(10) & 0x80)
+      continue;
+    for (unsigned i = 0; i < 7; i++)
+      b[i] = cmos(regs[i]);
+    stable = true;
+    for (unsigned i = 0; i < 7; i++)
+      if (a[i] != b[i])
+        stable = false;
+    if (stable)
+      break;
+  }
+  if (!stable) {
+    return false;
+  }
+  bool pm = a[2] & 0x80;
+  a[2] &= 0x7f;
+  if (!(a[6] & 4))
+    for (unsigned i = 0; i < 6; i++)
+      a[i] = decimal(a[i]);
+  if (!(a[6] & 2))
+    a[2] = (a[2] % 12) + (pm ? 12 : 0);
+  unsigned year = 2000 + a[5], month = a[4], day = a[3];
+  if (month < 1 || month > 12 || day < 1 || day > 31 || a[2] > 23 || a[1] > 59 || a[0] > 59) return false;
+  uint32_t total = 719528;
+  for (unsigned y = 1970; y < year; y++) total += 365 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+  static const unsigned lengths[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  for (unsigned m = 1; m < month; m++) total += lengths[m-1] + (m == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+  *days = total + day - 1;
+  *seconds = a[2] * 3600u + a[1] * 60u + a[0];
+  return true;
+}
 void rtc_print(void) {
   uint8_t a[7], b[7];
   const uint8_t regs[] = {0, 2, 4, 7, 8, 9, 11};
@@ -490,6 +533,7 @@ void devices_init(void) {
   pci_init();
   ata_init();
   ahci_init();
+  nvme_init();
   virtio_block_init();
   mouse_init();
 }
@@ -511,7 +555,7 @@ void devices_list(void) {
     console_putc('\n');
   }
   for (unsigned i = 0; i < ndisks; i++) {
-    console_write(disks[i].backend == 2 ? "VirtIO disk "
+    console_write(disks[i].backend == 3 ? "NVMe disk " : disks[i].backend == 2 ? "VirtIO disk "
                   : disks[i].backend    ? "AHCI disk "
                                         : "ATA disk ");
     print_uint(i);

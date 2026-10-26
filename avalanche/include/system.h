@@ -89,6 +89,9 @@ struct block_device {
 };
 unsigned disk_count(void);
 bool disk_register(const struct block_device *);
+void nvme_init(void);
+bool nvme_transfer(unsigned, uint32_t, void *, bool);
+bool nvme_flush(unsigned);
 void ahci_init(void);
 bool ahci_transfer(unsigned, uint32_t, void *, bool);
 bool ahci_flush(unsigned);

@@ -1,7 +1,7 @@
 #ifndef AVALANCHE_GUI_CANVAS_H
 #define AVALANCHE_GUI_CANVAS_H
 #include "gui_toolkit.h"
-void gui_canvas_init(unsigned, unsigned);
+bool gui_canvas_init(unsigned, unsigned);
 void gui_canvas_scale(float);
 void gui_canvas_wallpaper(uint32_t, unsigned);
 void gui_canvas_begin(void);

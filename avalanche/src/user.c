@@ -4,14 +4,14 @@
 #include "process.h"
 static uint64_t kernel_root[512] __attribute__((aligned(4096)));
 static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
-static uint64_t kernel_directory[2048] __attribute__((aligned(4096)));
+static uint64_t kernel_directory[IDENTITY_ENTRIES] __attribute__((aligned(4096)));
 static struct process tasks[PROCESS_MAX];
-static uint16_t page_references[32768];
+static uint16_t page_references[PHYSICAL_PAGES];
 #define PAGE_COW 512u
 #define PAGE_LAZY 1024u
 static void drop_page(uint64_t entry) {
-  uint32_t physical = entry & ~4095u;
-  if (physical && physical / 4096 < 32768 && page_references[physical / 4096] &&
+  uint64_t physical = entry & ~UINT64_C(4095);
+  if (physical && physical / 4096 < PHYSICAL_PAGES && page_references[physical / 4096] &&
       !--page_references[physical / 4096])
     page_free((void *)(uintptr_t)physical);
 }
@@ -112,8 +112,8 @@ bool process_range(struct process *t, uint32_t p, uint32_t n, bool write) {
     return true;
   if (!t || !process_address(p, n))
     return false;
-  uint32_t end = (p + n - 1) & ~4095u;
-  for (uint32_t v = p & ~4095u;; v += 4096) {
+  uint32_t end = (p + n - 1) & ~UINT64_C(4095);
+  for (uint32_t v = p & ~UINT64_C(4095);; v += 4096) {
     uint64_t *pte = process_pte(t, v);
     if (pte && ((*pte & PAGE_LAZY) || (write && (*pte & PAGE_COW))))
       if (!process_page_fault(t, v, write))
@@ -133,7 +133,7 @@ bool process_copyin(struct process *t, void *out, uint32_t p, uint32_t n) {
     if (count > n)
       count = n;
     uint64_t *pte = process_pte(t, p);
-    memcpy(d, (void *)(uintptr_t)((*pte & ~4095u) + (p & 4095)), count);
+    memcpy(d, (void *)(uintptr_t)((*pte & ~UINT64_C(4095)) + (p & 4095)), count);
     d += count;
     p += count;
     n -= count;
@@ -150,7 +150,7 @@ bool process_copyout(struct process *t, uint32_t p, const void *in,
     if (count > n)
       count = n;
     uint64_t *pte = process_pte(t, p);
-    memcpy((void *)(uintptr_t)((*pte & ~4095u) + (p & 4095)), s, count);
+    memcpy((void *)(uintptr_t)((*pte & ~UINT64_C(4095)) + (p & 4095)), s, count);
     s += count;
     p += count;
     n -= count;
@@ -183,10 +183,10 @@ static uint64_t *ensure_pte(struct process *t, uint32_t v) {
 }
 bool process_private(struct process *t, uint32_t v) {
   uint64_t *pte = process_pte(t, v);
-  if (!pte || !(*pte & ~4095u))
+  if (!pte || !(*pte & ~UINT64_C(4095)))
     return false;
-  uint32_t old = *pte & ~4095u;
-  if (old / 4096 >= 32768 || !page_references[old / 4096])
+  uint64_t old = *pte & ~UINT64_C(4095);
+  if (old / 4096 >= PHYSICAL_PAGES || !page_references[old / 4096])
     return false;
   if (page_references[old / 4096] > 1) {
     void *copy = page_alloc();
@@ -237,7 +237,7 @@ bool process_map(struct process *t, uint32_t v, bool write) {
   uint64_t *pte = ensure_pte(t, v);
   if (!pte)
     return false;
-  if (*pte & ~4095u) {
+  if (*pte & ~UINT64_C(4095)) {
     if (write) {
       if (!process_private(t, v))
         return false;
@@ -260,7 +260,7 @@ bool process_map(struct process *t, uint32_t v, bool write) {
 void process_unmap(struct process *t, uint32_t v) {
   uint64_t *pte = process_pte(t, v);
   if (pte && *pte) {
-    if (*pte & ~4095u) {
+    if (*pte & ~UINT64_C(4095)) {
       drop_page(*pte);
       t->pages--;
     }
@@ -272,7 +272,7 @@ void process_unmap(struct process *t, uint32_t v) {
 static void release(struct process *t) {
   for (unsigned i = 0; i < t->table_count; i++)
     for (unsigned j = 0; j < 512; j++)
-      if (t->tables[i][j] & ~4095u) {
+      if (t->tables[i][j] & ~UINT64_C(4095)) {
         drop_page(t->tables[i][j]);
         t->tables[i][j] = 0;
       }
@@ -280,9 +280,9 @@ static void release(struct process *t) {
 }
 void user_init(void) {
   kernel_root[0] = (uintptr_t)kernel_pdpt | 7;
-  for (unsigned i = 0; i < 4; i++)
+  for (unsigned i = 0; i < PHYSICAL_GIB; i++)
     kernel_pdpt[i] = (uintptr_t)&kernel_directory[i * 512] | 7;
-  for (unsigned i = 0; i < 2048; i++)
+  for (unsigned i = 0; i < IDENTITY_ENTRIES; i++)
     kernel_directory[i] = ((uint64_t)i << 21) | 0x83;
   activate(kernel_directory);
 }
@@ -318,7 +318,7 @@ static void initialize(struct process *t) {
   memset(t, 0, sizeof(*t));
   memcpy(t->directory, kernel_directory, sizeof(kernel_directory));
   t->root[0] = (uintptr_t)t->pdpt | 7;
-  for (unsigned i = 0; i < 4; i++)
+  for (unsigned i = 0; i < PHYSICAL_GIB; i++)
     t->pdpt[i] = (uintptr_t)&t->directory[i * 512] | 7;
   t->pid = next_pid++;
   t->parent = current < 0 ? 0 : tasks[current].pid;
@@ -493,8 +493,8 @@ static int load(struct process *t, const void *image, uint32_t size,
     const struct program_header *p = &ph[i];
     if (p->type != 1 || !p->memsz)
       continue;
-    uint32_t last = (p->vaddr + p->memsz - 1) & ~4095u;
-    for (uint32_t v = p->vaddr & ~4095u;; v += 4096) {
+    uint32_t last = (p->vaddr + p->memsz - 1) & ~UINT64_C(4095);
+    for (uint32_t v = p->vaddr & ~UINT64_C(4095);; v += 4096) {
       if (!process_map(t, v, (p->flags & 2) != 0))
         goto memory;
       if (v == last)
@@ -505,7 +505,7 @@ static int load(struct process *t, const void *image, uint32_t size,
       if (amount > p->filesz - n)
         amount = p->filesz - n;
       uint64_t *pte = process_pte(t, v);
-      memcpy((void *)(uintptr_t)((*pte & ~4095u) + (v & 4095)),
+      memcpy((void *)(uintptr_t)((*pte & ~UINT64_C(4095)) + (v & 4095)),
              (const uint8_t *)image + p->offset + n, amount);
       n += amount;
     }
@@ -526,7 +526,7 @@ static int load(struct process *t, const void *image, uint32_t size,
       native ? stack_top - 16 : linux_stack(t, h, phdr, name, args);
   if (!t->frame->useresp)
     goto memory;
-  t->heap_min = t->heap_break = (high + 4095) & ~4095u;
+  t->heap_min = t->heap_break = (high + 4095) & ~UINT64_C(4095);
   t->mmap_next = native ? 0x40200000u : 0x10000000u;
   t->state = TASK_READY;
   return t->pid;
@@ -962,10 +962,10 @@ int process_fork(struct trap_frame *f) {
         continue;
       }
       if (old & 2)
-        old = (old & ~2u) | PAGE_COW;
+        old = (old & ~UINT64_C(2)) | PAGE_COW;
       p->tables[i][j] = old;
       *pte = old;
-      page_references[(old & ~4095u) / 4096]++;
+      page_references[(old & ~UINT64_C(4095)) / 4096]++;
       c->pages++;
     }
   activate(p->directory);
