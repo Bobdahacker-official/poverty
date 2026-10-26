@@ -1266,8 +1266,9 @@ static int window_controls(unsigned id) {
   int action = -1;
   for (unsigned control = 0; control < 3; control++) {
     struct nk_rect r = window_control_bounds(id, control);
-    bool hover = active && nk_input_is_mouse_hovering_rect(&ui.input, r);
-    if (hover && nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT)) {
+    bool hover = nk_input_is_mouse_hovering_rect(&ui.input, r);
+    if (hover && (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) ||
+                  nk_input_is_mouse_released(&ui.input, NK_BUTTON_LEFT))) {
       held_control_app = id;
       held_control = control;
     }
@@ -1427,25 +1428,32 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
 static void desktop_shortcuts(void) {
   nk_style_push_style_item(&ui, &ui.style.window.fixed_background,
                            nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+  nk_style_push_style_item(&ui, &ui.style.button.normal,
+                           nk_style_item_color(nk_rgba(0, 0, 0, 0)));
+  nk_style_push_style_item(&ui, &ui.style.button.hover,
+                           nk_style_item_color(nk_rgba(255, 255, 255, 25)));
+  nk_style_push_float(&ui, &ui.style.button.border, 0);
   if (nk_begin(&ui, "Desktop shortcuts", nk_rect(6, 58, 116, 230),
                NK_WINDOW_BACKGROUND | NK_WINDOW_NO_SCROLLBAR)) {
     for (unsigned i = 0; i < 2; i++) {
       nk_layout_row_dynamic(&ui, 54, 1);
       struct nk_rect r = nk_widget_bounds(&ui);
       if (nk_button_label(&ui, "")) {
-        if (!i)
-          browse("/");
+        if (!i) browse("/");
         open_app(i ? TERMINAL : FILES);
       }
-      app_badge(nk_window_get_canvas(&ui),
-                nk_rect(r.x + (r.w - 44) / 2, r.y + 4, 44, 44),
-                i ? TERMINAL : FILES);
+      gui_canvas_icon(nk_window_get_canvas(&ui),
+                      nk_rect(r.x + (r.w - 44) / 2, r.y + 4, 44, 44),
+                      i ? TERMINAL : FILES, nk_rgb(245, 249, 255));
       nk_layout_row_dynamic(&ui, 24, 1);
       nk_label_colored(&ui, i ? "Terminal" : "Home", NK_TEXT_CENTERED,
                        nk_rgb(245, 249, 255));
     }
   }
   nk_end(&ui);
+  nk_style_pop_float(&ui);
+  nk_style_pop_style_item(&ui);
+  nk_style_pop_style_item(&ui);
   nk_style_pop_style_item(&ui);
 }
 static void dock(void) {
