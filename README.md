@@ -1,5 +1,5 @@
 # Magenta
-
+*This OS and kernel is not made for experimenting, learning, educational purpouses, and is not a hobby project. It is an indie OS designed to be run in both VMs and real hardware, though advanced hardware support is in the works!*
 Magenta is an x86-64 operating system written in C and assembly, built on [Avalanche Kernel](avalanche/). It has a desktop, a shell, files and folders, networking, and a package manager.
 
 ![Magenta desktop with the Mountains wallpaper](Images/desktop.png)
