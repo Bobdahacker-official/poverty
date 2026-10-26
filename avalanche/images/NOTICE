@@ -7,10 +7,10 @@ GRUB-COPYRIGHT. Corresponding upstream source and Debian patches/build
 rules are included in grub-source/. GRUB is a separate bootloader, not
 part of the Avalanche kernel. The MIT license does not relicense GRUB.
 
-Implemented: a 256-slot ring-3 process table, preemptive priority scheduling
+The kernel has a 256-slot ring-3 process table, preemptive priority scheduling
 with aging and time slices, per-process page tables and kernel stacks, background
 jobs, sleep/input/child waits, process termination, and x87/FXSAVE SSE
-context preservation. Native applications include the userspace shell,
+context preservation. Included programs are the shell,
 hello, cat, UDP, HTTP and a CPU-bound worker.
 
 Fork uses reference-counted copy-on-write pages. Anonymous mappings are

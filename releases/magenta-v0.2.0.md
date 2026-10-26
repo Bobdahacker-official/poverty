@@ -1,32 +1,30 @@
 # Magenta 0.2.0 — Mountains
 
-Magenta is a native x86-64 desktop distribution powered by Avalanche Kernel, written in C and assembly. This release brings a polished desktop, persistent folders, and configurable desktop shortcuts.
+This release adds the Mountains wallpaper, files and folders on ext4, desktop shortcuts, and a registry editor.
 
-## Highlights
+## What's new
 
-- Full HD boot framebuffer with native scaling for application windows, text, icons, the dock, and the top panel.
-- Mountains wallpaper with continuous ridgelines and a flowing river, enabled by default.
-- Files supports creating files and folders, renaming items, and deleting files and empty folders on ext4.
-- Right-click applications in the launcher or dock to add desktop shortcuts; remove them from the shortcut menu.
-- Persistent Registry editor in Settings, with matching Terminal commands for desktop shortcuts, bar visibility, and positions.
-- Terminal, Files, Text editor, Tasks, Network, Packages, and Settings are included.
-- Browser desktop through QEMU and noVNC, with mobile keyboard controls and responsive viewport fitting.
-- BIOS and UEFI boot support, persistent ext4 storage, and VirtIO networking in the browser launcher.
+- The desktop boots at 1920×1080. Text, windows, controls, and the dock scale together.
+- Mountains is the default wallpaper, with smooth ridgelines and a river that flows to the bottom edge.
+- Files can create files and folders, rename them, and delete files and empty folders on ext4.
+- Right-click an app to add a desktop shortcut. Right-click the shortcut to remove it.
+- Settings has a Registry editor for bar visibility, shortcut choices, and positions. Terminal commands edit the same values.
+- The browser viewer fits the screen and has a keyboard toolbar for phones and tablets.
 
-## Downloads
+Terminal, Files, Text editor, Tasks, Network, Packages, and Settings are included. Magenta runs on Avalanche Kernel, written in C and assembly, with BIOS and UEFI boot support.
 
-- **magenta.iso** — Magenta boot image for BIOS and UEFI virtual machines.
-- **avalanche.iso** — Avalanche Kernel boot image and console.
-- **magenta-data.img** and **avalanche-data.img** — writable Avalanche filesystem disks with bundled applications.
-- **avalanche.elf** — kernel executable.
-- **magenta-source.zip** — source and included third-party license files for this release.
-- **magenta-desktop.png**, **magenta-launcher.png**, and **magenta-files.png** — captures of the running desktop.
-- **SHA256SUMS** — checksums for the downloadable artifacts.
+## Files to download
 
-Attach the ISO as an optical drive and the matching writable data image as a hard disk in an x86-64 virtual machine. The Codespaces launcher creates its persistent ext4 disk on first start and keeps it across restarts.
+- **magenta.iso**: Magenta boot image.
+- **avalanche.iso**: Avalanche Kernel and console.
+- **magenta-data.img** and **avalanche-data.img**: writable Avalanche disks with the bundled programs.
+- **avalanche.elf**: the kernel executable.
+- **magenta-source.zip**: source and license files.
+- **magenta-desktop.png**, **magenta-launcher.png**, and **magenta-files.png**: desktop screenshots.
+- **SHA256SUMS**: download checksums.
 
-## Validation
+For a VM, attach the ISO as an optical drive and the matching data image as a hard disk. The Codespaces launcher creates a separate ext4 disk on first start and keeps it across restarts.
 
-Both boot images were rebuilt. The desktop was captured running at 1920×1080. A directory created through Files was inspected with host debugfs, and the resulting ext4 disk passed e2fsck.
+## Checks
 
-Future releases are published for explicitly tagged version updates. Ordinary commits do not produce releases.
+Both boot images were rebuilt. The screenshots come from Magenta running at 1920×1080. A folder created in Files was checked with debugfs, and the ext4 disk passed e2fsck.

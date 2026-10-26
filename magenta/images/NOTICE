@@ -1,4 +1,4 @@
-Magenta 0.1 x86-64 is a graphical and text distribution of Avalanche Kernel.
+Magenta is an x86-64 desktop and text interface built on Avalanche Kernel.
 Source and applications are covered by ../../avalanche/LICENSE (MIT).
 
 The ISO additionally contains GNU GRUB 2.12-9+deb13u2. Its licensing and
@@ -18,7 +18,7 @@ Widgets use the Nuklear C toolkit and its Catppuccin themes under the MIT
 licenses in ../../avalanche/vendor/nuklear/. ORIGIN.md records the upstream
 revisions. The desktop layout draws inspiration from COSMIC. Appearance
 settings persist themes, accents, wallpapers, transparency, blur and pointer
-speed. The native shell runs in Terminal; the editor protects unsaved changes.
+speed. Terminal runs the shell. The editor asks before discarding changes.
 Windows can be moved, resized, minimized, maximized and closed. License
 notices for the toolkit, palette, fonts, kernel and bootloader are in the
 ISO's /licenses directory.
@@ -33,5 +33,5 @@ text and files up to 64 KiB. Binary files have a bounded hexadecimal view.
 
 Magenta, its native applications and its extended kernel are now ELF64
 x86-64 binaries. The Linux demos remain ELF32 compatibility applications.
-Use a 64-bit virtual machine to execute long mode.
-The physical allocator and userspace address bounds remain unchanged.
+Use a 64-bit virtual machine.
+The memory allocator manages RAM below 128 MiB.
