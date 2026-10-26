@@ -9,11 +9,15 @@ Terminal, Files, Text editor, Tasks, Network, Packages, and Settings launch from
 
 The launcher groups applications into All apps, Work, System, Network, and Favorites, with search across the selected category. Files has a locations sidebar and quick actions for creating documents, refreshing the current folder, opening storage settings, and managing packages. Colored window controls share the same touch targets, while the menu bar and dock use quieter backgrounds to keep attention on application content.
 
-![Magenta desktop running in QEMU](Images/desktop.png)
+![Magenta 0.2 desktop with the Mountains wallpaper](Images/desktop.png)
 
 The glossy desktop uses antialiased [Lucide](https://lucide.dev/) icons, glass highlights, translucent surfaces, and colored window controls. The icon sources, native atlas, and ISC/Feather MIT notices are included in [assets/lucide](avalanche/assets/lucide/). Visual research includes [WhiteSur](https://github.com/vinceliuice/WhiteSur-gtk-theme) and [Papirus](https://github.com/PapirusDevelopmentTeam/papirus-icon-theme).
 
-Three captures of the running desktop: [Glossy desktop](Images/glossy-desktop.png), [application launcher](Images/glossy-launcher.png), and [Files workspace](Images/glossy-files.png).
+Latest captures of Magenta 0.2 running at 1920×1080:
+
+![Magenta application launcher](Images/launcher.png)
+
+![Magenta Files with file and folder actions](Images/files.png)
 
 ## Downloads
 
