@@ -197,15 +197,21 @@ static void preference_save(bool announce) {
 }
 static void preference_load(void) {
   preferences_saved = false;
-  preferences = (struct preferences){0x4d475549, 1, 0, 0, 0, 242, 1, 100, 0};
+  preferences = (struct preferences){0x4d475549, 2, 3, 0, 2, 238, 1, 100, 0};
   struct preferences saved;
   if (fs_read("gui-style", &saved, sizeof(saved)) == (int)sizeof(saved) &&
-      saved.magic == preferences.magic && saved.version == 1 &&
-      saved.theme < 4 && saved.accent < 5 && saved.wallpaper < 3 &&
-      saved.alpha >= 195 && saved.alpha <= 255 && saved.blur <= 1 &&
-      saved.pointer_speed >= 25 && saved.pointer_speed <= 250 &&
+      saved.magic == preferences.magic &&
+      (saved.version == 1 || saved.version == 2) && saved.theme < 4 &&
+      saved.accent < 5 && saved.wallpaper < 3 && saved.alpha >= 195 &&
+      saved.alpha <= 255 && saved.blur <= 1 && saved.pointer_speed >= 25 &&
+      saved.pointer_speed <= 250 &&
       saved.checksum == crc32(&saved, offsetof(struct preferences, checksum))) {
     preferences = saved;
+    if (saved.version == 1) {
+      preferences.version = 2;
+      preferences.theme = 3;
+      preferences.wallpaper = 2;
+    }
     preferences_saved = true;
   }
 }
@@ -217,7 +223,7 @@ static void style(void) {
                   color = rgb(accent());
   ui.style.window.fixed_background = nk_style_item_color(panel);
   ui.style.window.background = panel;
-  ui.style.window.rounding = 14;
+  ui.style.window.rounding = 10;
   ui.style.window.border = 1;
   ui.style.window.border_color = alpha_color(p->surface, 210);
   ui.style.window.padding = nk_vec2(16, 14);
@@ -1174,6 +1180,8 @@ static void settings_view(void) {
   }
 }
 static void maximize(unsigned id) {
+  if (id >= APP_COUNT)
+    return;
   if (!apps[id].maximized) {
     apps[id].restore = apps[id].bounds;
     apps[id].bounds = nk_rect(16, 68, width - 32, height - 164);
@@ -1297,9 +1305,9 @@ static void top_panel(void) {
   nk_style_push_vec2(&ui, &ui.style.window.padding, nk_vec2(10, 6));
   nk_style_push_vec2(&ui, &ui.style.button.padding, nk_vec2(8, 4));
   nk_style_push_color(&ui, &ui.style.text.color, nk_rgb(235, 232, 244));
-  if (nk_begin(&ui, "Desktop panel", nk_rect(14, 10, width - 28, 44),
+  if (nk_begin(&ui, "Desktop panel", nk_rect(0, 0, width, 40),
                NK_WINDOW_NO_SCROLLBAR | NK_WINDOW_BACKGROUND)) {
-    nk_layout_row_template_begin(&ui, 30);
+    nk_layout_row_template_begin(&ui, 26);
     nk_layout_row_template_push_static(&ui, 32);
     nk_layout_row_template_push_static(&ui, 132);
     nk_layout_row_template_push_static(&ui, 94);
@@ -1337,6 +1345,37 @@ static void top_panel(void) {
   nk_style_pop_vec2(&ui);
   nk_style_pop_style_item(&ui);
 }
+static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
+                      int id) {
+  static const uint32_t colors[] = {0x263347, 0x279ce0, 0xb561df, 0x23ad95,
+                                    0x297fda, 0xe09132, 0x64758e, 0xe6007e};
+  unsigned kind = id < 0 ? 7 : (unsigned)id;
+  struct nk_color base = rgb(colors[kind]);
+  nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
+               nk_rgba(0, 0, 0, 65));
+  nk_fill_rect(canvas, r, 10, base);
+  nk_fill_rect(canvas, nk_rect(r.x + 2, r.y + 2, r.w - 4, r.h / 2 - 2), 8,
+               nk_rgba(255, 255, 255, 30));
+  gui_canvas_icon(canvas, r, kind, nk_rgb(250, 250, 255));
+}
+static void desktop_shortcuts(void) {
+  nk_style_push_style_item(&ui,&ui.style.window.fixed_background,nk_style_item_color(nk_rgba(0,0,0,0)));
+  if(nk_begin(&ui,"Desktop shortcuts",nk_rect(10,58,100,210),NK_WINDOW_BACKGROUND|NK_WINDOW_NO_SCROLLBAR)) {
+    for(unsigned i=0;i<2;i++) {
+      nk_layout_row_dynamic(&ui,54,1);
+      struct nk_rect r=nk_widget_bounds(&ui);
+      if(nk_button_label(&ui,"")) {
+        if(!i)browse("/");
+        open_app(i?TERMINAL:FILES);
+      }
+      app_badge(nk_window_get_canvas(&ui),nk_rect(r.x+(r.w-44)/2,r.y+4,44,44),i?TERMINAL:FILES);
+      nk_layout_row_dynamic(&ui,24,1);
+      nk_label_colored(&ui,i?"Terminal":"Home",NK_TEXT_CENTERED,nk_rgb(245,249,255));
+    }
+  }
+  nk_end(&ui);
+  nk_style_pop_style_item(&ui);
+}
 static void dock(void) {
   float dock_width = APP_COUNT * 58 + 58, spacing = 58;
   if (dock_width > width - 28) {
@@ -1363,11 +1402,9 @@ static void dock(void) {
           open_app(id);
       }
       nk_style_pop_style_item(&ui);
-      struct nk_color c = selected
-                              ? nk_rgb(255, 255, 255)
-                              : rgb(id == FILES ? 0xdf9f35 : palette()->text);
-      gui_canvas_icon(nk_window_get_canvas(&ui), bounds,
-                      id < 0 ? 7 : (unsigned)id, c);
+      app_badge(nk_window_get_canvas(&ui),
+                nk_rect(bounds.x + 3, bounds.y + 2, bounds.w - 6, bounds.h - 5),
+                id);
       if (id >= 0 && apps[id].visible)
         nk_fill_circle(
             nk_window_get_canvas(&ui),
@@ -1383,22 +1420,41 @@ static void dock(void) {
 static void launcher_view(void) {
   if (!launcher)
     return;
+  struct nk_window *menu = nk_window_find(&ui, "Applications");
+  if (menu)
+    menu->flags &= ~(NK_WINDOW_HIDDEN | NK_WINDOW_CLOSED);
   float h = height > 650 ? 490 : height - 130;
-  if (nk_begin(&ui, "Applications", nk_rect(24, height - h - 96, 410, h),
+  float w = width > 740 ? 620 : width - 40;
+  if (nk_begin(&ui, "Applications", nk_rect(20, 52, w, h),
                NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_CLOSABLE)) {
     nk_layout_row_dynamic(&ui, 34, 1);
     nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, launcher_search,
                                    sizeof(launcher_search), nk_filter_default);
+    nk_layout_row_dynamic(&ui, 28, 1);
+    caption("APPLICATIONS");
+    nk_layout_row_dynamic(&ui, 112, 4);
+    unsigned matches = 0;
     for (unsigned i = 0; i < APP_COUNT; i++)
       if (contains(app_names[i], launcher_search) ||
           contains(app_summaries[i], launcher_search)) {
-        nk_layout_row_dynamic(&ui, 44, 1);
+        matches++;
         struct nk_rect r = nk_widget_bounds(&ui);
-        if (nk_button_label(&ui, app_names[i]))
+        if (nk_button_label(&ui, ""))
           open_app(i);
-        gui_canvas_icon(nk_window_get_canvas(&ui),
-                        nk_rect(r.x + 8, r.y + 7, 28, 28), i, rgb(accent()));
+        struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
+        app_badge(canvas, nk_rect(r.x + (r.w - 48) / 2, r.y + 12, 48, 48), i);
+        float label_width = gui_font_width(body_font.userdata, 16, app_names[i],
+                                           strlen(app_names[i]));
+        nk_draw_text(
+            canvas,
+            nk_rect(r.x + (r.w - label_width) / 2, r.y + 76, label_width, 24),
+            app_names[i], strlen(app_names[i]), &body_font, nk_rgba(0, 0, 0, 0),
+            rgb(palette()->text));
       }
+    if (!matches) {
+      nk_layout_row_dynamic(&ui, 44, 1);
+      caption("No applications match your search.");
+    }
     nk_layout_row_dynamic(&ui, 32, 2);
     if (nk_button_label(&ui, "Text desktop")) {
       if (editor_dirty) {
@@ -1658,7 +1714,8 @@ int gui_run(void) {
   update_status();
   refresh_files();
   refresh_packages();
-  open_app(SETTINGS);
+  active_app = -1;
+  focus_request = -1;
   notification_until = 0;
   console_write("Magenta graphical desktop ready\n");
   uint32_t last_frame = clock_ticks() - 2;
@@ -1680,6 +1737,7 @@ int gui_run(void) {
         style();
       nk_set_user_data(&ui, nk_handle_id(0));
       top_panel();
+      desktop_shortcuts();
       for (unsigned i = 0; i < APP_COUNT; i++)
         application(i);
       nk_set_user_data(&ui, nk_handle_id(0));

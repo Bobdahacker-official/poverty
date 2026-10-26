@@ -251,6 +251,48 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
         base = blend(base, slab & 1 ? 0x090a0f : 0x50515b, slab & 1 ? 35 : 12);
         if (edge < 2)
           base = blend(base, 0x000000, 110);
+      } else if (variant == 2) {
+        unsigned sky = y * 255 / height;
+        base = blend(0x147b9a, 0xf4dbae, sky);
+        int sun_x = width * 27 / 100, sun_y = height * 43 / 100;
+        int dx = (int)x - sun_x, dy = (int)y - sun_y;
+        int distance = dx * dx + dy * dy;
+        if (distance < 10000)
+          base = blend(base, 0xfff0b7, (10000 - distance) * 90 / 10000);
+        if (distance < 420)
+          base = 0xfff5ca;
+        for (unsigned layer = 0; layer < 5; layer++) {
+          int period = 67 + (int)layer * 29;
+          int phase = ((int)x + (int)layer * 79) % (period * 2);
+          int peak = phase < period ? phase : period * 2 - phase;
+          int ridge = (int)height * (48 + (int)layer * 9) / 100 +
+                      peak * (2 + (int)layer) / 5;
+          ridge -= (int)x * (int)layer / 26;
+          if ((int)y > ridge) {
+            static const uint32_t mountains[] = {0x71b7b7, 0x3d919f, 0x246b80,
+                                                 0x16485d, 0x102f42};
+            base = mountains[layer];
+          }
+        }
+        if (y > height * 68 / 100 && x < width * 40 / 100 &&
+            x > width * 12 / 100) {
+          int shore = width * 12 / 100 + ((int)height - (int)y) / 2;
+          if ((int)x > shore && x < width * 39 / 100)
+            base = blend(0x78b6bc, 0x326f84,
+                         (y - height * 68 / 100) * 255 / (height * 32 / 100));
+        }
+        if (x > width * 69 / 100) {
+          int tree_x = ((int)x + 19) % 87 - 43;
+          int ground = height * 87 / 100;
+          int tree_top = height * (38 + (x / 87) % 4 * 6) / 100;
+          int offset = (int)y - tree_top;
+          if (offset > 0 && (int)y < ground) {
+            int tier = offset % 36;
+            int spread = 6 + offset / 7 + tier / 2;
+            if (tree_x > -spread && tree_x < spread)
+              base = 0x102f42;
+          }
+        }
       } else {
         int u = xx + yy / 2, v = yy - xx / 4;
         int64_t q = (int64_t)u * u * 4096 / ((int64_t)width * width / 5) +
@@ -541,6 +583,15 @@ void gui_canvas_commands(struct nk_context *ctx, bool glass) {
   clip_right = width;
   clip_bottom = height;
 }
+static bool cursor_contains(float x, float y, const struct nk_vec2i *p) {
+  bool inside = false;
+  for (unsigned i = 0, j = 6; i < 7; j = i++)
+    if ((p[i].y > y) != (p[j].y > y) &&
+        x < (p[j].x - p[i].x) * (y - p[i].y) / (float)(p[j].y - p[i].y) +
+                p[i].x)
+      inside = !inside;
+  return inside;
+}
 void gui_canvas_cursor(int x, int y) {
   if (cursor_drawn && cursor_x == x && cursor_y == y)
     return;
@@ -555,14 +606,24 @@ void gui_canvas_cursor(int x, int y) {
     for (unsigned col = 0; col < 32 && x + col < width; col++)
       cursor_under[row * 32 + col] = pixels[(y + row) * width + x + col];
   cursor_drawn = cursor_moved = true;
-  struct nk_vec2i border[7] = {
-      {x, y},           {x + 1, y + 23},  {x + 7, y + 17}, {x + 12, y + 27},
-      {x + 16, y + 25}, {x + 11, y + 15}, {x + 20, y + 14}};
-  polygon(border, 7, nk_rgba(15, 15, 22, 240));
-  struct nk_vec2i inside[7] = {
-      {x + 2, y + 4},   {x + 3, y + 19}, {x + 8, y + 13}, {x + 13, y + 23},
-      {x + 14, y + 23}, {x + 9, y + 12}, {x + 15, y + 12}};
-  polygon(inside, 7, nk_rgb(250, 250, 255));
+  const struct nk_vec2i outline[7] = {{0, 0},   {0, 22}, {5, 17}, {9, 26},
+                                      {13, 24}, {9, 15}, {18, 15}};
+  const struct nk_vec2i fill[7] = {{1, 2},   {1, 19}, {5, 15}, {10, 24},
+                                   {11, 23}, {7, 14}, {15, 14}};
+  for (int row = 0; row < 27; row++)
+    for (int col = 0; col < 19; col++) {
+      unsigned outer = 0, inner = 0;
+      for (unsigned sy = 0; sy < 2; sy++)
+        for (unsigned sx = 0; sx < 2; sx++) {
+          float xx = col + sx * 0.5f + 0.25f, yy = row + sy * 0.5f + 0.25f;
+          outer += cursor_contains(xx, yy, outline);
+          inner += cursor_contains(xx, yy, fill);
+        }
+      if (outer)
+        point(x + col, y + row, nk_rgba(250, 250, 255, outer * 255 / 4));
+      if (inner)
+        point(x + col, y + row, nk_rgba(20, 23, 29, inner * 255 / 4));
+    }
 }
 void gui_canvas_present(void) {
   if (scene_repaint)
