@@ -198,20 +198,20 @@ static void preference_save(bool announce) {
 }
 static void preference_load(void) {
   preferences_saved = false;
-  preferences = (struct preferences){0x4d475549, 2, 3, 0, 2, 238, 1, 100, 0};
+  preferences = (struct preferences){0x4d475549, 3, 3, 0, 0, 248, 1, 100, 0};
   struct preferences saved;
   if (fs_read("gui-style", &saved, sizeof(saved)) == (int)sizeof(saved) &&
       saved.magic == preferences.magic &&
-      (saved.version == 1 || saved.version == 2) && saved.theme < 4 &&
+      (saved.version >= 1 && saved.version <= 3) && saved.theme < 4 &&
       saved.accent < 5 && saved.wallpaper < 3 && saved.alpha >= 195 &&
       saved.alpha <= 255 && saved.blur <= 1 && saved.pointer_speed >= 25 &&
       saved.pointer_speed <= 250 &&
       saved.checksum == crc32(&saved, offsetof(struct preferences, checksum))) {
     preferences = saved;
-    if (saved.version == 1) {
-      preferences.version = 2;
+    if (saved.version < 3) {
+      preferences.version = 3;
       preferences.theme = 3;
-      preferences.wallpaper = 2;
+      preferences.wallpaper = 0;
     }
     preferences_saved = true;
   }
@@ -224,7 +224,7 @@ static void style(void) {
                   color = rgb(accent());
   ui.style.window.fixed_background = nk_style_item_color(panel);
   ui.style.window.background = panel;
-  ui.style.window.rounding = 10;
+  ui.style.window.rounding = 12;
   ui.style.window.border = 1;
   ui.style.window.border_color = alpha_color(p->surface, 210);
   ui.style.window.padding = nk_vec2(16, 14);
@@ -243,7 +243,7 @@ static void style(void) {
   ui.style.window.header.minimize_button.rounding = 8;
   ui.style.button.rounding = 8;
   ui.style.button.padding = nk_vec2(12, 8);
-  ui.style.button.border = 1;
+  ui.style.button.border = 0;
   ui.style.button.normal = nk_style_item_color(alpha_color(p->mantle, 245));
   ui.style.button.hover = nk_style_item_color(rgb(p->surface));
   ui.style.button.active = nk_style_item_color(color);

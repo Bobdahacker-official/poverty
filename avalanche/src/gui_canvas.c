@@ -81,17 +81,6 @@ static void point(int x, int y, struct nk_color c) {
     return;
   pixels[y * width + x] = blend(pixels[y * width + x], color(c), c.a);
 }
-static int corner_inset(int y, int w, int h, int radius) {
-  if (radius > w / 2)
-    radius = w / 2;
-  if (radius > h / 2)
-    radius = h / 2;
-  int dy = y < radius ? radius - y : y >= h - radius ? y - (h - radius - 1) : 0;
-  int inset = 0;
-  while ((radius - inset) * (radius - inset) + dy * dy > radius * radius)
-    inset++;
-  return inset;
-}
 static void span(int left, int right, int y, struct nk_color c) {
   if (left < clip_x)
     left = clip_x;
@@ -108,23 +97,49 @@ static void span(int left, int right, int y, struct nk_color c) {
     for (int x = left; x < right; x++)
       row[x] = blend(row[x], value, alpha);
 }
+static unsigned rounded_coverage(int px, int py, int w, int h, int radius) {
+  if (radius > w / 2) radius = w / 2;
+  if (radius > h / 2) radius = h / 2;
+  if (px < 0 || py < 0 || px >= w || py >= h) return 0;
+  if (!radius || (px >= radius && px < w - radius) ||
+      (py >= radius && py < h - radius)) return 16;
+  int cx = px < radius ? radius * 8 : (w - radius) * 8;
+  int cy = py < radius ? radius * 8 : (h - radius) * 8;
+  unsigned covered = 0;
+  for (int sy = 1; sy < 8; sy += 2)
+    for (int sx = 1; sx < 8; sx += 2) {
+      int dx = px * 8 + sx - cx, dy = py * 8 + sy - cy;
+      covered += dx * dx + dy * dy <= radius * radius * 64;
+    }
+  return covered;
+}
 static void rectangle(int x, int y, int w, int h, int radius, struct nk_color c,
                       int stroke) {
-  if (w <= 0 || h <= 0)
-    return;
+  if (w <= 0 || h <= 0) return;
+  if (radius > w / 2) radius = w / 2;
+  if (radius > h / 2) radius = h / 2;
   int top = y < clip_y ? clip_y : y;
   int bottom = y + h > clip_bottom ? clip_bottom : y + h;
   for (int row = top; row < bottom; row++) {
-    int inset = corner_inset(row - y, w, h, radius);
-    int left = x + inset, right = x + w - inset;
-    if (stroke && w > stroke * 2 && h > stroke * 2 && row >= y + stroke &&
-        row < y + h - stroke) {
-      int inner = corner_inset(row - y - stroke, w - stroke * 2, h - stroke * 2,
-                               radius > stroke ? radius - stroke : 0);
-      span(left, x + stroke + inner, row, c);
-      span(x + w - stroke - inner, right, row, c);
-    } else
-      span(left, right, row, c);
+    int ry = row - y;
+    if (!stroke && ry >= radius && ry < h - radius) {
+      span(x, x + w, row, c);
+      continue;
+    }
+    for (int col = x < clip_x ? clip_x : x; col < x + w && col < clip_right; col++) {
+      unsigned coverage = rounded_coverage(col - x, ry, w, h, radius);
+      if (stroke) {
+        unsigned inner = rounded_coverage(col - x - stroke, ry - stroke,
+                            w - stroke * 2, h - stroke * 2,
+                            radius > stroke ? radius - stroke : 0);
+        coverage = coverage > inner ? coverage - inner : 0;
+      }
+      if (coverage) {
+        struct nk_color edge = c;
+        edge.a = c.a * coverage / 16;
+        point(col, row, edge);
+      }
+    }
   }
 }
 static void line(int x0, int y0, int x1, int y1, unsigned thickness,
@@ -565,20 +580,28 @@ void gui_canvas_commands(struct nk_context *ctx, bool glass) {
       if (source && s->img.w && s->img.h && s->w && s->h)
         for (unsigned y = 0; y < s->h; y++)
           for (unsigned x = 0; x < s->w; x++) {
-            unsigned sx =
-                s->img.region[0] +
-                x * (s->img.region[2] ? s->img.region[2] : s->img.w) / s->w;
-            unsigned sy =
-                s->img.region[1] +
-                y * (s->img.region[3] ? s->img.region[3] : s->img.h) / s->h;
-            if (sx < s->img.w && sy < s->img.h) {
-              uint32_t value = source[sy * s->img.w + sx];
+            unsigned rw = s->img.region[2] ? s->img.region[2] : s->img.w;
+            unsigned rh = s->img.region[3] ? s->img.region[3] : s->img.h;
+            unsigned total_a = 0, red = 0, green = 0, blue = 0;
+            /* Area sampling retains the antialiased SVG edges when downscaled. */
+            for (unsigned iy = 0; iy < 4; iy++)
+              for (unsigned ix = 0; ix < 4; ix++) {
+                unsigned sx = s->img.region[0] + (x * 8 + ix * 2 + 1) * rw / (s->w * 8);
+                unsigned sy = s->img.region[1] + (y * 8 + iy * 2 + 1) * rh / (s->h * 8);
+                if (sx >= s->img.w || sy >= s->img.h) continue;
+                uint32_t value = source[sy * s->img.w + sx];
+                unsigned a = value >> 24;
+                total_a += a;
+                red += (value >> 16 & 255) * a;
+                green += (value >> 8 & 255) * a;
+                blue += (value & 255) * a;
+              }
+            if (total_a)
               point(s->x + x, s->y + y,
-                    nk_rgba((value >> 16 & 255) * s->col.r / 255,
-                            (value >> 8 & 255) * s->col.g / 255,
-                            (value & 255) * s->col.b / 255,
-                            (value >> 24) * s->col.a / 255));
-            }
+                    nk_rgba(red / total_a * s->col.r / 255,
+                            green / total_a * s->col.g / 255,
+                            blue / total_a * s->col.b / 255,
+                            total_a / 16 * s->col.a / 255));
           }
       break;
     }
