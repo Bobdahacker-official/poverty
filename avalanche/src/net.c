@@ -222,8 +222,10 @@ void net_init(void) {
   if (d && rtl_init(d))
     link_ready = true;
   else {
-    const uint16_t models[] = {0x100e, 0x100f};
-    for (unsigned i = 0; i < 2 && !link_ready; i++) {
+    const uint16_t models[] = {0x100e, 0x100f, 0x1010, 0x1011, 0x1012,
+                               0x1015, 0x1016, 0x1017, 0x1026};
+    for (unsigned i = 0; i < sizeof(models) / sizeof(models[0]) && !link_ready;
+         i++) {
       d = pci_find(0x8086, models[i]);
       if (d && e1000_init(d))
         link_ready = true;

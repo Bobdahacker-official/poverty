@@ -3,7 +3,17 @@
 #include "gui_style.h"
 #include "system.h"
 
-enum { TERMINAL, FILES, EDITOR, TASKS, NETWORK, PACKAGES, SETTINGS, APP_COUNT };
+enum {
+  TERMINAL,
+  FILES,
+  EDITOR,
+  TASKS,
+  NETWORK,
+  PACKAGES,
+  SETTINGS,
+  BROWSER,
+  APP_COUNT
+};
 static struct nk_context ui;
 static uint8_t ui_memory[4 * 1024 * 1024];
 static struct nk_user_font body_font, heading_font;
@@ -11,7 +21,7 @@ static unsigned width, height, display_width, display_height;
 static float native_scale = 1;
 static const char *app_names[APP_COUNT] = {"Terminal", "Files",   "Text editor",
                                            "Tasks",    "Network", "Packages",
-                                           "Settings"};
+                                           "Settings", "Browser"};
 static const char *app_summaries[APP_COUNT] = {
     "Run programs and shell commands",
     "Browse your disks and documents",
@@ -19,7 +29,8 @@ static const char *app_summaries[APP_COUNT] = {
     "Inspect and manage processes",
     "Configure IPv4 and watch traffic",
     "Install and update applications",
-    "Make Magenta your own"};
+    "Make Magenta your own",
+    "Read web pages and local documents"};
 static struct app {
   bool visible, maximized;
   struct nk_rect bounds, restore;
@@ -96,6 +107,7 @@ static bool desktop_dirty, context_open;
 static int context_app = -1;
 static struct nk_rect context_bounds;
 static char registry_key[48], registry_value[32];
+static char registry_status[96] = "Select a key to edit its current value";
 static bool creating_folder, renaming_file;
 static char rename_name[64];
 
@@ -206,7 +218,7 @@ static void desktop_load(void) {
   if (fs_read("magenta-registry", &saved, sizeof(saved)) ==
           (int)sizeof(saved) &&
       saved.magic == desktop.magic && saved.version == 1 &&
-      saved.icons_x < 1024 && saved.icons_y < 1024 && saved.dock_bottom < 256 &&
+      saved.top_bar <= 1 && saved.dock_bar <= 1 && saved.desktop_icons <= 1 &&
       saved.checksum ==
           crc32(&saved, offsetof(struct desktop_registry, checksum)))
     desktop = saved;
@@ -247,9 +259,14 @@ static bool registry_set(const char *key, const char *value) {
     return false;
   if (slot == &desktop.dock_bottom && number > height - 80)
     return false;
+  uint32_t old = *slot;
   *slot = number;
   desktop_dirty = true;
   desktop_save();
+  if (desktop_dirty) {
+    *slot = old;
+    return false;
+  }
   return true;
 }
 static void preference_save(bool announce) {
@@ -1358,7 +1375,11 @@ static void settings_view(void) {
         append(label, "  =  ", sizeof(label));
         append(label, value, sizeof(label));
         nk_layout_row_dynamic(&ui, 27, 1);
-        nk_label(&ui, label, NK_TEXT_LEFT);
+        nk_bool selected = str_eq(registry_key, keys[i]);
+        if (nk_selectable_label(&ui, label, NK_TEXT_LEFT, &selected)) {
+          copy(registry_key, keys[i], sizeof(registry_key));
+          number(registry_value, *registry_slot(keys[i]));
+        }
       }
       nk_layout_row_dynamic(&ui, 30, 1);
       caption("Set a key and decimal value. Boolean keys use 0 or 1.");
@@ -1369,9 +1390,13 @@ static void settings_view(void) {
                                      sizeof(registry_value), nk_filter_decimal);
       nk_layout_row_dynamic(&ui, 36, 1);
       if (accent_button("Save registry value"))
-        notify(registry_set(registry_key, registry_value)
-                   ? "Registry saved"
-                   : "Invalid key or value");
+        copy(registry_status,
+             registry_set(registry_key, registry_value)
+                 ? "Saved to disk. Terminal commands now read this value."
+                 : "Save failed: check the key, value, and writable disk.",
+             sizeof(registry_status));
+      nk_layout_row_dynamic(&ui, 36, 1);
+      nk_label_wrap(&ui, registry_status);
     } else {
       heading("About Magenta");
       nk_layout_row_dynamic(&ui, 54, 1);
@@ -1416,7 +1441,8 @@ static int window_controls(unsigned id) {
                rgb(palette()->mantle));
   gui_canvas_gloss(canvas,
                    nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
-  gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28), id,
+  gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28),
+                  id == BROWSER ? 4 : id,
                   active ? rgb(accent()) : rgb(palette()->muted));
   nk_draw_text(canvas,
                nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
@@ -1465,6 +1491,292 @@ static int window_controls(unsigned id) {
   nk_push_scissor(canvas, clip);
   return action;
 }
+static char browser_url[512] = "about:home", browser_status[128] = "Ready";
+static char browser_source[65536], browser_text[65536];
+static char browser_history[16][512];
+static unsigned browser_history_count;
+static struct {
+  char url[512], label[128];
+} browser_links[64];
+static unsigned browser_link_count;
+static bool browser_load_requested;
+static int browser_focus;
+static void browser_parse(void) {
+  unsigned out = 0;
+  bool tag = false, space = false;
+  browser_link_count = 0;
+  for (unsigned i = 0; browser_source[i] && out + 2 < sizeof(browser_text);
+       i++) {
+    char c = browser_source[i];
+    if (c == '<') {
+      tag = true;
+      if (out && browser_text[out - 1] != '\n')
+        browser_text[out++] = '\n';
+      if (browser_link_count < 64 &&
+          (browser_source[i + 1] == 'a' || browser_source[i + 1] == 'A') &&
+          browser_source[i + 2] == ' ') {
+        unsigned at = i + 3;
+        while (at + 5 < sizeof(browser_source) && browser_source[at] &&
+               browser_source[at] != '>') {
+          if (browser_source[at] == 'h' && browser_source[at + 1] == 'r' &&
+              browser_source[at + 2] == 'e' && browser_source[at + 3] == 'f' &&
+              browser_source[at + 4] == '=') {
+            at += 5;
+            char quote = browser_source[at];
+            if (quote == '\'' || quote == '"')
+              at++;
+            else
+              quote = ' ';
+            unsigned n = 0;
+            while (browser_source[at] && browser_source[at] != quote &&
+                   browser_source[at] != '>' && n < 511)
+              browser_links[browser_link_count].url[n++] = browser_source[at++];
+            browser_links[browser_link_count].url[n] = 0;
+            while (browser_source[at] && browser_source[at] != '>')
+              at++;
+            if (browser_source[at])
+              at++;
+            n = 0;
+            while (browser_source[at] && browser_source[at] != '<' && n < 127)
+              browser_links[browser_link_count].label[n++] =
+                  browser_source[at++];
+            browser_links[browser_link_count].label[n] = 0;
+            browser_link_count++;
+            break;
+          }
+          at++;
+        }
+      }
+      continue;
+    }
+    if (c == '>') {
+      tag = false;
+      continue;
+    }
+    if (tag)
+      continue;
+    if (c == '&') {
+      static const char *entities[] = {"&amp;", "&lt;", "&gt;", "&quot;",
+                                       "&nbsp;"};
+      static const char decoded[] = {'&', '<', '>', '"', ' '};
+      for (unsigned e = 0; e < 5; e++) {
+        unsigned n = strlen(entities[e]), k = 0;
+        while (k < n && browser_source[i + k] == entities[e][k])
+          k++;
+        if (k == n) {
+          c = decoded[e];
+          i += n - 1;
+          break;
+        }
+      }
+    }
+    if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+      if (!space)
+        browser_text[out++] = ' ';
+      space = true;
+    } else {
+      browser_text[out++] = c;
+      space = false;
+    }
+  }
+  browser_text[out] = 0;
+}
+static void browser_load(void) {
+  browser_load_requested = false;
+  browser_source[0] = 0;
+  browser_text[0] = 0;
+  browser_link_count = 0;
+  if (browser_history_count < 16)
+    copy(browser_history[browser_history_count++], browser_url, 512);
+  if (str_eq(browser_url, "about:home")) {
+    copy(browser_source,
+         "<h1>Magenta Browser</h1><p>Enter an http:// address or file:/path to "
+         "read a page. Links appear below the document. Save writes the page "
+         "to /download.html.</p><p>HTTPS pages use encryption, which this "
+         "browser does not support.</p><a href=\"http://example.com/\">Open "
+         "example.com</a>",
+         sizeof(browser_source));
+  } else if (browser_url[0] == 'f' && browser_url[1] == 'i' &&
+             browser_url[2] == 'l' && browser_url[3] == 'e' &&
+             browser_url[4] == ':') {
+    int n =
+        fs_read(browser_url + 5, browser_source, sizeof(browser_source) - 1);
+    if (n < 0) {
+      copy(browser_status, "Could not open the file", sizeof(browser_status));
+      return;
+    }
+    browser_source[n] = 0;
+  } else {
+    char host[256], path[512], request[1024];
+    unsigned at = 0;
+    const char *url = browser_url;
+    if (url[0] == 'h' && url[1] == 't' && url[2] == 't' && url[3] == 'p' &&
+        url[4] == 's') {
+      copy(browser_status,
+           "HTTPS is not supported. Use an HTTP page or a local file.",
+           sizeof(browser_status));
+      return;
+    }
+    if (url[0] == 'h' && url[1] == 't' && url[2] == 't' && url[3] == 'p' &&
+        url[4] == ':' && url[5] == '/' && url[6] == '/')
+      url += 7;
+    while (url[at] && url[at] != '/' && at < 255) {
+      host[at] = url[at];
+      at++;
+    }
+    host[at] = 0;
+    copy(path, url[at] ? url + at : "/", sizeof(path));
+    char authority[256];
+    copy(authority, host, sizeof(authority));
+    unsigned port = 80;
+    for (unsigned k = 0; host[k]; k++)
+      if (host[k] == ':') {
+        host[k++] = 0;
+        port = 0;
+        while (authority[k]) {
+          if (authority[k] < '0' || authority[k] > '9' || port > 6553) {
+            port = 0;
+            break;
+          }
+          port = port * 10 + authority[k++] - '0';
+        }
+        break;
+      }
+    if (!port || port > 65535) {
+      copy(browser_status, "Invalid port", sizeof(browser_status));
+      return;
+    }
+    if (!network_status.ip)
+      net_dhcp();
+    uint32_t address;
+    if (net_dns(host, &address) < 0 || net_tcp_connect(address, port) < 0) {
+      copy(browser_status, "Could not connect. Check Network settings.",
+           sizeof(browser_status));
+      return;
+    }
+    copy(request, "GET ", sizeof(request));
+    append(request, path, sizeof(request));
+    append(request, " HTTP/1.0\r\nHost: ", sizeof(request));
+    append(request, authority, sizeof(request));
+    append(request, "\r\nConnection: close\r\n\r\n", sizeof(request));
+    int result = net_tcp_send(request, strlen(request));
+    unsigned count = 0;
+    while (result >= 0 && count + 1 < sizeof(browser_source)) {
+      result = net_tcp_recv(browser_source + count,
+                            sizeof(browser_source) - count - 1, 300);
+      if (result <= 0)
+        break;
+      count += result;
+    }
+    net_tcp_close();
+    browser_source[count] = 0;
+    if (!count) {
+      copy(browser_status, "The server returned no page",
+           sizeof(browser_status));
+      return;
+    }
+    for (unsigned k = 0; k + 3 < count; k++) {
+      if (browser_source[k] == '\r' && browser_source[k + 1] == '\n' &&
+          browser_source[k + 2] == '\r' && browser_source[k + 3] == '\n') {
+        memmove(browser_source, browser_source + k + 4, count - k - 3);
+        break;
+      }
+    }
+  }
+  browser_parse();
+  copy(browser_status, "Page loaded", sizeof(browser_status));
+}
+static void browser_view(void) {
+  nk_layout_row_dynamic(&ui, 34, 4);
+  if (nk_button_label(&ui, "Back") && browser_history_count > 1) {
+    browser_history_count -= 2;
+    copy(browser_url, browser_history[browser_history_count],
+         sizeof(browser_url));
+    browser_load_requested = true;
+  }
+  if (nk_button_label(&ui, "Home")) {
+    copy(browser_url, "about:home", sizeof(browser_url));
+    browser_load_requested = true;
+  }
+  if (nk_button_label(&ui, "Reload"))
+    browser_load_requested = true;
+  if (nk_button_label(&ui, "Save page"))
+    copy(browser_status,
+         fs_write("/download.html", browser_source, strlen(browser_source)) >= 0
+             ? "Saved /download.html"
+             : "Save failed",
+         sizeof(browser_status));
+  float address_columns[] = {0.85f, 0.15f};
+  nk_layout_row(&ui, NK_DYNAMIC, 34, 2, address_columns);
+  if (browser_focus) {
+    nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
+    browser_focus = 0;
+  }
+  nk_flags entered = nk_edit_string_zero_terminated(
+      &ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER, browser_url, sizeof(browser_url),
+      nk_filter_default);
+  if (nk_button_label(&ui, "Go") || (entered & NK_EDIT_COMMITTED))
+    browser_load_requested = true;
+  nk_layout_row_dynamic(&ui, 28, 1);
+  caption(browser_status);
+  nk_layout_row_dynamic(&ui, nk_window_get_content_region(&ui).h - 140, 1);
+  if (nk_group_begin(&ui, "Web document", 0)) {
+    const char *line = browser_text;
+    while (*line) {
+      char row[96];
+      unsigned n = 0;
+      while (*line && *line != '\n' && n < 85 &&
+             n < (nk_window_get_content_region(&ui).w - 32) / 9)
+        row[n++] = *line++;
+      if (!n && *line)
+        row[n++] = *line++;
+      if (*line && *line != '\n' && n > 20) {
+        unsigned split = n;
+        while (split && row[split - 1] != ' ')
+          split--;
+        if (split > n / 2) {
+          line -= n - split;
+          n = split;
+        }
+      }
+      row[n] = 0;
+      if (*line == '\n')
+        line++;
+      nk_layout_row_dynamic(&ui, 24, 1);
+      nk_label(&ui, row, NK_TEXT_LEFT);
+    }
+    for (unsigned i = 0; i < browser_link_count; i++) {
+      nk_layout_row_dynamic(&ui, 32, 1);
+      if (nk_button_label(&ui, *browser_links[i].label
+                                   ? browser_links[i].label
+                                   : browser_links[i].url)) {
+        if (browser_links[i].url[0] == '/') {
+          char base[512];
+          copy(base, browser_url, sizeof(base));
+          unsigned at = 7;
+          while (base[at] && base[at] != '/')
+            at++;
+          base[at] = 0;
+          copy(browser_url, base, sizeof(browser_url));
+          append(browser_url, browser_links[i].url, sizeof(browser_url));
+        } else if (contains(browser_links[i].url, ":")) {
+          copy(browser_url, browser_links[i].url, sizeof(browser_url));
+        } else {
+          char base[512];
+          copy(base, browser_url, sizeof(base));
+          unsigned end = strlen(base);
+          while (end && base[end - 1] != '/')
+            end--;
+          base[end] = 0;
+          copy(browser_url, base, sizeof(browser_url));
+          append(browser_url, browser_links[i].url, sizeof(browser_url));
+        }
+        browser_load_requested = true;
+      }
+    }
+    nk_group_end(&ui);
+  }
+}
 static void application(unsigned id) {
   if (!apps[id].visible)
     return;
@@ -1500,6 +1812,8 @@ static void application(unsigned id) {
       network_view();
     else if (id == PACKAGES)
       packages_view();
+    else if (id == BROWSER)
+      browser_view();
     else
       settings_view();
   }
@@ -1573,7 +1887,7 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                       int id) {
   static const uint32_t colors[] = {0x263347, 0x279ce0, 0xb561df, 0x23ad95,
                                     0x297fda, 0xe09132, 0x64758e, 0xe6007e};
-  unsigned kind = id < 0 ? 7 : (unsigned)id;
+  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : (unsigned)id;
   struct nk_color base = rgb(colors[kind]);
   nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
                nk_rgba(0, 0, 0, 65));
@@ -1748,7 +2062,8 @@ static void launcher_view(void) {
            (launcher_category == 1 && (i == FILES || i == EDITOR)) ||
            (launcher_category == 2 &&
             (i == TERMINAL || i == TASKS || i == SETTINGS)) ||
-           (launcher_category == 3 && (i == NETWORK || i == PACKAGES)) ||
+           (launcher_category == 3 &&
+            (i == NETWORK || i == PACKAGES || i == BROWSER)) ||
            (launcher_category == 4 && i <= EDITOR)) &&
           (contains(app_names[i], launcher_search) ||
            contains(app_summaries[i], launcher_search))) {
@@ -1903,12 +2218,27 @@ static void inputs(void) {
       escape_requested = true;
       continue;
     }
+    if (active_app == BROWSER && (c == 18 || c == '\n')) {
+      browser_load_requested = true;
+      continue;
+    }
+    if (c == 7) {
+      settings_page = 5;
+      open_app(SETTINGS);
+      continue;
+    }
+    if (c == 12) {
+      open_app(BROWSER);
+      browser_focus = 1;
+      continue;
+    }
     int shortcut = c == 20   ? TERMINAL
                    : c == 6  ? FILES
                    : c == 5  ? EDITOR
                    : c == 11 ? TASKS
                    : c == 14 ? NETWORK
                    : c == 16 ? PACKAGES
+                   : c == 2  ? BROWSER
                    : c == 15 ? SETTINGS
                              : -1;
     if (shortcut >= 0) {
@@ -2000,6 +2330,7 @@ int gui_run(void) {
   height = display_height / native_scale;
   preference_load();
   desktop_load();
+  browser_load_requested = true;
   style();
   for (unsigned i = 0; i < APP_COUNT; i++) {
     apps[i].visible = false;
@@ -2049,6 +2380,8 @@ int gui_run(void) {
     }
     if ((uint32_t)(clock_ticks() - last_frame) >= 2) {
       inputs();
+      if (browser_load_requested)
+        browser_load();
       if (theme_dirty)
         style();
       nk_set_user_data(&ui, nk_handle_id(0));

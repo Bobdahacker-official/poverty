@@ -29,7 +29,7 @@ Keep the VM's data disk when replacing the ISO. `./copy.sh /path/to/Magenta` cop
 
 ## Desktop
 
-The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, and Settings. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
+The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings, and Browser. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
 
 ![Application launcher](Images/launcher.png)
 
@@ -51,6 +51,16 @@ reg desktop.dock 1
 `desktop.top_bar`, `desktop.dock`, and `desktop.icons` use `0` for hidden and `1` for visible. `desktop.icons_x`, `desktop.icons_y`, and `desktop.dock_bottom` set positions in pixels. `desktop.shortcuts` stores the shortcut bitmask. Changes are saved to disk.
 
 Ctrl-T opens Terminal; Ctrl-F opens Files; Ctrl-E opens the editor. Ctrl-K, Ctrl-N, Ctrl-P, and Ctrl-O open Tasks, Network, Packages, and Settings. Ctrl-S saves a document. Ctrl-M maximizes or restores the active window. Escape opens the text interface after checking for unsaved edits.
+
+## Browser and registry
+
+Browser reads HTTP pages and local documents through Magenta's network and file APIs. Press Ctrl-B to open it and Ctrl-L to edit the address. It follows links, keeps a session history, reloads pages, and saves their source to `/download.html`. Addresses can include a port, such as `http://10.0.2.2:8080/`. Use `file:/path` to read a file. The browser displays document text and links; HTTPS, JavaScript, and CSS are outside its current format support.
+
+![Magenta Browser](Images/browser.png)
+
+Press Ctrl-G to open the Registry editor. In Settings → Registry, click a row to load its current value, change it, then save. The table reads the same values as `reg` commands in Terminal. A failed disk write is reported and leaves the previous value in place.
+
+![Registry editor showing a value changed in Terminal](Images/registry.png)
 
 ## Build
 
