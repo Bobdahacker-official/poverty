@@ -793,8 +793,8 @@ void kernel_capture(char *line, char *out, unsigned size) {
 bool graphics_size(unsigned *width, unsigned *height) {
   if (!fb || fw < 640 || fh < 480)
     return false;
-  *width = fw > 1024 ? 1024 : fw;
-  *height = fh > 768 ? 768 : fh;
+  *width = fw > 1920 ? 1920 : fw;
+  *height = fh > 1080 ? 1080 : fh;
   return true;
 }
 uint8_t graphics_glyph(char c, unsigned y) { return glyph(c, y); }

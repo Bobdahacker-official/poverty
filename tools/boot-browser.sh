@@ -23,7 +23,7 @@ from pathlib import Path
 import sys
 page = Path(sys.argv[1])
 content = page.read_text()
-style = '<style>#noVNC_container{max-width:1024px;max-height:768px;margin:auto}#noVNC_container canvas{image-rendering:auto}</style><link rel="stylesheet" href="magenta-mobile.css"><script type="module" src="magenta-mobile.js"></script>'
+style = '<style>#noVNC_container{width:100%;height:100%;margin:auto}#noVNC_container canvas{image-rendering:auto}</style><link rel="stylesheet" href="magenta-mobile.css"><script type="module" src="magenta-mobile.js"></script>'
 page.write_text(content.replace('</head>', style + '</head>', 1))
 PY
 cat > "$runtime/web/index.html" <<'HTML'
@@ -92,7 +92,7 @@ if ! running "$runtime/qemu.pid"; then
   "$qemu" "${acceleration[@]}" -machine pc,vmport=on -m 256 -boot d \
     -cdrom "$repo_root/Images/magenta.iso" \
     -drive "file=$runtime/data.img,format=raw,if=ide" \
-    -netdev user,id=net0 -device e1000,netdev=net0,romfile= \
+    -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-modern=on,romfile= \
     -vga std -display none -vnc 127.0.0.1:1,lossy=off \
     -serial "file:$runtime/serial.log" -monitor none \
     -pidfile "$runtime/qemu.pid" -daemonize

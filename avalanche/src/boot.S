@@ -7,7 +7,7 @@ header:
 /* Request an RGB framebuffer, optional so serial-only machines can boot. */
 .short 5, 1
 .long 20
-.long 1024, 768, 32
+.long 1280, 800, 32
 .balign 8
 .short 0, 0
 .long 8

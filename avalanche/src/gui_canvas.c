@@ -1,7 +1,7 @@
 #include "gui_canvas.h"
 #include "font.h"
 #include "system.h"
-static uint32_t pixels[1024 * 768], wallpaper[1024 * 768], scratch[1024 * 768];
+static uint32_t pixels[1920 * 1080], wallpaper[1920 * 1080], scratch[1920 * 1080];
 static unsigned width, height;
 static int clip_x, clip_y, clip_right, clip_bottom;
 static uint32_t opened_at[16];
@@ -253,7 +253,7 @@ void gui_canvas_init(unsigned w, unsigned h) {
 static float sine(float);
 void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
   wallpaper_revision++;
-  static int ridges[5][1024];
+  static int ridges[5][1920];
   for (unsigned layer = 0; layer < 5; layer++)
     for (unsigned x = 0; x < width; x++) {
       float phase = x / (100.0f + layer * 24) + layer * 1.7f;
