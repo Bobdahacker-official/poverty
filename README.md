@@ -33,7 +33,11 @@ The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings,
 
 ![Application launcher](Images/launcher.png)
 
-In Files, choose **New file** or **New folder** to create an item. Select an item to **Open**, **Rename**, or **Delete** it. Folder creation uses ext4; folders must be empty before deletion. The editor saves text files and asks before discarding changes.
+Right-click the desktop for file creation, Files, Terminal, appearance settings, desktop icon visibility, System Monitor, and refresh. New files and folders are created in Home through Files. Right-click an app icon to manage its desktop shortcut.
+
+Files has back/forward navigation, a location field, name search with an optional Subfolders search, folder icons, readable sizes, and selected-item details. Double-click an item or select it and press Enter to open it. Copy, cut, and paste work for files and folders; ext4 file copies stream in blocks and are not limited to the editor's 64 KiB document size. Moving an ext4 folder updates its parent in one filesystem transaction. Pasting a copy beside an existing item chooses an unused `-copy-N` name; moving never overwrites an existing item. Right-click the list for file actions. Use Ctrl+L for the location, Ctrl+F for search, Ctrl+C/X/V for file operations when not editing text, F2 to rename, and Delete to request deletion. Search scans up to 32,768 entries and 16 nested levels and reports when that limit is reached.
+
+Folder creation uses ext4; folders must be empty before deletion. The editor saves text files and asks before discarding changes.
 
 ![Files](Images/files.png)
 
@@ -50,11 +54,15 @@ reg desktop.dock 1
 
 `desktop.top_bar`, `desktop.dock`, and `desktop.icons` use `0` for hidden and `1` for visible. `desktop.icons_x`, `desktop.icons_y`, and `desktop.dock_bottom` set positions in pixels. `desktop.shortcuts` stores the shortcut bitmask. Changes are saved to disk.
 
-Ctrl-T opens Terminal; Ctrl-F opens Files; Ctrl-E opens the editor. Ctrl-K, Ctrl-N, Ctrl-P, and Ctrl-O open Tasks, Network, Packages, and Settings. Ctrl-S saves a document. Ctrl-M maximizes or restores the active window. Escape opens the text interface after checking for unsaved edits.
+Ctrl-T opens Terminal; Ctrl-F opens Files; Ctrl-E opens the editor. Ctrl-K, Ctrl-N, Ctrl-P, and Ctrl-O open System Monitor, Network, Packages, and Settings. Inside Files, Ctrl-F focuses search. Inside Browser, Ctrl-T opens a tab. Ctrl-S saves a document. Ctrl-M maximizes or restores the active window. Escape dismisses menus and pending file actions before returning to the text interface after checking for unsaved edits.
+
+System Monitor has live process and performance views, per-process CPU samples, memory usage, a name/PID filter, pause/resume, priority controls, and process termination. Its kernel entry represents the built-in desktop apps, which share the kernel rather than appearing as separate userspace processes. The CPU graph measures actual userspace timer ticks; the remaining CPU time includes both kernel work and idle time. History keeps the last 60 samples.
 
 ## Browser and registry
 
 Browser reads HTTPS and HTTP pages and local documents through Magenta's network and file APIs. Press Ctrl-B to open it and Ctrl-L to edit the address. It follows links, keeps a session history, reloads pages, and saves their source to `/download.html`. Addresses can include a port, such as `http://10.0.2.2:8080/`. Use `file:/path` to read a file. It checks TLS certificates and runs embedded JavaScript through Elk. It renders basic CSS colors, type sizes, spacing, classes, IDs, and inline styles, and loads linked CSS and scripts. Its HTML and CSS coverage is still small.
+
+Browser supports up to eight tabs. Each tab retains an independent DOM, JavaScript heap, page source, back/forward history, and scroll position. Use + or Ctrl+T to open a tab, x or Ctrl+W to close it, and Ctrl+Tab / Ctrl+Shift+Tab to switch tabs. The last tab closes to a fresh start page. Reload and Save Page apply to the active tab. The address field accepts bare host names using HTTPS by default.
 
 ![Magenta Browser](Images/browser.png)
 

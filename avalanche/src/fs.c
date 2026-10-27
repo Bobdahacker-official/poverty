@@ -346,6 +346,18 @@ int fs_write(const char *name, const void *data, uint32_t size) {
 int fs_mkdir(const char *path) {
   return mounted_ext4 ? ext4_mkdir(&root_ext4, path) : -30;
 }
+int fs_copy(const char *source, const char *target) {
+  if (mounted_ext4)
+    return ext4_copy(&root_ext4, source, target);
+  if (fs_size(target) >= 0)
+    return -17;
+  static uint8_t copy_buffer[FS_MAX_FILE];
+  int n = fs_read(source, copy_buffer, sizeof(copy_buffer));
+  if (n < 0)
+    return n;
+  int r = fs_write(target, copy_buffer, n);
+  return r < 0 ? r : 0;
+}
 int fs_rename(const char *old_path, const char *new_path) {
   if (mounted_ext4)
     return ext4_rename(&root_ext4, old_path, new_path);

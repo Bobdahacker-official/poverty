@@ -1327,6 +1327,8 @@ int ext4_rename(struct ext4_volume *v, const char *old_path,
   int r = ext4_lookup(v, old_path, &old);
   if (r)
     return r;
+  if (old.flags & (0x10 | 0x20))
+    return -1;
   if (!ext4_lookup(v, new_path, &existing))
     return -17;
   r = resolve_parent(v, old_path, &parent, old_name);
@@ -1335,18 +1337,103 @@ int ext4_rename(struct ext4_volume *v, const char *old_path,
   r = resolve_parent(v, new_path, &destination_parent, new_name);
   if (r)
     return r;
-  if (parent.number != destination_parent.number)
-    return -18;
+  bool moving_directory = (old.mode & 0xf000) == 0x4000 &&
+                          parent.number != destination_parent.number;
+  if (moving_directory) {
+    /* Reject cycles by inode, including paths containing . and ... */
+    struct ext4_inode ancestor = destination_parent;
+    for (unsigned depth = 0;; depth++) {
+      if (ancestor.number == old.number)
+        return -22;
+      if (ancestor.number == 2)
+        break;
+      if (depth == 255)
+        return -40;
+      int above = directory(v, &ancestor, "..");
+      if (above < 0)
+        return above;
+      r = ext4_inode_read(v, above, &ancestor);
+      if (r)
+        return r;
+    }
+  }
   begin_transaction(v);
-  r = directory_add(v, &parent, new_name, old.number);
+  r = directory_add(v, &destination_parent, new_name, old.number);
   if (!r)
     r = directory_add(v, &parent, old_name, 0);
+  if (!r && moving_directory)
+    r = directory_add(v, &old, "..", destination_parent.number);
+  if (!r && moving_directory) {
+    uint8_t *from = inode_edit(v, parent.number);
+    uint8_t *to = inode_edit(v, destination_parent.number);
+    uint8_t *super = edit_block(v, 0);
+    if (!from || !to || !super)
+      r = -12;
+    else if (!u16(from + 26) || u16(to + 26) == UINT16_MAX)
+      r = -31;
+    else {
+      super += 1024;
+      little16(from + 26, u16(from + 26) - 1);
+      little16(to + 26, u16(to + 26) + 1);
+      inode_checksum(v, parent.number, from, super);
+      inode_checksum(v, destination_parent.number, to, super);
+    }
+  }
   if (r) {
     transaction_volume = NULL;
     transaction_count = 0;
     return r;
   }
   return commit_transaction(v);
+}
+int ext4_copy(struct ext4_volume *v, const char *source, const char *target) {
+  struct ext4_inode src, dst;
+  int r = ext4_lookup(v, source, &src);
+  if (r)
+    return r;
+  if ((src.mode & 0xf000) != 0x8000)
+    return -95;
+  r = ext4_create(v, target, &dst);
+  if (r)
+    return r;
+  /* Bounded transactions allow copying files larger than the editor limit. */
+  uint8_t buffer[4096];
+  for (uint64_t offset = 0; offset < src.size;) {
+    unsigned count = src.size - offset > sizeof(buffer)
+                         ? sizeof(buffer) : (unsigned)(src.size - offset);
+    r = ext4_read(v, &src, offset, buffer, count);
+    if (r != (int)count) {
+      if (r >= 0)
+        r = -5;
+      goto failed_copy;
+    }
+    r = ext4_write(v, &dst, offset, buffer, count);
+    if (r != (int)count) {
+      if (r >= 0)
+        r = -5;
+      goto failed_copy;
+    }
+    offset += count;
+    r = ext4_inode_read(v, dst.number, &dst);
+    if (r)
+      goto failed_copy;
+  }
+  begin_transaction(v);
+  uint8_t *inode = inode_edit(v, dst.number), *super = edit_block(v, 0);
+  if (!inode || !super) {
+    transaction_volume = NULL;
+    transaction_count = 0;
+    r = -12;
+    goto failed_copy;
+  }
+  little16(inode, src.mode);
+  inode_checksum(v, dst.number, inode, super + 1024);
+  r = commit_transaction(v);
+  if (!r)
+    return 0;
+failed_copy:
+  ext4_remove(v, target);
+  return r;
 }
 int ext4_remove(struct ext4_volume *v, const char *path) {
   struct ext4_inode old, parent;
