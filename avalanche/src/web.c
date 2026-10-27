@@ -429,13 +429,19 @@ void web_parse(const char *html) {
           buffer[*used] = 0;
         }
       }
-      unsigned n = end - s;
-      if (n > cap - *used - 2)
-        n = cap - *used - 2;
-      memcpy(buffer + *used, s, n);
-      *used += n;
-      buffer[(*used)++] = '\n';
-      buffer[*used] = 0;
+      /* A previous block may have filled the buffer to cap - 1. Subtracting
+       * two at that point underflows and lets later blocks overwrite the
+       * browser context. Always reserve the newline and terminator first. */
+      if (*used + 2 <= cap) {
+        unsigned n = end - s;
+        unsigned remaining = cap - *used - 2;
+        if (n > remaining)
+          n = remaining;
+        memcpy(buffer + *used, s, n);
+        *used += n;
+        buffer[(*used)++] = '\n';
+        buffer[*used] = 0;
+      }
       s = end;
       continue;
     }

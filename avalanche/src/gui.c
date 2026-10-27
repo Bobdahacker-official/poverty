@@ -3059,8 +3059,7 @@ int gui_run(void) {
         else if (editor_dirty) {
           editor_discard = true;
           exit_after_discard = true;
-        } else
-          running = false;
+        }
         escape_requested = false;
       }
       modal_dialogs();
