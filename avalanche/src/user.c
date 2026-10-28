@@ -776,11 +776,14 @@ struct trap_frame *user_reschedule(struct trap_frame *f) {
   }
   return f;
 }
+static uint64_t total_user_ticks;
+uint64_t user_cpu_ticks(void) { return total_user_ticks; }
 struct trap_frame *user_timer(struct trap_frame *f) {
   wake_sleepers();
   if ((f->cs & 3) != 3 || current < 0)
     return f;
   struct process *t = &tasks[current];
+  total_user_ticks++;
   t->cpu_ticks++;
   if (t->cpu_ticks >= 12000) {
     process_exit(t, 124, 0);

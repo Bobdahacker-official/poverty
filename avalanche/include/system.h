@@ -112,6 +112,7 @@ void fs_info(void);
 int fs_mounted_disk(void);
 int fs_browse(const char *, unsigned, char[256], uint64_t *, bool *);
 int fs_directory(const char *);
+int fs_copy(const char *, const char *);
 bool fs_writable(void);
 void fs_list(void);
 int fs_read(const char *, void *, uint32_t);
@@ -174,6 +175,7 @@ struct task_info {
   char name[32];
 };
 bool user_task_info(unsigned, struct task_info *);
+uint64_t user_cpu_ticks(void);
 char user_tty_getchar(void);
 void user_yield_kernel(void);
 int user_spawn(const char *, const char *, bool);

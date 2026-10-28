@@ -27,6 +27,10 @@ static uint8_t rx_buffers[32][2048] __attribute__((aligned(16)));
 static uint8_t e_tx[8][2048] __attribute__((aligned(16)));
 static uint32_t rx_index;
 static uint32_t ip, mask, gateway, dns_server, rx_count, tx_count, drop_count;
+/* VirtualBox NAT exposes its DNS forwarder at 10.0.2.3.  Keep this as a
+ * recovery resolver when a DHCP server omits or supplies an unusable DNS
+ * option. */
+static const uint32_t nat_dns = 0x0a000203u;
 static uint16_t ip_id;
 static uint32_t rd(uint32_t r) { return e1000[r / 4]; }
 static void wr(uint32_t r, uint32_t v) {
@@ -222,15 +226,17 @@ void net_init(void) {
   if (virtio_net_init(mac)) {
     nic = VIRTIO;
     link_ready = true;
+    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
     return;
   }
   if (pcnet_init(mac)) {
     nic = PCNET;
     link_ready = true;
+    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
     return;
   }
   const struct pci_device *d = pci_find(0x10ec, 0x8139);
-  if (d && rtl_init(d))
+    if (d && rtl_init(d))
     link_ready = true;
   else {
     const uint16_t models[] = {0x100e, 0x100f, 0x1010, 0x1011, 0x1012,
@@ -242,6 +248,8 @@ void net_init(void) {
         link_ready = true;
     }
   }
+  if (link_ready)
+    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
 }
 struct arp_entry {
   uint32_t ip, seen;
@@ -753,7 +761,8 @@ int net_dhcp(void) {
             break;
           if (ack.type == 5 && ack.address == offer.address &&
               ack.server == offer.server && ack.mask) {
-            net_config(ack.address, ack.mask, ack.router, ack.dns);
+            net_config(ack.address, ack.mask, ack.router,
+                       ack.dns ? ack.dns : nat_dns);
             return 0;
           }
         }
@@ -761,6 +770,11 @@ int net_dhcp(void) {
       }
     }
   net_config(old_ip, old_mask, old_gw, old_dns);
+  /* VirtualBox's default NAT network is deterministic.  Keep the desktop
+   * usable when its DHCP exchange is lost during adapter startup; normal
+   * DHCP leases still take precedence above. */
+  if (link_ready)
+    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
   return -2;
 }
 static bool skip_name(const uint8_t *p, unsigned n, unsigned *off) {
@@ -784,7 +798,7 @@ static bool skip_name(const uint8_t *p, unsigned n, unsigned *off) {
 int net_dns(const char *name, uint32_t *answer) {
   if (ip_parse(name, answer))
     return 0;
-  if (!ip || !dns_server)
+  if (!ip)
     return -1;
   uint8_t query[512] = {0}, reply[1472];
   uint16_t id = (uint16_t)(clock_ticks() ^ 0xa51a), port = 49152 + (id % 16000);
@@ -812,15 +826,20 @@ int net_dns(const char *name, uint32_t *answer) {
   put16(query + pos, 1);
   put16(query + pos + 2, 1);
   pos += 4;
-  for (unsigned attempt = 0; attempt < 3; attempt++) {
-    if (net_udp_send(dns_server, port, 53, query, pos) < 0)
+  uint32_t resolvers[3] = {dns_server, nat_dns, 0x08080808u};
+  for (unsigned resolver = 0; resolver < 3; resolver++) {
+    uint32_t server = resolvers[resolver];
+    if (!server || (resolver && server == resolvers[0]))
+      continue;
+    for (unsigned attempt = 0; attempt < 3; attempt++) {
+    if (net_udp_send(server, port, 53, query, pos) < 0)
       return -3;
     uint32_t start = clock_ticks();
-    while (clock_ticks() - start < 150) {
+    while (clock_ticks() - start < 500) {
       uint32_t source;
       uint16_t srcport;
       int result = net_udp_recv(port, reply, sizeof(reply), &source, &srcport);
-      if (result < 12 || source != dns_server || srcport != 53)
+      if (result < 12 || source != server || srcport != 53)
         continue;
       unsigned n = (unsigned)result;
       if (be16(reply) != id || (be16(reply + 2) & 0x820f) != 0x8000)
@@ -845,6 +864,7 @@ int net_dns(const char *name, uint32_t *answer) {
         }
         off += len;
       }
+    }
     }
   }
   return -4;

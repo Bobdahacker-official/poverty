@@ -2,13 +2,26 @@
 #include "../vendor/elk/elk.h"
 #include "http.h"
 #include "system.h"
-struct web_node web_nodes[WEB_NODES];
-unsigned web_count;
-char web_message[128];
-static unsigned char js_memory[262144] __attribute__((aligned(8)));
-static struct js *engine;
-static char css[16384], scripts[32768];
-static char document_url[512];
+static struct web_context contexts[WEB_TABS];
+static unsigned current_tab;
+struct web_context *web_current(void) { return &contexts[current_tab]; }
+bool web_select(unsigned tab) {
+  if (tab >= WEB_TABS)
+    return false;
+  current_tab = tab;
+  return true;
+}
+void web_reset(unsigned tab) {
+  if (tab < WEB_TABS)
+    memset(&contexts[tab], 0, sizeof(contexts[tab]));
+}
+#define js_memory (web_current()->js_heap)
+#define engine (web_current()->js_engine)
+#define css (web_current()->css_text)
+#define scripts (web_current()->script_text)
+#define document_url (web_current()->url)
+#define css_size (web_current()->css_used)
+#define script_size (web_current()->script_used)
 void web_set_url(const char *url) {
   unsigned n = strlen(url);
   if (n >= sizeof(document_url))
@@ -26,7 +39,6 @@ static int resource(const char *ref, char *out, unsigned size) {
     return -1;
   return http_get(url, out, size);
 }
-static unsigned css_size, script_size;
 static bool equal(const char *a, const char *b) {
   while (*a && *a == *b) {
     a++;
@@ -417,13 +429,19 @@ void web_parse(const char *html) {
           buffer[*used] = 0;
         }
       }
-      unsigned n = end - s;
-      if (n > cap - *used - 2)
-        n = cap - *used - 2;
-      memcpy(buffer + *used, s, n);
-      *used += n;
-      buffer[(*used)++] = '\n';
-      buffer[*used] = 0;
+      /* A previous block may have filled the buffer to cap - 1. Subtracting
+       * two at that point underflows and lets later blocks overwrite the
+       * browser context. Always reserve the newline and terminator first. */
+      if (*used + 2 <= cap) {
+        unsigned n = end - s;
+        unsigned remaining = cap - *used - 2;
+        if (n > remaining)
+          n = remaining;
+        memcpy(buffer + *used, s, n);
+        *used += n;
+        buffer[(*used)++] = '\n';
+        buffer[*used] = 0;
+      }
       s = end;
       continue;
     }

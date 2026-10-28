@@ -398,6 +398,14 @@ char console_getchar(void) {
     }
     if (s & 128)
       continue;
+    if (console_observer && s == 0x3c) {
+      gui_key = s;
+      continue;
+    }
+    if (console_observer && s == 15 && (left_ctrl || right_ctrl)) {
+      gui_key = left_shift || right_shift ? 0x101 : 0x100;
+      continue;
+    }
     char c = keys[s];
     bool shift = left_shift || right_shift;
     if (c >= 'a' && c <= 'z') {
