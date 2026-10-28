@@ -1,6 +1,8 @@
 #include "system.h"
 /* Multiboot 2 ACPI RSDP tags supply firmware-owned table addresses. */
 static uint64_t ecam[256];
+static const uint8_t *firmware_root;
+static unsigned firmware_entry_size;
 static uint8_t checksum(const void *p, unsigned length) {
   const uint8_t *bytes = p;
   uint8_t sum = 0;
@@ -57,6 +59,8 @@ void pci_ecam_init(uint32_t mbi, uint32_t end) {
   const uint8_t *root = table(root_address, entry_size == 8 ? "XSDT" : "RSDT");
   if (!root)
     return;
+  firmware_root = root;
+  firmware_entry_size = entry_size;
   uint32_t length;
   memcpy(&length, root + 4, 4);
   for (uint32_t i = 36; i + entry_size <= length; i += entry_size) {
@@ -86,3 +90,18 @@ void pci_ecam_init(uint32_t mbi, uint32_t end) {
   }
 }
 uint64_t pci_ecam_bus(unsigned bus) { return ecam[bus & 255]; }
+const uint8_t *acpi_table(const char *signature) {
+  if (!firmware_root) return NULL;
+  uint32_t length;
+  memcpy(&length,firmware_root+4,4);
+  for (unsigned at=36; at+firmware_entry_size<=length; at+=firmware_entry_size) {
+    uint64_t address=0;
+    memcpy(&address,firmware_root+at,firmware_entry_size);
+    const uint8_t *found=table(address,signature);
+    if (found) return found;
+  }
+  return NULL;
+}
+const uint8_t *acpi_physical_table(uint64_t address,const char *signature) {
+  return table(address,signature);
+}

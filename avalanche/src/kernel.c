@@ -457,6 +457,11 @@ static char *token(char **p) {
   return s;
 }
 static void reboot(void) {
+  if (!power_flush()) {
+    console_write("Disk flush failed. Restart cancelled.\n");
+    return;
+  }
+  firmware_reset();
   for (unsigned i = 0; i < 100000; ++i)
     if (!(inb(0x64) & 2))
       break;
@@ -485,6 +490,11 @@ void kernel_power(unsigned action) {
     return;
   }
   if (action == AV_POWER_HALT) {
+    if (!power_flush()) {
+      console_write("Disk flush failed. Shutdown cancelled.\n");
+      return;
+    }
+    firmware_poweroff();
     console_write("System halted. Reset or power off the machine.\n");
     for (;;)
       __asm__ volatile("cli; hlt");
@@ -793,6 +803,10 @@ static void command(char *line) {
     console_write("Rebooting...\n");
     reboot();
     console_write("Firmware did not respond. Use the reset control.\n");
+  } else if (eq(cmd, "shutdown")) {
+    kernel_power(AV_POWER_HALT);
+  } else if (eq(cmd, "sync")) {
+    console_write(power_flush() ? "Disks synchronized.\n" : "Disk synchronization failed.\n");
   } else if (eq(cmd, "halt")) {
     console_write("CPU halted.\n");
     for (;;)
