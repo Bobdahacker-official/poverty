@@ -1,10 +1,10 @@
 #include "system.h"
 #include "virtio.h"
-#define PCI_MAX 192
+#define PCI_MAX 1024
 extern uint64_t pci_ecam_bus(unsigned);
 static struct pci_device pci[PCI_MAX];
 static unsigned pci_count;
-static struct block_device disks[16];
+static struct block_device disks[64];
 static unsigned ndisks;
 uint32_t pci_read(const struct pci_device *d, uint8_t r) {
   uint64_t base = pci_ecam_bus(d->bus);
@@ -43,7 +43,7 @@ const struct pci_device *pci_find_class(uint8_t c, uint8_t s, uint8_t p) {
   return NULL;
 }
 bool disk_register(const struct block_device *d) {
-  if (ndisks >= 16)
+  if (ndisks >= 64)
     return false;
   disks[ndisks++] = *d;
   return true;
@@ -279,6 +279,19 @@ static void pointer_buttons(uint8_t buttons) {
   }
   mouse_buttons = buttons;
 }
+void mouse_feed_relative(int dx, int dy, uint8_t buttons) {
+  mouse_x_fraction += dx * (int)mouse_speed;
+  mouse_y_fraction += dy * (int)mouse_speed;
+  mouse_x += mouse_x_fraction / 100;
+  mouse_y -= mouse_y_fraction / 100;
+  mouse_x_fraction %= 100;
+  mouse_y_fraction %= 100;
+  if (mouse_x < 0) mouse_x = 0;
+  if (mouse_y < 0) mouse_y = 0;
+  if (mouse_x >= (int)mouse_width) mouse_x = mouse_width - 1;
+  if (mouse_y >= (int)mouse_height) mouse_y = mouse_height - 1;
+  pointer_buttons(buttons & 7);
+}
 static void pointer_absolute_poll(void) {
   for (unsigned i = 0; i < 64; i++) {
     struct pointer_reply reply = pointer_command(40, 0);
@@ -380,8 +393,8 @@ static void mouse_poll(void) {
   }
 }
 void devices_poll(void) {
-  if (!mouse_irq_poll)
-    mouse_poll();
+  if (!mouse_irq_poll) mouse_poll();
+  usb_poll();
 }
 void devices_tick(void) {
   if (mouse_irq_poll)
@@ -544,6 +557,7 @@ void devices_init(void) {
   nvme_init();
   virtio_block_init();
   mouse_init();
+  usb_init();
 }
 void devices_list(void) {
   console_write(pci_ecam_bus(0) ? "PCI Express ECAM: " : "PCI configuration ports: ");
@@ -575,6 +589,6 @@ void devices_list(void) {
   }
   console_write(
       "Drivers: PCI, ATA PIO/LBA28, AHCI SATA/DMA48, VirtIO block/network, "
-      "PS/2 keyboard/mouse, "
+      "PS/2 keyboard/mouse, USB 1.1 UHCI HID keyboard/mouse, "
       "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000, AMD PCnet.\n");
 }

@@ -76,7 +76,7 @@ The build writes to `avalanche/build/`. Packaging copies the boot ISO and a fres
 
 ## Kernel
 
-Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The kernel manages physical memory through 16 GiB of address space.
+Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. USB 1.1 UHCI controllers can drive boot-protocol keyboards and mice, including devices behind one hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks; the kernel maps physical memory through 16 GiB of address space.
 
 The package manager installs, removes, upgrades, lists, queries, and searches packages. It downloads packages over HTTP and keeps its database on ext4. The shell and native programs run in ring 3. The included `linuxhello` and `linuxfork` programs use the Linux i386 compatibility ABI.
 

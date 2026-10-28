@@ -324,6 +324,15 @@ void console_keyboard_poll(void) {
     keyboard_count++;
   }
 }
+void keyboard_feed_scancode(uint8_t scancode) {
+  uintptr_t flags;
+  __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+  if (keyboard_count < sizeof(keyboard_queue)) {
+    keyboard_queue[(keyboard_head + keyboard_count) % sizeof(keyboard_queue)] = scancode;
+    keyboard_count++;
+  }
+  if (flags & (1u << 9)) __asm__ volatile("sti" ::: "memory");
+}
 static bool keyboard_scancode(uint8_t *scancode) {
   uintptr_t flags;
   __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags)::"memory");
@@ -611,7 +620,7 @@ static void command(char *line) {
     print_uint(used * 4);
     console_write(" KiB; free: ");
     print_uint((available - used) * 4);
-    console_write(" KiB (below 128 MiB)\n");
+    console_write(" KiB\n");
   } else if (eq(cmd, "ticks")) {
     print_uint(clock_ticks());
     console_write(" ticks (100 Hz)\n");
