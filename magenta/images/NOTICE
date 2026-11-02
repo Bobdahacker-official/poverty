@@ -9,7 +9,8 @@ GRUB. Kernel capabilities are described in ../../avalanche/images/NOTICE.
 
 The ISO starts the graphical desktop on framebuffer-equipped machines,
 with a text desktop available through Escape. The graphical desktop has
-Terminal, Files, Text editor, Tasks, Network, Packages and Settings windows.
+Terminal, Files, Text editor, Tasks, Network, Packages, Settings, Browser
+and Images windows.
 TrueType fonts, alpha blending, blur, shadows, rounded corners and window
 fades are rendered by the native compositor. The DejaVu font license is
 in ../../avalanche/assets/FONT-LICENSE.
@@ -34,4 +35,6 @@ text and files up to 64 KiB. Binary files have a bounded hexadecimal view.
 Magenta, its native applications and its extended kernel are now ELF64
 x86-64 binaries. The Linux demos remain ELF32 compatibility applications.
 Use a 64-bit virtual machine.
-The memory allocator manages RAM below 128 MiB.
+The memory allocator maps firmware-reported RAM through 64 GiB of physical
+address space, including allocations above 4 GiB. Native applications have
+a 64 MiB address window.

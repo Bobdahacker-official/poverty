@@ -17,7 +17,7 @@ header_end:
 .balign 4096
 boot_pml4: .skip 4096
 boot_pdpt: .skip 4096
-boot_pd: .skip 65536
+boot_pd: .skip 262144
 .balign 16
 stack_bottom: .skip 65536
 stack_top:
@@ -41,6 +41,7 @@ _start:
  mov $boot_pdpt,%eax
  or $3,%eax
  mov %eax,boot_pml4
+ mov %eax,boot_pml4+2048
  xor %ecx,%ecx
 1:
  mov %ecx,%eax
@@ -49,7 +50,7 @@ _start:
  or $3,%eax
  mov %eax,boot_pdpt(,%ecx,8)
  inc %ecx
- cmp $16,%ecx
+ cmp $64,%ecx
  jne 1b
  xor %ecx,%ecx
 2:
@@ -61,7 +62,7 @@ _start:
  shr $11,%edx
  mov %edx,boot_pd+4(,%ecx,8)
  inc %ecx
- cmp $8192,%ecx
+ cmp $32768,%ecx
  jne 2b
  mov %cr4,%eax
  or $0x20,%eax

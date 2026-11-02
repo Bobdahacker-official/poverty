@@ -5,6 +5,12 @@
 static uint64_t kernel_root[512] __attribute__((aligned(4096)));
 static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
 static uint64_t kernel_directory[IDENTITY_ENTRIES] __attribute__((aligned(4096)));
+#define MMIO_REGIONS 64
+static uint64_t mmio_pdpt[255][512] __attribute__((aligned(4096)));
+static uint64_t mmio_directory[MMIO_REGIONS][512]
+    __attribute__((aligned(4096)));
+static uint32_t mmio_region[MMIO_REGIONS], mmio_count;
+static uint64_t physical_address_limit = UINT64_C(1) << 36;
 static struct process tasks[PROCESS_MAX];
 static uint16_t page_references[PHYSICAL_PAGES];
 #define PAGE_COW UINT64_C(512)
@@ -21,7 +27,6 @@ static int current = -1, next_pid = 1;
 static int tcp_owner;
 static bool tcp_cleanup;
 static struct trap_frame *kernel_frame;
-static uint8_t executable_image[FS_MAX_FILE];
 #define APP(n) extern const uint8_t app_##n##_start[], app_##n##_end[]
 APP(hello);
 APP(cat);
@@ -135,7 +140,7 @@ bool process_copyin(struct process *t, void *out, uint32_t p, uint32_t n) {
     if (count > n)
       count = n;
     uint64_t *pte = process_pte(t, p);
-    memcpy(d, (void *)(uintptr_t)((*pte & PROCESS_PHYSICAL_MASK) + (p & 4095)), count);
+    memcpy(d, page_pointer((*pte & PROCESS_PHYSICAL_MASK) + (p & 4095)), count);
     d += count;
     p += count;
     n -= count;
@@ -152,7 +157,7 @@ bool process_copyout(struct process *t, uint32_t p, const void *in,
     if (count > n)
       count = n;
     uint64_t *pte = process_pte(t, p);
-    memcpy((void *)(uintptr_t)((*pte & PROCESS_PHYSICAL_MASK) + (p & 4095)), s, count);
+    memcpy(page_pointer((*pte & PROCESS_PHYSICAL_MASK) + (p & 4095)), s, count);
     s += count;
     p += count;
     n -= count;
@@ -194,10 +199,10 @@ bool process_private(struct process *t, uint32_t v) {
     void *copy = page_alloc();
     if (!copy)
       return false;
-    memcpy(copy, (void *)(uintptr_t)old, 4096);
-    page_references[(uintptr_t)copy / 4096] = 1;
+    memcpy(copy, page_pointer(old), 4096);
+    page_references[page_physical(copy) / 4096] = 1;
     drop_page(*pte);
-    *pte = (uintptr_t)copy | (*pte & ~PROCESS_PHYSICAL_MASK);
+    *pte = page_physical(copy) | (*pte & ~PROCESS_PHYSICAL_MASK);
     if (t == process_current())
       __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
   }
@@ -232,8 +237,8 @@ bool process_page_fault(struct process *t, uint32_t v, bool write) {
     void *page = page_alloc();
     if (!page)
       return false;
-    page_references[(uintptr_t)page / 4096] = 1;
-    *pte = (uintptr_t)page | 5 | (*pte & (2 | PROCESS_NO_EXECUTE));
+    page_references[page_physical(page) / 4096] = 1;
+    *pte = page_physical(page) | 5 | (*pte & (2 | PROCESS_NO_EXECUTE));
     t->pages++;
   } else if (write && (*pte & PAGE_COW)) {
     if (!process_private(t, v))
@@ -262,8 +267,8 @@ bool process_map(struct process *t, uint32_t v, bool write) {
   void *page = page_alloc();
   if (!page)
     return false;
-  *pte = (uintptr_t)page | 5 | (write ? 2 : 0) | no_execute();
-  page_references[(uintptr_t)page / 4096] = 1;
+  *pte = page_physical(page) | 5 | (write ? 2 : 0) | no_execute();
+  page_references[page_physical(page) / 4096] = 1;
   t->pages++;
   if (t == process_current())
     __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
@@ -291,7 +296,16 @@ static void release(struct process *t) {
   t->pages = 0;
 }
 void user_init(void) {
-  uint32_t a=0x80000001,b,c,d;
+  uint32_t a = 0x80000000, b, c, d;
+  __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+  if (a >= 0x80000008) {
+    a = 0x80000008;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+    unsigned bits = a & 255;
+    if (bits >= 36 && bits <= 52)
+      physical_address_limit = UINT64_C(1) << (bits > 47 ? 47 : bits);
+  }
+  a = 0x80000001;
   __asm__ volatile("cpuid" : "+a"(a),"=b"(b),"=c"(c),"=d"(d));
   nx_enabled=(d&(1u<<20))!=0;
   if (nx_enabled) {
@@ -301,6 +315,7 @@ void user_init(void) {
     __asm__ volatile("wrmsr" :: "a"(low),"d"(high),"c"(0xc0000080));
   }
   kernel_root[0] = (uintptr_t)kernel_pdpt | 7;
+  kernel_root[256] = (uintptr_t)kernel_pdpt | 3;
   for (unsigned i = 0; i < PHYSICAL_GIB; i++)
     kernel_pdpt[i] = (uintptr_t)&kernel_directory[i * 512] | 7;
   for (unsigned i = 0; i < IDENTITY_ENTRIES; i++)
@@ -308,17 +323,36 @@ void user_init(void) {
   activate(kernel_directory);
 }
 bool platform_mmio(uint64_t address, uint32_t size) {
-  if (!size || address >= ((uint64_t)IDENTITY_ENTRIES << 21) ||
-      size - 1 >= ((uint64_t)IDENTITY_ENTRIES << 21) - address)
+  if (!size || address >= physical_address_limit ||
+      size > physical_address_limit - address)
     return false;
   unsigned first = address >> 21, last = (address + size - 1) >> 21;
-  for (unsigned i = first; i <= last; i++)
-    if (i < 2048 && process_address(i << 21, 0x200000))
-      return false;
   for (unsigned i = first; i <= last; i++) {
+    if (i >= IDENTITY_ENTRIES) {
+      unsigned region = i >> 9, slot = 0;
+      while (slot < mmio_count && mmio_region[slot] != region)
+        slot++;
+      if (slot == mmio_count) {
+        if (mmio_count == MMIO_REGIONS)
+          return false;
+        mmio_region[mmio_count++] = region;
+        unsigned root = region >> 9;
+        uint64_t *pdpt = root ? mmio_pdpt[root - 1] : kernel_pdpt;
+        pdpt[region & 511] = (uintptr_t)mmio_directory[slot] | 3;
+        if (root) {
+          kernel_root[256 + root] = (uintptr_t)pdpt | 3;
+          for (unsigned j = 0; j < PROCESS_MAX; j++)
+            if (tasks[j].state != TASK_EMPTY)
+              tasks[j].root[256 + root] = kernel_root[256 + root];
+        }
+      }
+      mmio_directory[slot][i & 511] = ((uint64_t)i << 21) | 0x9b;
+      continue;
+    }
     kernel_directory[i] |= 0x18;
     for (unsigned j = 0; j < PROCESS_MAX; j++)
-      if (tasks[j].state != TASK_EMPTY)
+      if (tasks[j].state != TASK_EMPTY && i < PROCESS_DIRECTORY_ENTRIES &&
+          !process_address(i << 21, 0x200000))
         tasks[j].directory[i] |= 0x18;
   }
   activate(current < 0 ? kernel_directory : tasks[current].directory);
@@ -338,10 +372,13 @@ static struct process *empty(void) {
 }
 static void initialize(struct process *t) {
   memset(t, 0, sizeof(*t));
-  memcpy(t->directory, kernel_directory, sizeof(kernel_directory));
+  memcpy(t->directory, kernel_directory, sizeof(t->directory));
   t->root[0] = (uintptr_t)t->pdpt | 7;
+  memcpy(t->root + 256, kernel_root + 256, 256 * sizeof(uint64_t));
   for (unsigned i = 0; i < PHYSICAL_GIB; i++)
-    t->pdpt[i] = (uintptr_t)&t->directory[i * 512] | 7;
+    t->pdpt[i] = i < PROCESS_DIRECTORY_ENTRIES / 512
+                     ? (uintptr_t)&t->directory[i * 512] | 7
+                     : (uintptr_t)&kernel_directory[i * 512] | 3;
   t->pid = next_pid++;
   t->parent = current < 0 ? 0 : tasks[current].pid;
   t->state = TASK_EMPTY;
@@ -487,7 +524,9 @@ static int load(struct process *t, const void *image, uint32_t size,
       continue;
     if (p->vaddr > UINT32_MAX || p->memsz > UINT32_MAX ||
         !process_address(p->vaddr, p->memsz) || p->vaddr >= 0xbfc00000u ||
-        p->memsz > 8 * 1024 * 1024 || total > 8 * 1024 * 1024 - p->memsz)
+        p->memsz > PROCESS_PAGE_LIMIT * 4096u - 65536u ||
+        total > PROCESS_PAGE_LIMIT * 4096u - 65536u - p->memsz ||
+        (native && p->vaddr + p->memsz > AV_USER_END - 65536u))
       return -8;
     total += p->memsz;
     if (p->vaddr + p->memsz > high)
@@ -525,7 +564,7 @@ static int load(struct process *t, const void *image, uint32_t size,
       if (amount > p->filesz - n)
         amount = p->filesz - n;
       uint64_t *pte = process_pte(t, v);
-      memcpy((void *)(uintptr_t)((*pte & PROCESS_PHYSICAL_MASK) + (v & 4095)),
+      memcpy(page_pointer((*pte & PROCESS_PHYSICAL_MASK) + (v & 4095)),
              (const uint8_t *)image + p->offset + n, amount);
       n += amount;
     }
@@ -547,7 +586,7 @@ static int load(struct process *t, const void *image, uint32_t size,
   if (!t->frame->useresp)
     goto memory;
   t->heap_min = t->heap_break = (high + 4095) & ~UINT64_C(4095);
-  t->mmap_next = native ? 0x40200000u : 0x10000000u;
+  t->mmap_next = native ? t->heap_min : 0x10000000u;
   t->state = TASK_READY;
   return t->pid;
 memory:
@@ -560,16 +599,35 @@ static int load_name(struct process *t, const char *name, const char *args) {
     struct ext4_inode inode;
     if (ext4_mount(&volume, disk, 0) || ext4_lookup(&volume, name, &inode))
       continue;
-    if ((inode.mode & 0xf000) != 0x8000 ||
-        inode.size > sizeof(executable_image))
+    if ((inode.mode & 0xf000) != 0x8000 || !inode.size ||
+        inode.size > PROCESS_IMAGE_LIMIT)
       return -8;
+    unsigned pages = (inode.size + 4095) / 4096;
+    uint8_t *executable_image = pages_alloc(pages);
+    if (!executable_image)
+      return -12;
     int size = ext4_read(&volume, &inode, 0, executable_image, inode.size);
-    return size < 0 ? size : load(t, executable_image, size, name, args);
+    int result = size < 0 ? size
+                 : (uint64_t)size != inode.size
+                     ? -5
+                     : load(t, executable_image, size, name, args);
+    for (unsigned i = 0; i < pages; i++)
+      page_free(executable_image + i * 4096);
+    return result;
   }
   int n = fs_size(name);
   if (n >= 0) {
-    n = fs_read(name, executable_image, sizeof(executable_image));
-    return n < 0 ? -5 : load(t, executable_image, (uintptr_t)n, name, args);
+    if (!n || (unsigned)n > PROCESS_IMAGE_LIMIT)
+      return -8;
+    unsigned pages = ((unsigned)n + 4095) / 4096;
+    uint8_t *executable_image = pages_alloc(pages);
+    if (!executable_image)
+      return -12;
+    int size = fs_read_at(name, 0, executable_image, n);
+    int result = size != n ? -5 : load(t, executable_image, size, name, args);
+    for (unsigned i = 0; i < pages; i++)
+      page_free(executable_image + i * 4096);
+    return result;
   }
   for (unsigned i = 0; i < sizeof(builtins) / sizeof(builtins[0]); i++)
     if (str_eq(name, builtins[i].name))

@@ -7,7 +7,7 @@ BEAR_OBJECTS = $(patsubst vendor/bearssl/%.c,build/bearssl/%.o,$(BEAR_SOURCES))
 OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o build/elk.o build/printf.o
 APPS = magenta hello cat udp ush http worker linuxhello linuxfork
 APP_ELFS = $(addprefix build/user/,$(addsuffix .elf,$(APPS)))
-.PHONY: all iso disk magenta clean
+.PHONY: all iso disk magenta package clean
 all: build/avalanche.elf build/avalanche-data.img
 build build/user:
 	mkdir -p $@
@@ -60,6 +60,13 @@ disk: build/avalanche-data.img
 build/avalanche-data.img: tools/mkdisk.py $(APP_ELFS)
 	python3 tools/mkdisk.py $@ $(APP_ELFS)
 magenta: build/magenta.iso build/magenta-data.img
+package: all iso
+	mkdir -p ../Images
+	cp build/avalanche.iso ../Images/avalanche.iso
+	@set -eu; release_dir=$$(mktemp -d build/avalanche-release.XXXXXX); \
+	trap 'rm -rf "$$release_dir"' EXIT; \
+	python3 tools/mkdisk.py "$$release_dir/avalanche-data.img" $(APP_ELFS); \
+	cp "$$release_dir/avalanche-data.img" ../Images/avalanche-data.img
 build/magenta.iso: build/avalanche.elf ../magenta/boot/grub.cfg tools/mkiso.sh
 	sh tools/mkiso.sh build/magenta-iso ../magenta/boot/grub.cfg build/magenta.iso MAGENTA
 build/magenta-data.img: tools/mkdisk.py $(APP_ELFS) ../magenta/files/welcome.txt

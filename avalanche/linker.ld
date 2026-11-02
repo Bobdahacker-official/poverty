@@ -8,5 +8,6 @@ SECTIONS {
  .bss ALIGN(4K) : { *(COMMON) *(.bss*) }
  . = ALIGN(4K);
  kernel_end = .;
+ ASSERT(kernel_end <= 0x08000000, "Kernel overlaps the Linux compatibility address window")
  /DISCARD/ : { *(.comment) *(.eh_frame*) }
 }

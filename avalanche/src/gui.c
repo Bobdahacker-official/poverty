@@ -1654,16 +1654,17 @@ static void packages_view(void) {
   if (nk_group_begin(&ui, "Package information", 0)) {
     if (package_count && selected_package >= 0 && selected_package < (int)package_count) {
       struct package_item *p = &package_items[selected_package];
+      bool installed = p->installed;
       heading(p->name);
       nk_layout_row_dynamic(&ui, 24, 2);
       caption(p->version);
-      nk_label_colored(&ui, p->installed ? "INSTALLED" : "AVAILABLE", NK_TEXT_RIGHT,
-                       rgb(p->installed ? 0x23ad95 : accent()));
+      nk_label_colored(&ui, installed ? "INSTALLED" : "AVAILABLE", NK_TEXT_RIGHT,
+                       rgb(installed ? 0x23ad95 : accent()));
       nk_layout_row_dynamic(&ui, 64, 1); nk_label_wrap(&ui, package_summary(p->name));
-      nk_layout_row_dynamic(&ui, 36, p->installed ? 2 : 1);
-      if (accent_button(p->installed ? "Upgrade" : "Install"))
-        package_action(p->installed ? "upgrade" : "install");
-      if (p->installed && nk_button_label(&ui, "Remove"))
+      nk_layout_row_dynamic(&ui, 36, installed ? 2 : 1);
+      if (accent_button(installed ? "Upgrade" : "Install"))
+        package_action(installed ? "upgrade" : "install");
+      if (installed && nk_button_label(&ui, "Remove"))
         removing_package = true;
       nk_layout_row_dynamic(&ui, 24, 1); caption("PACKAGE DETAILS");
       nk_layout_row_dynamic(&ui, 150, 1);

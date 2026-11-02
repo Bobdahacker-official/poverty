@@ -19,8 +19,9 @@ translucent windows, blurred panels, shadows, animations and TrueType text.
 The bundled DejaVu font retains its license in ../assets/FONT-LICENSE.
 The graphical desktop uses Nuklear and its Catppuccin themes under the
 MIT licenses in ../vendor/nuklear/. Source revisions are in ORIGIN.md.
-Seven applications provide a native shell terminal, directory browser,
-text editor, process manager, network tools, package manager and settings.
+Nine applications provide a native shell terminal, directory browser,
+text editor, process manager, network tools, package manager, settings,
+web browser and PNG/JPEG/BMP image viewer.
 Appearance preferences persist on the writable disk. The ISO includes
 the toolkit, palette and font license notices in /licenses.
 
@@ -29,8 +30,10 @@ filesystem descriptors, flex_bg layouts, sparse file growth beyond 4 GiB,
 file creation, replacement and removal. Metadata changes and data writes
 use bounded multi-block JBD2 transactions and committed-transaction replay.
 The package manager stores its binaries and versioned SHA-256 manifests
-on ext4, resolves catalog dependencies, and downloads HTTP packages through
-the kernel network stack. The block drivers use a writeback cache.
+on ext4, resolves catalog dependencies, and downloads signed packages through
+the kernel HTTP/HTTPS stack. A pinned RSA certificate authenticates remote
+manifests. Durable undo records recover interrupted package changes at boot.
+The block drivers use a writeback cache.
 
 Linux compatibility is a specific i386 static-ELF/int-0x80 ABI subset:
 ELF initial argc/argv/envp/auxv, fork, execve, exit, waitpid, PID/UID calls,
@@ -43,28 +46,31 @@ syscall numbers directly, without the Avalanche SDK. Unimplemented calls
 return -ENOSYS.
 
 Hardware: PCI, legacy ATA PIO/LBA28, AHCI SATA DMA48, legacy/transitional
-VirtIO block and network, RTL8139, E1000, PIC/PIT, CMOS RTC, COM1 serial,
-PS/2 keyboard/mouse, PC speaker and RGB framebuffer. The virtual pointer
+VirtIO block, network and RNG, NVMe, RTL8139, E1000, AMD PCnet, PIC/PIT,
+CMOS RTC, COM1 serial, USB UHCI HID keyboards and mice, PS/2 keyboard/mouse,
+PC speaker and RGB framebuffer. The virtual pointer
 also supports the VMware absolute-pointer I/O protocol under QEMU and
 compatible hypervisors, with PS/2 fallback on other machines. VirtIO uses
 the legacy PCI I/O interface and supports queue sizes through 1024; modern
 VirtIO-only/MMIO devices are not supported. AHCI uses the first discovered
 controller and at most eight SATA ports. Block I/O requires 512-byte
-logical sectors. No native USB, NVMe, Wi-Fi, audio mixer or accelerated GPU.
+logical sectors; the NVMe transport also handles 4 KiB namespace blocks.
 
 Networking: ARP, IPv4, ICMP, UDP, DHCP, DNS, an active-open TCP stream,
 and HTTP/1.0 clients. TCP has one process-owned connection, in-order
 receive, stop-and-wait sending and bounded retries; no listen API, SACK,
-window scaling, congestion control or TIME_WAIT table. No TLS, IPv6 or
-IP fragmentation/reassembly. DHCP renewal is manual. Drivers are polled;
+window scaling, congestion control or TIME_WAIT table. HTTPS uses BearSSL
+with certificate validation and hardware entropy. DHCP renewal is manual. Drivers are polled;
 kernel syscalls are serialized, while user code is timer-preempted.
 
 Filesystem: checksummed dual metadata banks and copy-on-write file slots,
 a flat namespace with 32 files of at most 64 KiB each, in its own MBR type
 0x7f partition. Without a recognized disk, files use volatile RAM. The
 supplied data image contains nine application executables. The physical
-allocator manages usable RAM below 128 MiB; user memory is bounded to
-8 MiB per process and twelve page tables. The CPU must support x86-64 long mode.
+allocator manages firmware-reported RAM through 64 GiB of physical address
+space using a supervisor-only direct mapping. Processes have up to 64 MiB
+of mapped pages and 32 page tables. Disk-backed ELF files can be up to
+32 MiB. The CPU must support x86-64 long mode.
 The kernel and native applications are 64-bit; the UEFI loader targets x86-64 firmware.
 Native ELF64 uses low-4-GiB user addresses and the existing bounded service
 ABI. Linux ELF32 uses compatibility mode.

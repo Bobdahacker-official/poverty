@@ -40,5 +40,5 @@ enum {
   AV_RANDOM
 };
 #define AV_USER_BASE 0x40000000u
-#define AV_USER_END 0x40400000u
+#define AV_USER_END 0x44000000u
 #endif

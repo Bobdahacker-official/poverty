@@ -82,11 +82,15 @@ make -C magenta package
 make run
 ```
 
-The build writes to `avalanche/build/`. Packaging copies the boot ISO and a fresh Avalanche data disk into `Images/`. `make run` creates and attaches a 9 GiB ext4 disk when needed. `make test` runs the host and QEMU checks. `make packages` builds the sample packages.
+The build writes to `avalanche/build/`. `make package` copies both boot ISOs and fresh data disks into `Images/`, then updates their SHA-256 checksums. `make run` creates and attaches a 9 GiB ext4 disk when needed. `make test` runs the host and QEMU checks. `make packages` builds the sample packages.
 
 ## Kernel
 
-Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. USB 1.1 UHCI controllers can drive boot-protocol keyboards and mice, including devices behind one hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks; the kernel maps physical memory through 16 GiB of address space.
+Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. USB 1.1 UHCI controllers can drive boot-protocol keyboards and mice, including devices behind one hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks.
+
+The kernel maps physical addresses through 64 GiB. Allocated pages use a separate, supervisor-only memory mapping, so RAM above 4 GiB stays accessible while applications run. Native programs have a 64 MiB address window and up to 64 MiB of mapped pages, with 64 KiB reserved for the stack. Disk-backed ELF files can be up to 32 MiB. `mem` reports managed RAM, free pages, and allocations above 4 GiB. The memory checks boot with 256 MiB, 8 GiB, and 32 GiB and run an ext4 executable with 16 MiB of writable data.
+
+Device registers use sparse mappings beyond the RAM window, bounded by the CPU's physical address width. E1000 and NVMe accept 64-bit PCI memory BARs. NVMe doorbell addresses follow the controller's advertised stride. The hardware checks cover ATA, AHCI, VirtIO block, and NVMe storage with PCnet, RTL8139, VirtIO net, and E1000 networking on the PC and Q35 chipsets.
 
 The package manager installs, removes, upgrades, lists, queries, and searches packages. Downloads default to HTTPS and verify manifest signatures against a locally pinned RSA certificate, then check the executable's SHA-256. Explicit `http://` repositories also require signatures. `pkg trust LOCAL-DER-CERTIFICATE` saves the signing certificate and prints its fingerprint. `pkg fetch HOST /MANIFEST` verifies the manifest's `.sig` companion before installing anything.
 

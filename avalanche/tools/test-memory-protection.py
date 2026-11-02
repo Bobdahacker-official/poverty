@@ -10,7 +10,8 @@ import time
 root = pathlib.Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix="avalanche-memory-") as directory:
     folder=pathlib.Path(directory)
-    for name,flags in [("nxprobe",[]),("rxprobe",["-DPROBE_WRITE"])]:
+    for name,flags in [("nxprobe",[]),("rxprobe",["-DPROBE_WRITE"]),
+                       ("kernelprobe",["-DPROBE_KERNEL"])]:
         obj=folder/(name+".o")
         subprocess.run([os.environ.get("CC","gcc"),"-m64","-ffreestanding","-fno-pie",
                         *flags,"-c",str(root/"avalanche/tools/nx-probe.S"),"-o",str(obj)],check=True)
@@ -19,7 +20,8 @@ with tempfile.TemporaryDirectory(prefix="avalanche-memory-") as directory:
                         str(folder/(name+".elf")),str(obj)],check=True)
     disk=folder/"data.img"
     subprocess.run(["python3",str(root/"avalanche/tools/mkdisk.py"),str(disk),
-                    str(folder/"nxprobe.elf"),str(folder/"rxprobe.elf")],check=True)
+                    str(folder/"nxprobe.elf"),str(folder/"rxprobe.elf"),
+                    str(folder/"kernelprobe.elf")],check=True)
     for cpu,stack_fault in [("qemu64,+nx",True),("qemu64,-nx",False)]:
         command=[os.environ.get("QEMU","qemu-system-x86_64"),"-accel","tcg",
                  "-cpu",cpu,"-m","256","-boot","d","-vga","none","-display","none",
@@ -49,5 +51,8 @@ with tempfile.TemporaryDirectory(prefix="avalanche-memory-") as directory:
             process.stdin.write(b"run rxprobe\n"); process.stdin.flush()
             output=until_prompt(); assert b"fault 14" in output,output
             print("PASS read-only ELF text rejects user writes")
+            process.stdin.write(b"run kernelprobe\n"); process.stdin.flush()
+            output=until_prompt(); assert b"fault 14" in output,output
+            print("PASS kernel direct memory mapping rejects ring-3 reads")
         finally:
             if process.poll() is None: process.terminate(); process.wait(timeout=5)

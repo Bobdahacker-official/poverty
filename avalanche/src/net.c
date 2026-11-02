@@ -149,13 +149,10 @@ static bool rtl_init(const struct pci_device *d) {
   return true;
 }
 static bool e1000_init(const struct pci_device *d) {
-  if (d->bar[0] & 1)
+  uint64_t base = pci_memory_bar(d, 0);
+  if (!base || !platform_mmio(base, 0x20000))
     return false;
-  if ((d->bar[0] & 6) == 4 && d->bar[1])
-    return false;
-  if (!platform_mmio(d->bar[0] & ~15u, 0x20000))
-    return false;
-  e1000 = (void *)(uintptr_t)(d->bar[0] & ~15u);
+  e1000 = page_pointer(base);
   if (!e1000)
     return false;
   pci_enable(d, 6);

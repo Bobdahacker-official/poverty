@@ -2,10 +2,12 @@
 #define AVALANCHE_PROCESS_H
 #include "system.h"
 #define PROCESS_MAX 256
-#define PROCESS_TABLES 12
+#define PROCESS_TABLES 32
+#define PROCESS_DIRECTORY_ENTRIES 2048
 #define PROCESS_FDS 16
 #define PROCESS_STACK 32768
-#define PROCESS_PAGE_LIMIT 2048
+#define PROCESS_PAGE_LIMIT 16384
+#define PROCESS_IMAGE_LIMIT (32u * 1024 * 1024)
 #define PROCESS_PHYSICAL_MASK UINT64_C(0x000ffffffffff000)
 #define PROCESS_NO_EXECUTE UINT64_C(0x8000000000000000)
 #define FD_UNUSED (-1)
@@ -24,7 +26,7 @@ enum process_state {
 struct process {
   uint64_t root[512] __attribute__((aligned(4096)));
   uint64_t pdpt[512] __attribute__((aligned(4096)));
-  uint64_t directory[IDENTITY_ENTRIES] __attribute__((aligned(4096)));
+  uint64_t directory[PROCESS_DIRECTORY_ENTRIES] __attribute__((aligned(4096)));
   uint64_t tables[PROCESS_TABLES][512] __attribute__((aligned(4096)));
   uint8_t kernel_stack[PROCESS_STACK] __attribute__((aligned(16)));
   uint16_t indices[PROCESS_TABLES];

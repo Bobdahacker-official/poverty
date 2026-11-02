@@ -13,6 +13,7 @@ import zlib
 root = pathlib.Path(__file__).resolve().parents[2]
 parser=argparse.ArgumentParser()
 parser.add_argument("--ext4",action="store_true")
+parser.add_argument("--memory",type=int,default=512)
 args=parser.parse_args()
 with tempfile.TemporaryDirectory(prefix="magenta-image-gui-") as directory:
     folder = pathlib.Path(directory)
@@ -46,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="magenta-image-gui-") as directory:
     serial = folder / "serial.log"
     screenshot = folder / "viewer.ppm"
     command = [os.environ.get("QEMU","qemu-system-x86_64"),"-accel","tcg",
-               "-m","512","-boot","d","-display","none","-vga","std",
+               "-m",str(args.memory),"-boot","d","-display","none","-vga","std",
                "-monitor","stdio","-serial",f"file:{serial}","-nic","none",
                "-cdrom",str(root/"Images/magenta.iso"),
                "-drive",f"file={disk},format=raw,if=ide"]

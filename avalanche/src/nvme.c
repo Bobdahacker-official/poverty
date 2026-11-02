@@ -88,20 +88,16 @@ static bool identify_object(uint32_t id, unsigned kind) {
 }
 void nvme_init(void) {
   controller = pci_find_class(1, 8, 2);
-  if (!controller || !controller->bar[0] || (controller->bar[0] & 1))
+  uint64_t base = pci_memory_bar(controller, 0);
+  if (!base || !platform_mmio(base, 0x2000))
     return;
-  if ((controller->bar[0] & 6) == 4 && controller->bar[1])
-    return;
-  uint32_t base = controller->bar[0] & ~15u;
-  if (!platform_mmio(base, 0x2000))
-    return;
-  registers = (void *)(uintptr_t)base;
+  registers = page_pointer(base);
   uint64_t cap = read_reg(0) | (uint64_t)read_reg(4) << 32;
   if ((cap & 65535) + 1 < QUEUE_DEPTH || !(cap & (UINT64_C(1) << 37)) ||
       ((cap >> 48) & 15))
     return;
   stride = 4u << ((cap >> 32) & 15);
-  if (stride > 1024)
+  if (!platform_mmio(base, 0x1000 + 3 * stride + 4))
     return;
   timeout = (((cap >> 24) & 255) + 1) * 50; /* 100 Hz PIT; CAP.TO is 500 ms. */
   if (timeout < 500)

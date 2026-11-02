@@ -1,7 +1,10 @@
 .section .text
 .global _start
 _start:
-#ifdef PROBE_WRITE
+#ifdef PROBE_KERNEL
+    movabs $0xffff800000100000,%rax
+    mov (%rax),%rax
+#elif defined(PROBE_WRITE)
     movb $0x90,_start(%rip)
 #else
     sub $16,%rsp

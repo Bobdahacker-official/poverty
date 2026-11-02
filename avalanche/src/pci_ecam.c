@@ -11,17 +11,18 @@ static uint8_t checksum(const void *p, unsigned length) {
   return sum;
 }
 static bool accessible(uint64_t p, uint64_t length) {
-  return p >= 4096 && length && p < ((uint64_t)IDENTITY_ENTRIES << 21) &&
-         length <= ((uint64_t)IDENTITY_ENTRIES << 21) - p;
+  return p >= 4096 && length && p < DIRECT_MAP_LIMIT &&
+         length <= DIRECT_MAP_LIMIT - p;
 }
 static const uint8_t *table(uint64_t physical, const char *signature) {
-  if (!accessible(physical, 36))
+  if (!accessible(physical, 36) || !platform_mmio(physical, 36))
     return NULL;
-  const uint8_t *p = (const void *)(uintptr_t)physical;
+  const uint8_t *p = page_pointer(physical);
   uint32_t length;
   memcpy(&length, p + 4, 4);
   if (length < 36 || length > 1024 * 1024 || !accessible(physical, length) ||
-      __builtin_memcmp(p, signature, 4) || checksum(p, length))
+      __builtin_memcmp(p, signature, 4) || !platform_mmio(physical, length) ||
+      checksum(p, length))
     return NULL;
   return p;
 }

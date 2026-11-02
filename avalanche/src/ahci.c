@@ -87,11 +87,10 @@ error:
 }
 void ahci_init(void) {
   const struct pci_device *d = pci_find_class(1, 6, 1);
-  if (!d || (d->bar[5] & 1) || !d->bar[5])
+  uint64_t base = pci_memory_bar(d, 5);
+  if (!base || !platform_mmio(base, 0x1100))
     return;
-  if (!platform_mmio(d->bar[5] & ~15u, 0x1100))
-    return;
-  volatile uint32_t *hba = (void *)(uintptr_t)(d->bar[5] & ~15u);
+  volatile uint32_t *hba = page_pointer(base);
   pci_enable(d, 6);
   if (hba[0x24 / 4] & 1) {
     hba[0x28 / 4] |= 2;

@@ -85,6 +85,7 @@ struct pci_device {
   uint32_t bar[6];
 };
 uint32_t pci_read(const struct pci_device *, uint8_t);
+uint64_t pci_memory_bar(const struct pci_device *, unsigned);
 void pci_write(const struct pci_device *, uint8_t, uint32_t);
 const struct pci_device *pci_find(uint16_t vendor, uint16_t device);
 const struct pci_device *pci_find_class(uint8_t, uint8_t, uint8_t);

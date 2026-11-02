@@ -64,7 +64,8 @@ struct fbtag {
   uint8_t rp, rs, gp, gs, bp, bs;
 } __attribute__((packed));
 static uint8_t usable[PAGES / 8], allocated[PAGES / 8];
-static uint32_t available, used;
+static uint32_t available, used, high_used;
+static uint32_t allocation_hint, allocation_limit;
 extern char kernel_end;
 static void mark(uint8_t *b, uint32_t i, bool on) {
   if (on)
@@ -76,6 +77,10 @@ static bool bit(const uint8_t *b, uint32_t i) {
   return b[i / 8] & (1u << (i % 8));
 }
 static void reserve(uint64_t start, uint64_t end) {
+  if (start >= (uint64_t)PAGES * PAGE)
+    return;
+  if (end > (uint64_t)PAGES * PAGE)
+    end = (uint64_t)PAGES * PAGE;
   uint32_t a = start / PAGE, b = end / PAGE + (end % PAGE != 0);
   if (b > PAGES)
     b = PAGES;
@@ -86,30 +91,46 @@ static void reserve(uint64_t start, uint64_t end) {
     }
 }
 void *pages_alloc(unsigned count) {
-  if (!count || count > PAGES) return NULL;
-  unsigned run = 0;
-  for (uint32_t i = 0; i < PAGES; ++i) {
-    if (bit(usable, i) && !bit(allocated, i)) run++; else run = 0;
-    if (run == count) {
-      unsigned first = i + 1 - count;
-      for (unsigned j = first; j <= i; j++) mark(allocated, j, true);
-      used += count;
-      void *p = (void *)((uintptr_t)first * PAGE);
-      memset(p, 0, (size_t)count * PAGE);
-      return p;
+  if (!count || count > allocation_limit)
+    return NULL;
+  for (unsigned pass = 0; pass < 2; pass++) {
+    unsigned run = 0;
+    for (uint32_t i = pass ? 0 : allocation_hint; i < allocation_limit; i++) {
+      if (bit(usable, i) && !bit(allocated, i))
+        run++;
+      else
+        run = 0;
+      if (run == count) {
+        unsigned first = i + 1 - count;
+        for (unsigned j = first; j <= i; j++) {
+          mark(allocated, j, true);
+          if (j >= 1048576u)
+            high_used++;
+        }
+        allocation_hint = i + 1;
+        used += count;
+        void *p = page_pointer((uint64_t)first * PAGE);
+        memset(p, 0, (size_t)count * PAGE);
+        return p;
+      }
     }
   }
   return NULL;
 }
 void *page_alloc(void) { return pages_alloc(1); }
 bool page_free(void *p) {
-  uintptr_t a = (uintptr_t)p, i = a / PAGE;
+  uint64_t a = page_physical(p), i = a / PAGE;
   if (a % PAGE || i >= PAGES || !bit(allocated, i)) return false;
   mark(allocated, i, false);
+  if (i >= 1048576u)
+    high_used--;
+  if (i < allocation_hint)
+    allocation_hint = i;
   --used;
   return true;
 }
 static volatile uint8_t *fb;
+static uint64_t fb_address;
 static uint32_t pitch, fw, fh, fg, bg;
 static uint8_t bytespp, rpos, gpos, bpos, rbits, gbits, bbits;
 static uint32_t col, row, cols = 80, rows = 25;
@@ -638,6 +659,8 @@ static void command(char *line) {
     print_uint(used * 4);
     console_write(" KiB; free: ");
     print_uint((available - used) * 4);
+    console_write(" KiB; allocated above 4 GiB: ");
+    print_uint(high_used * 4);
     console_write(" KiB\n");
   } else if (eq(cmd, "ticks")) {
     print_uint(clock_ticks());
@@ -920,6 +943,10 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
               last = (uint64_t)PAGES * PAGE;
             uint32_t a = (uintptr_t)((e->base + PAGE - 1) >> 12),
                      b = (uintptr_t)(last >> 12);
+            if (b > allocation_limit)
+              allocation_limit = b;
+            if (b > 1048576u && (!allocation_hint || a < allocation_hint))
+              allocation_hint = a > 1048576u ? a : 1048576u;
             for (uint32_t i = a; i < b; ++i)
               if (!bit(usable, i)) {
                 mark(usable, i, true);
@@ -937,10 +964,10 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
       if (f->kind == 1 && (f->bpp == 24 || f->bpp == 32) && f->width >= 120 &&
           f->height >= 32 && f->width <= 4096 && f->height <= 2160 &&
           f->pitch >= f->width * (f->bpp / 8) && f->addr + span >= f->addr &&
-          f->addr + span <= ((uint64_t)IDENTITY_ENTRIES << 21) && f->rs && f->rs <= 8 && f->gs &&
+          f->addr + span <= DIRECT_MAP_LIMIT && f->rs && f->rs <= 8 && f->gs &&
           f->gs <= 8 && f->bs && f->bs <= 8 && f->rp + f->rs <= f->bpp &&
           f->gp + f->gs <= f->bpp && f->bp + f->bs <= f->bpp) {
-        fb = (void *)(uintptr_t)f->addr;
+        fb_address = f->addr;
         pitch = f->pitch;
         fw = f->width;
         fh = f->height;
@@ -964,12 +991,8 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   }
   reserve(0, (uintptr_t)&kernel_end);
   reserve(mbi, end);
-  /* User virtual windows replace identity mappings in process CR3s. */
-  reserve(0x08000000, 0x20000000);
-  reserve(0x40000000, 0x40400000);
-  reserve(0xbfc00000, 0xc0000000);
-  if (fb)
-    reserve((uintptr_t)fb, (uintptr_t)fb + pitch * fh);
+  if (fb_address)
+    reserve(fb_address, fb_address + (uint64_t)pitch * fh);
   /* Boot modules remain reserved so future distribution payloads are not
    * overwritten. */
   for (struct tag *t = (void *)(uintptr_t)(mbi + 8); (uintptr_t)t <= end - 8;) {
@@ -985,8 +1008,10 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
       break;
     t = (void *)(uintptr_t)((uint8_t *)(uintptr_t)t + next);
   }
-  console_clear();
   user_init();
+  if (fb_address && platform_mmio(fb_address, pitch * fh))
+    fb = page_pointer(fb_address);
+  console_clear();
   platform_enable();
   pci_ecam_init(mbi,end);
   devices_init();

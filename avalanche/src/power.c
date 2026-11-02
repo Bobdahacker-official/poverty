@@ -20,7 +20,7 @@ bool firmware_reset(void) {
   if (gas[1]!=8 || gas[2] || !address) return false;
   if (gas[0]==1 && address<=65535) io_out8(address,f[128]);
   else if (gas[0]==0 && platform_mmio(address,1))
-    *(volatile uint8_t *)(uintptr_t)address=f[128];
+    *(volatile uint8_t *)page_pointer(address) = f[128];
   else return false;
   sleep_ticks(20);
   return false;

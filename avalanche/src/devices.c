@@ -6,9 +6,30 @@ static struct pci_device pci[PCI_MAX];
 static unsigned pci_count;
 static struct block_device disks[64];
 static unsigned ndisks;
+uint64_t pci_memory_bar(const struct pci_device *d, unsigned index) {
+  if (!d || index >= 6)
+    return 0;
+  /* A 64-bit BAR consumes the following slot, which is not another BAR. */
+  for (unsigned i = 0; i < index; i++)
+    if (!(d->bar[i] & 1) && (d->bar[i] & 6) == 4 && ++i == index)
+      return 0;
+  uint32_t low = d->bar[index];
+  if (low & 1)
+    return 0;
+  unsigned kind = low & 6;
+  if (kind == 6 || (kind == 4 && index == 5))
+    return 0;
+  uint64_t address = low & ~15u;
+  if (kind == 4)
+    address |= (uint64_t)d->bar[index + 1] << 32;
+  return address;
+}
 uint32_t pci_read(const struct pci_device *d, uint8_t r) {
   uint64_t base = pci_ecam_bus(d->bus);
-  if (base) return *(volatile uint32_t *)(uintptr_t)(base + ((unsigned)d->slot<<15) + ((unsigned)d->function<<12) + (r&0xfc));
+  if (base)
+    return *(volatile uint32_t *)page_pointer(base + ((unsigned)d->slot << 15) +
+                                              ((unsigned)d->function << 12) +
+                                              (r & 0xfc));
   io_out32(0xcf8, 0x80000000u | ((uintptr_t)d->bus << 16) |
                       ((uintptr_t)d->slot << 11) |
                       ((uintptr_t)d->function << 8) | (r & 0xfc));
@@ -17,7 +38,9 @@ uint32_t pci_read(const struct pci_device *d, uint8_t r) {
 void pci_write(const struct pci_device *d, uint8_t r, uint32_t v) {
   uint64_t base = pci_ecam_bus(d->bus);
   if (base) {
-    *(volatile uint32_t *)(uintptr_t)(base + ((unsigned)d->slot<<15) + ((unsigned)d->function<<12) + (r&0xfc)) = v;
+    *(volatile uint32_t *)page_pointer(base + ((unsigned)d->slot << 15) +
+                                       ((unsigned)d->function << 12) +
+                                       (r & 0xfc)) = v;
     return;
   }
   io_out32(0xcf8, 0x80000000u | ((uintptr_t)d->bus << 16) |

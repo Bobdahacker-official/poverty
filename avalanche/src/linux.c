@@ -1,3 +1,4 @@
+#include "abi.h"
 #include "process.h"
 /* Deliberate Linux i386 syscall subset for static, int-0x80 ELF programs.
  * Unimplemented operations return -ENOSYS; this is not a Linux kernel. */
@@ -504,7 +505,7 @@ void linux_syscall(struct trap_frame *f) {
       result = (int)t->heap_break;
       break;
     }
-    uint32_t limit = t->linux_abi ? 0x10000000u : 0x403e0000u;
+    uint32_t limit = t->linux_abi ? 0x10000000u : AV_USER_END - 65536u;
     if (a < t->heap_min || a > limit) {
       result = (int)t->heap_break;
       break;
