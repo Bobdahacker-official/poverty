@@ -387,8 +387,9 @@ static int memory_map(struct process *t, uint32_t address, uint32_t length,
   for (; done < n; done += 4096) {
     if (!process_map_lazy(t, address + done, (prot & 2) != 0))
       break;
+    process_execute(t,address+done,(prot&4)!=0);
     if (!prot)
-      *process_pte(t, address + done) &= ~4u;
+      *process_pte(t, address + done) &= ~UINT64_C(4);
   }
   if (done < n) {
     for (uint32_t off = 0; off < done; off += 4096)
@@ -667,14 +668,15 @@ void linux_syscall(struct trap_frame *f) {
     }
     for (uint32_t off = 0; off < b; off += 4096) {
       uint64_t *pte = process_pte(t, a + off);
-      if ((c & 2) && (*pte & ~4095u) && !process_private(t, a + off)) {
+      if ((c & 2) && (*pte & PROCESS_PHYSICAL_MASK) && !process_private(t, a + off)) {
         result = -12;
         ok = false;
         break;
       }
-      *pte = (*pte & ~6u) | (c ? 4 : 0) | ((c & 2) ? 2 : 0);
+      *pte = (*pte & ~UINT64_C(6)) | (c ? 4 : 0) | ((c & 2) ? 2 : 0);
       if (c & 2)
-        *pte &= ~512u;
+        *pte &= ~UINT64_C(512);
+      process_execute(t,a+off,(c&4)!=0);
       __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)(a + off)) : "memory");
     }
     if (ok)

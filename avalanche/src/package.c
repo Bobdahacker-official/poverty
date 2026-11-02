@@ -1,5 +1,7 @@
 #include "package.h"
+#include "../vendor/bearssl/bearssl.h"
 #include "ext4.h"
+#include "http.h"
 static struct ext4_volume package_volume;
 static bool package_ext4;
 static unsigned package_entries = 32;
@@ -66,8 +68,119 @@ static bool safe_name(const char *name) {
       return false;
   return n > 0;
 }
-static int http_get(const char *host, const char *path, void *out,
-                    unsigned capacity) {
+struct package_transaction {
+  uint32_t magic, checksum;
+  char name[28];
+  int32_t binary_size, record_size;
+  uint8_t binary_hash[32], record_hash[32];
+};
+static const char transaction_file[] = ".pkg-transaction";
+static const char binary_backup[] = ".pkg-previous";
+static const char record_backup[] = ".pkg-record";
+static bool same_digest(const uint8_t *a, const uint8_t *b) {
+  unsigned difference = 0;
+  for (unsigned i = 0; i < 32; i++)
+    difference |= a[i] ^ b[i];
+  return difference == 0;
+}
+static int transaction_recover(void) {
+  int pending_size = fs_size(transaction_file);
+  if (pending_size < -2)
+    return pending_size;
+  if (pending_size < 0)
+    return 0;
+  struct package_transaction t;
+  if (fs_read(transaction_file, &t, sizeof(t)) != sizeof(t))
+    return -74;
+  uint32_t saved = t.checksum;
+  t.checksum = 0;
+  if (t.magic != 0x50545831 || crc32(&t, sizeof(t)) != saved ||
+      !__builtin_memchr(t.name, 0, sizeof(t.name)) || !safe_name(t.name) ||
+      t.binary_size < -1 || t.binary_size > (int)sizeof(previous) ||
+      t.record_size < -1 || t.record_size > 512)
+    return -74;
+  char record[512], db[32];
+  uint8_t digest[32];
+  memcpy(db, "pkg-", 4);
+  memcpy(db + 4, t.name, strlen(t.name) + 1);
+  /* Validate both backups before restoring either member of the transaction. */
+  if (t.binary_size >= 0) {
+    if (fs_read(binary_backup, previous, sizeof(previous)) != t.binary_size)
+      return -74;
+    sha256(previous, t.binary_size, digest);
+    if (!same_digest(digest, t.binary_hash))
+      return -74;
+  }
+  if (t.record_size >= 0) {
+    if (fs_read(record_backup, record, sizeof(record)) != t.record_size)
+      return -74;
+    sha256(record, t.record_size, digest);
+    if (!same_digest(digest, t.record_hash))
+      return -74;
+  }
+  if (t.binary_size >= 0) {
+    if (fs_write(t.name, previous, t.binary_size) < 0)
+      return -5;
+  } else if (fs_size(t.name) >= 0 && fs_remove(t.name) < 0)
+    return -5;
+  if (t.record_size >= 0) {
+    if (fs_write(db, record, t.record_size) < 0)
+      return -5;
+  } else if (fs_size(db) >= 0 && fs_remove(db) < 0)
+    return -5;
+  if (!power_flush() || fs_remove(transaction_file) < 0 || !power_flush())
+    return -5;
+  console_write("Recovered interrupted package update.\n");
+  return 0;
+}
+static int transaction_begin(const char *name) {
+  if (!safe_name(name) || fs_size(transaction_file) >= 0)
+    return -16;
+  struct package_transaction t = {0};
+  char db[32], record[512];
+  t.magic = 0x50545831;
+  memcpy(t.name, name, strlen(name) + 1);
+  memcpy(db, "pkg-", 4);
+  memcpy(db + 4, name, strlen(name) + 1);
+  t.binary_size = fs_size(name);
+  t.record_size = fs_size(db);
+  if (t.binary_size < -2 || t.record_size < -2)
+    return -5;
+  if (t.binary_size < 0)
+    t.binary_size = -1;
+  if (t.record_size < 0)
+    t.record_size = -1;
+  if (t.binary_size > (int)sizeof(previous) ||
+      t.record_size > (int)sizeof(record))
+    return -27;
+  if (t.binary_size >= 0) {
+    if (fs_read(name, previous, sizeof(previous)) != t.binary_size)
+      return -5;
+    sha256(previous, t.binary_size, t.binary_hash);
+    if (fs_write(binary_backup, previous, t.binary_size) < 0)
+      return -5;
+  }
+  if (t.record_size >= 0) {
+    if (fs_read(db, record, sizeof(record)) != t.record_size)
+      return -5;
+    sha256(record, t.record_size, t.record_hash);
+    if (fs_write(record_backup, record, t.record_size) < 0)
+      return -5;
+  }
+  if (!power_flush())
+    return -5;
+  t.checksum = crc32(&t, sizeof(t));
+  if (fs_write(transaction_file, &t, sizeof(t)) < 0 || !power_flush())
+    return -5;
+  return 0;
+}
+static int transaction_commit(void) {
+  if (!power_flush() || fs_remove(transaction_file) < 0 || !power_flush())
+    return -5;
+  return 0;
+}
+static int package_download(const char *host, const char *path, void *out,
+                            unsigned capacity) {
   if (!*host || *path != '/' || strlen(host) > 200 || strlen(path) > 200)
     return -22;
   for (const char *p = host; *p; p++)
@@ -76,59 +189,72 @@ static int http_get(const char *host, const char *path, void *out,
   for (const char *p = path; *p; p++)
     if (*p < 33 || *p == 127)
       return -22;
-  uint32_t address;
-  if (!ip_parse(host, &address) && net_dns(host, &address) < 0)
-    return -2;
-  int r = net_tcp_connect(address, 80);
-  if (r < 0)
-    return r;
-  char request[512];
-  unsigned used = 0;
-  const char *parts[] = {"GET ", path, " HTTP/1.0\r\nHost: ", host,
-                         "\r\nConnection: close\r\n\r\n"};
-  for (unsigned i = 0; i < 5; i++)
-    for (const char *p = parts[i]; *p; p++) {
-      if (used == sizeof(request)) {
-        net_tcp_close();
-        return -7;
-      }
-      request[used++] = *p;
-    }
-  r = net_tcp_send(request, used);
-  if (r < 0) {
-    net_tcp_close();
-    return r;
-  }
-  unsigned total = 0;
-  while (total < sizeof(response)) {
-    r = net_tcp_recv(response + total, sizeof(response) - total, 500);
-    if (r <= 0)
-      break;
-    total += r;
-  }
-  net_tcp_close();
-  if (r < 0)
-    return r;
-  if (total == sizeof(response) || total < 16)
+  char url[512];
+  const char *scheme =
+      (strlen(host) >= 8 && !__builtin_memcmp(host, "https://", 8)) ||
+              (strlen(host) >= 7 && !__builtin_memcmp(host, "http://", 7))
+          ? ""
+          : "https://";
+  unsigned n = strlen(scheme), h = strlen(host), p = strlen(path);
+  if (n + h + p >= sizeof(url))
+    return -36;
+  memcpy(url, scheme, n);
+  memcpy(url + n, host, h);
+  memcpy(url + n + h, path, p + 1);
+  int count = http_get(url, (char *)response, sizeof(response));
+  if (count < 0)
+    return count;
+  if ((unsigned)count > capacity)
     return -27;
-  const char prefix[] = "HTTP/1.";
-  for (unsigned i = 0; i < 7; i++)
-    if (response[i] != (uint8_t)prefix[i])
-      return -5;
-  if ((response[7] != '0' && response[7] != '1') || response[8] != ' ' ||
-      response[9] != '2' || response[10] != '0' || response[11] != '0')
-    return -5;
-  unsigned body = 0;
-  for (unsigned i = 0; i + 3 < total && i < 4096; i++)
-    if (response[i] == '\r' && response[i + 1] == '\n' &&
-        response[i + 2] == '\r' && response[i + 3] == '\n') {
-      body = i + 4;
-      break;
-    }
-  if (!body || total - body > capacity)
-    return -27;
-  memcpy(out, response + body, total - body);
-  return total - body;
+  memcpy(out, response, count);
+  return count;
+}
+static uint8_t trust_certificate[4096];
+static br_x509_decoder_context trust_decoder;
+static const br_x509_pkey *trust_key(const void *certificate, unsigned size) {
+  br_x509_decoder_init(&trust_decoder, NULL, NULL);
+  br_x509_decoder_push(&trust_decoder, certificate, size);
+  const br_x509_pkey *key = br_x509_decoder_get_pkey(&trust_decoder);
+  if (!key || key->key_type != BR_KEYTYPE_RSA || key->key.rsa.nlen < 256 ||
+      key->key.rsa.nlen > 512)
+    return NULL;
+  return key;
+}
+static bool signature_valid(const br_x509_pkey *key, const void *signature,
+                            unsigned signature_size, const void *data,
+                            unsigned size) {
+  if (!key || key->key_type != BR_KEYTYPE_RSA ||
+      signature_size != key->key.rsa.nlen)
+    return false;
+  uint8_t expected[32], actual[32];
+  sha256(data, size, expected);
+  br_rsa_pkcs1_vrfy verify = br_rsa_pkcs1_vrfy_get_default();
+  return verify(signature, signature_size, BR_HASH_OID_SHA256, 32,
+                &key->key.rsa, actual) &&
+         same_digest(expected, actual);
+}
+static int verify_manifest(const char *host, const char *path, const void *data,
+                           unsigned size) {
+  int count =
+      fs_read(".pkg-trust.der", trust_certificate, sizeof(trust_certificate));
+  if (count < 0)
+    return -13;
+  const br_x509_pkey *key = trust_key(trust_certificate, count);
+  if (!key)
+    return -74;
+  char location[256];
+  unsigned length = strlen(path);
+  if (length + 4 >= sizeof(location))
+    return -36;
+  memcpy(location, path, length);
+  memcpy(location + length, ".sig", 5);
+  uint8_t signature[512];
+  count = package_download(host, location, signature, sizeof(signature));
+  if (count < 0)
+    return count;
+  if (!signature_valid(key, signature, count, data, size))
+    return -74;
+  return 0;
 }
 static void database_name(unsigned n, char *name) {
   memcpy(name, "pkg-", 4);
@@ -188,6 +314,57 @@ static bool match(const char *a, const char *b) {
   }
   return false;
 }
+static bool version_parts(const char *text, uint32_t parts[3]) {
+  for (unsigned i = 0; i < 3; i++) {
+    if (*text < '0' || *text > '9')
+      return false;
+    uint32_t value = 0;
+    while (*text >= '0' && *text <= '9') {
+      unsigned digit = *text++ - '0';
+      if (value > (UINT32_MAX - digit) / 10)
+        return false;
+      value = value * 10 + digit;
+    }
+    parts[i] = value;
+    if (i < 2) {
+      if (*text++ != '.')
+        return false;
+    }
+  }
+  return !*text;
+}
+static bool version_allowed(const char *name, const char *version) {
+  uint32_t incoming[3], installed_version[3];
+  if (!version_parts(version, incoming))
+    return false;
+  char db[32], record[512];
+  memcpy(db, "pkg-", 4);
+  memcpy(db + 4, name, strlen(name) + 1);
+  int count = fs_read(db, record, sizeof(record) - 1);
+  if (count < 0)
+    return count == -1 || count == -2;
+  record[count] = 0;
+  for (char *line = record; *line;) {
+    char *end = line;
+    while (*end && *end != '\n')
+      end++;
+    char *next = *end ? end + 1 : end;
+    *end = 0;
+    if (strlen(line) >= 8 && !__builtin_memcmp(line, "version ", 8)) {
+      if (!version_parts(line + 8, installed_version))
+        return false;
+      for (unsigned i = 0; i < 3; i++) {
+        if (incoming[i] > installed_version[i])
+          return true;
+        if (incoming[i] < installed_version[i])
+          return false;
+      }
+      return true;
+    }
+    line = next;
+  }
+  return false;
+}
 static void append(char *out, unsigned *used, const char *s) {
   while (*s && *used < 510)
     out[(*used)++] = *s++;
@@ -242,7 +419,12 @@ static int install(unsigned n, unsigned visiting) {
   if (old >= 0 && fs_read(catalog[n].name, previous, sizeof(previous)) != old)
     return -5;
   uint8_t expected[32], actual[32];
+  if (!version_allowed(catalog[n].name, catalog[n].version))
+    return -1;
   sha256(data, size, expected);
+  r = transaction_begin(catalog[n].name);
+  if (r)
+    return r;
   r = fs_write(catalog[n].name, data, size);
   if (r < 0)
     return r;
@@ -257,12 +439,12 @@ static int install(unsigned n, unsigned visiting) {
   database_name(n, name);
   int count = manifest(n, record);
   if (!equal || count < 0 || fs_write(name, record, count) < 0) {
-    if (old >= 0)
-      fs_write(catalog[n].name, previous, old);
-    else
-      fs_remove(catalog[n].name);
+    transaction_recover();
     return -5;
   }
+  r = transaction_commit();
+  if (r)
+    return r;
   console_write("Installed ");
   console_write(catalog[n].name);
   console_putc('\n');
@@ -270,9 +452,12 @@ static int install(unsigned n, unsigned visiting) {
 }
 static int fetch(const char *host, const char *path) {
   char record[512], parsed[512];
-  int n = http_get(host, path, record, sizeof(record) - 1);
+  int n = package_download(host, path, record, sizeof(record) - 1);
   if (n < 0)
     return n;
+  int verification = verify_manifest(host, path, record, n);
+  if (verification)
+    return verification;
   record[n] = 0;
   memcpy(parsed, record, n + 1);
   char *name = NULL, *version = NULL, *dependency = NULL, *file = NULL,
@@ -302,6 +487,8 @@ static int fetch(const char *host, const char *path) {
       !str_eq(name, file) || strlen(hash) != 64 || !strlen(version) ||
       strlen(version) > 31)
     return -22;
+  if (!version_allowed(name, version))
+    return -1;
   uint8_t expected[32], actual[32];
   for (unsigned i = 0; i < 64; i++) {
     char c = hash[i];
@@ -334,7 +521,7 @@ static int fetch(const char *host, const char *path) {
     return -36;
   memcpy(location, path, prefix);
   memcpy(location + prefix, file, strlen(file) + 1);
-  int count = http_get(host, location, image, sizeof(image));
+  int count = package_download(host, location, image, sizeof(image));
   if (count < 0)
     return count;
   sha256(image, count, actual);
@@ -344,7 +531,10 @@ static int fetch(const char *host, const char *path) {
   int old = fs_size(name);
   if (old >= 0 && fs_read(name, previous, sizeof(previous)) != old)
     return -5;
-  int r = fs_write(name, image, count);
+  int r = transaction_begin(name);
+  if (r)
+    return r;
+  r = fs_write(name, image, count);
   if (r < 0)
     return r;
   char db[32];
@@ -352,12 +542,22 @@ static int fetch(const char *host, const char *path) {
   memcpy(db + 4, name, strlen(name) + 1);
   r = fs_write(db, record, n);
   if (r < 0) {
-    if (old >= 0)
-      fs_write(name, previous, old);
-    else
-      fs_remove(name);
+    transaction_recover();
     return r;
   }
+  r = fs_read(name, previous, sizeof(previous));
+  if (r != count) {
+    transaction_recover();
+    return -5;
+  }
+  sha256(previous, r, actual);
+  if (!same_digest(actual, expected)) {
+    transaction_recover();
+    return -74;
+  }
+  r = transaction_commit();
+  if (r)
+    return r;
   console_write("Installed ");
   console_write(name);
   console_putc('\n');
@@ -377,7 +577,42 @@ void package_command(char *args) {
         package_entries++;
       break;
     }
+  int recovery = transaction_recover();
+  if (recovery) {
+    console_write("Package recovery failed. Package changes blocked.\n");
+    return;
+  }
   char *action = word(&args), *name = word(&args);
+  if (str_eq(action, "recover"))
+    return;
+  if (str_eq(action, "trust")) {
+    if (!*name) {
+      console_write(
+          "pkg trust LOCAL-DER-CERTIFICATE pins an RSA signing certificate\n");
+      return;
+    }
+    int count = fs_read(name, trust_certificate, sizeof(trust_certificate));
+    if (count < 0 || !trust_key(trust_certificate, count)) {
+      console_write(
+          "Expected a DER certificate with a 2048 to 4096 bit RSA key.\n");
+      return;
+    }
+    if (fs_write(".pkg-trust.der", trust_certificate, count) < 0 ||
+        !power_flush()) {
+      console_write("Could not save the trust certificate.\n");
+      return;
+    }
+    uint8_t digest[32];
+    sha256(trust_certificate, count, digest);
+    const char *hex = "0123456789abcdef";
+    console_write("Signing certificate SHA-256: ");
+    for (unsigned i = 0; i < 32; i++) {
+      console_putc(hex[digest[i] >> 4]);
+      console_putc(hex[digest[i] & 15]);
+    }
+    console_putc('\n');
+    return;
+  }
   if (str_eq(action, "fetch")) {
     int r = fetch(name, word(&args));
     if (r < 0) {
@@ -434,9 +669,15 @@ void package_command(char *args) {
       return;
     }
     if (str_eq(action, "remove") && !required(name)) {
-      int old = fs_read(name, previous, sizeof(previous));
-      if (old >= 0 && fs_remove(name) >= 0 && fs_remove(db) < 0)
-        fs_write(name, previous, old);
+      int r = transaction_begin(name);
+      if (!r && fs_remove(name) >= 0 && fs_remove(db) >= 0)
+        r = transaction_commit();
+      else if (!r) {
+        transaction_recover();
+        r = -5;
+      }
+      if (r)
+        console_write("Package removal failed.\n");
       return;
     }
     console_write(
@@ -473,12 +714,14 @@ void package_command(char *args) {
     }
     char record[32];
     database_name(n, record);
-    int old = fs_read(catalog[n].name, previous, sizeof(previous));
-    if (old < 0)
-      r = old;
-    else if ((r = fs_remove(catalog[n].name)) >= 0 &&
-             (r = fs_remove(record)) < 0)
-      fs_write(catalog[n].name, previous, old);
+    r = transaction_begin(catalog[n].name);
+    if (!r) {
+      if (fs_remove(catalog[n].name) < 0 || fs_remove(record) < 0) {
+        transaction_recover();
+        r = -5;
+      } else
+        r = transaction_commit();
+    }
   } else {
     console_write("pkg install|remove|upgrade|list|query|search NAME\n");
     return;

@@ -992,6 +992,8 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   devices_init();
   net_init();
   fs_init();
+  char recovery_command[]="recover";
+  package_command(recovery_command);
   console_write("AVALANCHE KERNEL 0.4.0\n");
   console_write(
       "--------------------------------------------------\nA small independent "

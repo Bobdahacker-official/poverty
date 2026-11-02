@@ -2,6 +2,11 @@
 static uint8_t block_memory[32768] __attribute__((aligned(4096)));
 static uint8_t rx_memory[32768] __attribute__((aligned(4096)));
 static uint8_t tx_memory[32768] __attribute__((aligned(4096)));
+static uint8_t rng_memory[32768] __attribute__((aligned(4096)));
+static uint8_t rng_buffer[256] __attribute__((aligned(16)));
+static struct virtq rngq;
+static uint16_t rng_port;
+static bool rng_ready;
 static struct virtq blockq, rxq, txq;
 static bool block_ready, block_flushable, block_readonly, net_ready;
 static uint16_t block_port, net_port;
@@ -101,6 +106,33 @@ static bool block_request(uint32_t type, uint32_t lba, void *buffer) {
     return false;
   if (type == 0)
     memcpy(buffer, block_buffer, 512);
+  return true;
+}
+void virtio_rng_init(void) {
+  const struct pci_device *d=pci_find(0x1af4,0x1005);
+  if (!begin(d,0,&rng_port) || !queue(&rngq,rng_port,0,rng_memory)) return;
+  io_out8(rng_port+18,7);
+  rng_ready=true;
+}
+bool virtio_random(void *out,unsigned size) {
+  if (!rng_ready) return false;
+  uint8_t *destination=out;
+  while (size) {
+    unsigned count=size>sizeof(rng_buffer) ? sizeof(rng_buffer) : size;
+    rngq.desc[0]=(struct virtq_desc){(uintptr_t)rng_buffer,count,2,0};
+    submit(&rngq,0);
+    if (!wait_used(&rngq)) {
+      io_out8(rng_port+18,0); rng_ready=false; return false;
+    }
+    volatile struct virtq_used *ring=(void *)(uintptr_t)(rngq.used+2);
+    unsigned received=ring[(uint16_t)(rngq.last-1)%rngq.size].length;
+    if (!received || received>count) {
+      io_out8(rng_port+18,0); rng_ready=false; return false;
+    }
+    memcpy(destination,rng_buffer,received);
+    memset(rng_buffer,0,received);
+    destination+=received; size-=received;
+  }
   return true;
 }
 void virtio_block_init(void) {

@@ -556,6 +556,7 @@ void devices_init(void) {
   ahci_init();
   nvme_init();
   virtio_block_init();
+  virtio_rng_init();
   mouse_init();
   usb_init();
 }

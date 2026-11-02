@@ -1,7 +1,7 @@
 CC = gcc
 LD = ld
 CFLAGS = -m64 -mno-red-zone -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -msoft-float -Iinclude
-SOURCES = power usb_uhci pcnet pci_ecam http nvme web_runtime web tls kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
+SOURCES = random image power usb_uhci pcnet pci_ecam http nvme web_runtime web tls kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
 BEAR_SOURCES = $(wildcard vendor/bearssl/*.c)
 BEAR_OBJECTS = $(patsubst vendor/bearssl/%.c,build/bearssl/%.o,$(BEAR_SOURCES))
 OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o build/elk.o build/printf.o
@@ -13,7 +13,9 @@ build build/user:
 	mkdir -p $@
 build/%.o: src/%.c include/avalanche.h include/system.h include/abi.h include/process.h include/magenta.h include/ext4.h | build
 	$(CC) $(CFLAGS) -c $< -o $@
-build/gui.o: src/gui.c include/gui_canvas.h include/gui_style.h include/gui_toolkit.h include/font.h vendor/nuklear/nuklear.h vendor/nuklear/style.h | build
+build/gui.o: src/gui.c include/gui_canvas.h include/gui_style.h include/gui_toolkit.h include/font.h include/image.h vendor/nuklear/nuklear.h vendor/nuklear/style.h | build
+	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+build/image.o: src/image.c include/image.h vendor/stb/stb_image.h | build
 	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/gui_toolkit.o: src/gui_toolkit.c include/gui_toolkit.h vendor/nuklear/nuklear.h | build
 	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -Wno-unused-function -Wno-unused-parameter -c $< -o $@

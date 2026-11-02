@@ -29,7 +29,9 @@ Keep the VM's data disk when replacing the ISO. `./copy.sh /path/to/Magenta` cop
 
 ## Desktop
 
-The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings, and Browser. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
+The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings, Browser, and Images. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
+
+Images opens PNG, JPEG, and BMP pictures from Files or a typed path. Ctrl-U opens the viewer. Images retain their aspect ratio and fit the available window space. The decoder uses runtime-sized memory buffers, accepts files up to 16 MiB, and keeps the current picture open if another file fails to decode. Ext4 reads can span larger files through the offset-based file API.
 
 ![Application launcher](Images/launcher.png)
 
@@ -86,7 +88,15 @@ The build writes to `avalanche/build/`. Packaging copies the boot ISO and a fres
 
 Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. USB 1.1 UHCI controllers can drive boot-protocol keyboards and mice, including devices behind one hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks; the kernel maps physical memory through 16 GiB of address space.
 
-The package manager installs, removes, upgrades, lists, queries, and searches packages. It downloads packages over HTTP and keeps its database on ext4. The shell and native programs run in ring 3. The included `linuxhello` and `linuxfork` programs use the Linux i386 compatibility ABI.
+The package manager installs, removes, upgrades, lists, queries, and searches packages. Downloads default to HTTPS and verify manifest signatures against a locally pinned RSA certificate, then check the executable's SHA-256. Explicit `http://` repositories also require signatures. `pkg trust LOCAL-DER-CERTIFICATE` saves the signing certificate and prints its fingerprint. `pkg fetch HOST /MANIFEST` verifies the manifest's `.sig` companion before installing anything.
+
+Updates and removals save an on-disk recovery record plus the previous executable and package record. Startup restores an interrupted transaction; corrupt backups block package changes rather than overwriting the live package. Version checks reject downgrades. The repository builder accepts `--signing-key` and `--certificate`; private keys stay outside the repository and distribution images.
+
+On CPUs with NX support, user stacks and data pages are non-executable. ELF execute flags determine code-page permissions; Linux compatibility mappings apply their requested execute permissions. Copy-on-write and demand paging retain these protections. CPUs without NX use the existing paging path.
+
+Hardware randomness comes from CPU RDRAND or a transitional VirtIO RNG device. TLS uses that source for session entropy, and native programs can request random bytes through `av_random`. If neither source is available, the random API reports an error and TLS refuses the connection. Linux process startup supplies `AT_RANDOM` only when hardware entropy is available.
+
+The shell and native programs run in ring 3. The included `linuxhello` and `linuxfork` programs use the Linux i386 compatibility ABI.
 
 See [kernel details](avalanche/images/NOTICE) and [distribution details](magenta/images/NOTICE) for more.
 
@@ -96,4 +106,4 @@ See [kernel details](avalanche/images/NOTICE) and [distribution details](magenta
 
 The desktop uses [Nuklear](https://github.com/Immediate-Mode-UI/Nuklear), [Catppuccin](https://github.com/catppuccin/palette), [Lucide](https://lucide.dev/), and DejaVu fonts. Its layout takes ideas from elementary, COSMIC, Linux Mint, and macOS.
 
-Avalanche source uses the [MIT license](avalanche/LICENSE). The linked Elk engine is licensed under [AGPL-3.0](avalanche/vendor/elk/AGPL-3.0.txt); its source is included in this repository. BearSSL and printf carry their own MIT licenses. GRUB, Nuklear, Catppuccin, Lucide, DejaVu, and v86 keep their own licenses. Their notices are included with the source and in the ISO's `/licenses` directory. GRUB source and Debian patches are in [grub-source](avalanche/images/grub-source/).
+Avalanche source uses the [MIT license](avalanche/LICENSE). The linked Elk engine is licensed under [AGPL-3.0](avalanche/vendor/elk/AGPL-3.0.txt); its source is included in this repository. BearSSL, printf, and the stb image decoder carry their own MIT licenses. GRUB, Nuklear, Catppuccin, Lucide, DejaVu, and v86 keep their own licenses. Their notices are included with the source and in the ISO's `/licenses` directory. GRUB source and Debian patches are in [grub-source](avalanche/images/grub-source/).

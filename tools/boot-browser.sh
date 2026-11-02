@@ -122,6 +122,7 @@ PYEXTRACT
     -drive "file=$runtime/data.img,format=raw,if=ide" \
     -drive "file=$runtime/ext4.img,format=raw,if=ide" \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-modern=on,romfile= \
+    -device virtio-rng-pci,disable-modern=on \
     -vga std -display none -vnc 127.0.0.1:1,lossy=off \
     -serial "file:$runtime/serial.log" -monitor none \
     -pidfile "$runtime/qemu.pid" -daemonize

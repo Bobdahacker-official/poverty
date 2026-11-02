@@ -221,6 +221,25 @@ int fs_size(const char *name) {
   int i = find_ram(name);
   return i < 0 ? -1 : (int)ram[i].size;
 }
+int fs_read_at(const char *name,uint64_t offset,void *buffer,uint32_t capacity) {
+  if (mounted_ext4) {
+    struct ext4_inode inode;
+    int r=ext4_lookup(&root_ext4,name,&inode);
+    if (r) return r;
+    if ((inode.mode&0xf000)!=0x8000) return -21;
+    if (offset>=inode.size) return 0;
+    if (capacity>inode.size-offset) capacity=inode.size-offset;
+    return ext4_read(&root_ext4,&inode,offset,buffer,capacity);
+  }
+  static uint8_t data[FS_MAX_FILE];
+  int count=fs_read(name,data,sizeof(data));
+  if (count<0) return count;
+  if (offset>=(unsigned)count) return 0;
+  unsigned length=count-offset;
+  if (length>capacity) length=capacity;
+  memcpy(buffer,data+offset,length);
+  return length;
+}
 int fs_read(const char *name, void *buffer, uint32_t capacity) {
   if (!mounted_ext4)
     while (*name == '/')

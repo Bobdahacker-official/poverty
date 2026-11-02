@@ -7,10 +7,12 @@ static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
 static uint64_t kernel_directory[IDENTITY_ENTRIES] __attribute__((aligned(4096)));
 static struct process tasks[PROCESS_MAX];
 static uint16_t page_references[PHYSICAL_PAGES];
-#define PAGE_COW 512u
-#define PAGE_LAZY 1024u
+#define PAGE_COW UINT64_C(512)
+#define PAGE_LAZY UINT64_C(1024)
+static bool nx_enabled;
+static uint64_t no_execute(void) { return nx_enabled ? PROCESS_NO_EXECUTE : 0; }
 static void drop_page(uint64_t entry) {
-  uint64_t physical = entry & ~UINT64_C(4095);
+  uint64_t physical = entry & PROCESS_PHYSICAL_MASK;
   if (physical && physical / 4096 < PHYSICAL_PAGES && page_references[physical / 4096] &&
       !--page_references[physical / 4096])
     page_free((void *)(uintptr_t)physical);
@@ -133,7 +135,7 @@ bool process_copyin(struct process *t, void *out, uint32_t p, uint32_t n) {
     if (count > n)
       count = n;
     uint64_t *pte = process_pte(t, p);
-    memcpy(d, (void *)(uintptr_t)((*pte & ~UINT64_C(4095)) + (p & 4095)), count);
+    memcpy(d, (void *)(uintptr_t)((*pte & PROCESS_PHYSICAL_MASK) + (p & 4095)), count);
     d += count;
     p += count;
     n -= count;
@@ -150,7 +152,7 @@ bool process_copyout(struct process *t, uint32_t p, const void *in,
     if (count > n)
       count = n;
     uint64_t *pte = process_pte(t, p);
-    memcpy((void *)(uintptr_t)((*pte & ~UINT64_C(4095)) + (p & 4095)), s, count);
+    memcpy((void *)(uintptr_t)((*pte & PROCESS_PHYSICAL_MASK) + (p & 4095)), s, count);
     s += count;
     p += count;
     n -= count;
@@ -183,9 +185,9 @@ static uint64_t *ensure_pte(struct process *t, uint32_t v) {
 }
 bool process_private(struct process *t, uint32_t v) {
   uint64_t *pte = process_pte(t, v);
-  if (!pte || !(*pte & ~UINT64_C(4095)))
+  if (!pte || !(*pte & PROCESS_PHYSICAL_MASK))
     return false;
-  uint64_t old = *pte & ~UINT64_C(4095);
+  uint64_t old = *pte & PROCESS_PHYSICAL_MASK;
   if (old / 4096 >= PHYSICAL_PAGES || !page_references[old / 4096])
     return false;
   if (page_references[old / 4096] > 1) {
@@ -195,9 +197,19 @@ bool process_private(struct process *t, uint32_t v) {
     memcpy(copy, (void *)(uintptr_t)old, 4096);
     page_references[(uintptr_t)copy / 4096] = 1;
     drop_page(*pte);
-    *pte = (uintptr_t)copy | (*pte & 4095u);
+    *pte = (uintptr_t)copy | (*pte & ~PROCESS_PHYSICAL_MASK);
     if (t == process_current())
       __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)v) : "memory");
+  }
+  return true;
+}
+bool process_execute(struct process *t,uint32_t address,bool executable) {
+  uint64_t *pte=process_pte(t,address);
+  if (!pte || !*pte) return false;
+  if (nx_enabled) {
+    if (executable) *pte &= ~PROCESS_NO_EXECUTE;
+    else *pte |= PROCESS_NO_EXECUTE;
+    if (t==process_current()) __asm__ volatile("invlpg (%0)" :: "r"((uintptr_t)address) : "memory");
   }
   return true;
 }
@@ -205,7 +217,7 @@ bool process_map_lazy(struct process *t, uint32_t v, bool write) {
   uint64_t *pte = ensure_pte(t, v);
   if (!pte || *pte)
     return false;
-  *pte = PAGE_LAZY | 4 | (write ? 2 : 0);
+  *pte = PAGE_LAZY | 4 | (write ? 2 : 0) | no_execute();
   return true;
 }
 bool process_page_fault(struct process *t, uint32_t v, bool write) {
@@ -221,7 +233,7 @@ bool process_page_fault(struct process *t, uint32_t v, bool write) {
     if (!page)
       return false;
     page_references[(uintptr_t)page / 4096] = 1;
-    *pte = (uintptr_t)page | 5 | (*pte & 2);
+    *pte = (uintptr_t)page | 5 | (*pte & (2 | PROCESS_NO_EXECUTE));
     t->pages++;
   } else if (write && (*pte & PAGE_COW)) {
     if (!process_private(t, v))
@@ -237,7 +249,7 @@ bool process_map(struct process *t, uint32_t v, bool write) {
   uint64_t *pte = ensure_pte(t, v);
   if (!pte)
     return false;
-  if (*pte & ~UINT64_C(4095)) {
+  if (*pte & PROCESS_PHYSICAL_MASK) {
     if (write) {
       if (!process_private(t, v))
         return false;
@@ -250,7 +262,7 @@ bool process_map(struct process *t, uint32_t v, bool write) {
   void *page = page_alloc();
   if (!page)
     return false;
-  *pte = (uintptr_t)page | 5 | (write ? 2 : 0);
+  *pte = (uintptr_t)page | 5 | (write ? 2 : 0) | no_execute();
   page_references[(uintptr_t)page / 4096] = 1;
   t->pages++;
   if (t == process_current())
@@ -260,7 +272,7 @@ bool process_map(struct process *t, uint32_t v, bool write) {
 void process_unmap(struct process *t, uint32_t v) {
   uint64_t *pte = process_pte(t, v);
   if (pte && *pte) {
-    if (*pte & ~UINT64_C(4095)) {
+    if (*pte & PROCESS_PHYSICAL_MASK) {
       drop_page(*pte);
       t->pages--;
     }
@@ -272,13 +284,22 @@ void process_unmap(struct process *t, uint32_t v) {
 static void release(struct process *t) {
   for (unsigned i = 0; i < t->table_count; i++)
     for (unsigned j = 0; j < 512; j++)
-      if (t->tables[i][j] & ~UINT64_C(4095)) {
+      if (t->tables[i][j] & PROCESS_PHYSICAL_MASK) {
         drop_page(t->tables[i][j]);
         t->tables[i][j] = 0;
       }
   t->pages = 0;
 }
 void user_init(void) {
+  uint32_t a=0x80000001,b,c,d;
+  __asm__ volatile("cpuid" : "+a"(a),"=b"(b),"=c"(c),"=d"(d));
+  nx_enabled=(d&(1u<<20))!=0;
+  if (nx_enabled) {
+    uint32_t low,high;
+    __asm__ volatile("rdmsr" : "=a"(low),"=d"(high) : "c"(0xc0000080));
+    low|=1u<<11;
+    __asm__ volatile("wrmsr" :: "a"(low),"d"(high),"c"(0xc0000080));
+  }
   kernel_root[0] = (uintptr_t)kernel_pdpt | 7;
   for (unsigned i = 0; i < PHYSICAL_GIB; i++)
     kernel_pdpt[i] = (uintptr_t)&kernel_directory[i * 512] | 7;
@@ -378,12 +399,8 @@ static uint32_t linux_stack(struct process *t, const struct elf_header *h,
     env[envc++] = stack_string(t, &sp, e2, sizeof(e2));
   }
   uint8_t random[16];
-  uint32_t seed = clock_ticks() ^ (uintptr_t)t;
-  for (unsigned i = 0; i < 16; i++) {
-    seed = seed * 1664525u + 1013904223u;
-    random[i] = seed >> 24;
-  }
-  uint32_t rnd = stack_string(t, &sp, random, 16);
+  uint32_t rnd=secure_random(random,sizeof(random)) ? stack_string(t,&sp,random,sizeof(random)) : 0;
+  memset(random,0,sizeof(random));
   uint32_t words[64], n = 0;
   words[n++] = argc;
   for (unsigned i = 0; i < argc; i++)
@@ -396,10 +413,11 @@ static uint32_t linux_stack(struct process *t, const struct elf_header *h,
                     5,  h->phnum, 6,  4096,
                     9,  h->entry, 11, 0,
                     12, 0,        13, 0,
-                    14, 0,        23, 0,
-                    25, rnd,      0,  0};
+                    14, 0,        23, 0};
   for (unsigned i = 0; i < sizeof(aux) / 4; i++)
     words[n++] = aux[i];
+  if (rnd) { words[n++]=25; words[n++]=rnd; }
+  words[n++]=0; words[n++]=0;
   sp = (sp - n * 4) & ~15u;
   if (!process_copyout(t, sp, words, n * 4))
     return 0;
@@ -498,6 +516,7 @@ static int load(struct process *t, const void *image, uint32_t size,
     for (uint32_t v = p->vaddr & ~UINT64_C(4095);; v += 4096) {
       if (!process_map(t, v, (p->flags & 2) != 0))
         goto memory;
+      if (!process_execute(t,v,(p->flags&1)!=0)) goto memory;
       if (v == last)
         break;
     }
@@ -506,7 +525,7 @@ static int load(struct process *t, const void *image, uint32_t size,
       if (amount > p->filesz - n)
         amount = p->filesz - n;
       uint64_t *pte = process_pte(t, v);
-      memcpy((void *)(uintptr_t)((*pte & ~UINT64_C(4095)) + (v & 4095)),
+      memcpy((void *)(uintptr_t)((*pte & PROCESS_PHYSICAL_MASK) + (v & 4095)),
              (const uint8_t *)image + p->offset + n, amount);
       n += amount;
     }
@@ -969,7 +988,7 @@ int process_fork(struct trap_frame *f) {
         old = (old & ~UINT64_C(2)) | PAGE_COW;
       p->tables[i][j] = old;
       *pte = old;
-      page_references[(old & ~UINT64_C(4095)) / 4096]++;
+      page_references[(old & PROCESS_PHYSICAL_MASK) / 4096]++;
       c->pages++;
     }
   activate(p->directory);
@@ -1308,6 +1327,16 @@ void user_syscall(struct trap_frame *f) {
     kernel_power(f->ebx);
     result = -5;
     break;
+  case AV_RANDOM: {
+    uint8_t entropy[256];
+    unsigned size=f->ecx;
+    if (f->ecx>sizeof(entropy)) { result=-22; break; }
+    if (!process_range(t,f->ebx,size,true)) { result=-14; break; }
+    if (!secure_random(entropy,size)) { result=-11; break; }
+    result=process_copyout(t,f->ebx,entropy,size) ? (int)size : -14;
+    memset(entropy,0,sizeof(entropy));
+    break;
+  }
   default:
     result = -38;
     break;

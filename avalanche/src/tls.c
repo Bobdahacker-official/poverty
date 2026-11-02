@@ -17,24 +17,6 @@ static int write_tcp(void *ctx, const unsigned char *data, size_t size) {
   (void)ctx;
   return net_tcp_send(data, size);
 }
-/* Fail closed on machines without a hardware entropy source. */
-static bool entropy(unsigned char *data, unsigned size) {
-  uint32_t a = 1, b, c, d;
-  __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
-  if (!(c & (1u << 30)))
-    return false;
-  for (unsigned i = 0; i < size; i += 8) {
-    uint64_t value = 0;
-    unsigned char ok = 0;
-    for (unsigned retry = 0; retry < 64 && !ok; retry++)
-      __asm__ volatile("rdrand %0; setc %1" : "=r"(value), "=qm"(ok));
-    if (!ok)
-      return false;
-    unsigned n = size - i < 8 ? size - i : 8;
-    memcpy(data + i, &value, n);
-  }
-  return true;
-}
 bool tls_connect(const char *hostname) {
   active = false;
   error = 0;
@@ -44,7 +26,7 @@ bool tls_connect(const char *hostname) {
     error = 1001;
     return false;
   }
-  if (!entropy(seed, sizeof(seed))) {
+  if (!secure_random(seed, sizeof(seed))) {
     error = 1002;
     return false;
   }

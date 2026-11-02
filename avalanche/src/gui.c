@@ -6,6 +6,7 @@
 #include "system.h"
 #include "tls.h"
 #include "web.h"
+#include "image.h"
 
 enum {
   TERMINAL,
@@ -16,6 +17,7 @@ enum {
   PACKAGES,
   SETTINGS,
   BROWSER,
+  IMAGES,
   APP_COUNT
 };
 static struct nk_context ui;
@@ -25,7 +27,7 @@ static unsigned width, height, display_width, display_height;
 static float native_scale = 1;
 static const char *app_names[APP_COUNT] = {"Terminal", "Files",   "Text editor",
                                            "System Monitor", "Network", "Packages",
-                                           "Settings", "Browser"};
+                                           "Settings", "Browser", "Images"};
 static const char *app_summaries[APP_COUNT] = {
     "Run programs and shell commands",
     "Browse your disks and documents",
@@ -34,7 +36,12 @@ static const char *app_summaries[APP_COUNT] = {
     "Configure IPv4 and watch traffic",
     "Install and update applications",
     "Make Magenta your own",
-    "Read web pages and local documents"};
+    "Read web pages and local documents",
+    "View PNG, JPEG and BMP pictures"};
+static struct image_document picture;
+static char picture_path[256];
+static bool picture_focus;
+static bool picture_load_requested;
 static struct app {
   bool visible, maximized;
   struct nk_rect bounds, restore;
@@ -464,6 +471,7 @@ static void clipboard_paste(nk_handle handle, struct nk_text_edit *edit) {
 static void open_app(unsigned id) {
   if (id >= APP_COUNT)
     return;
+  if (id==IMAGES) picture_focus=true;
   bool was_visible =
       apps[id].visible && !nk_window_is_collapsed(&ui, app_names[id]);
   apps[id].visible = true;
@@ -689,6 +697,21 @@ static void open_file(unsigned index) {
   if (file_items[index].directory) {
     browse(path);
     return;
+  }
+  const char *extension=NULL;
+  for (const char *p=path;*p;p++) if (*p=='.') extension=p+1;
+  if (extension) {
+    char suffix[8]; unsigned i=0;
+    while (extension[i] && i+1<sizeof(suffix)) {
+      char c=extension[i]; suffix[i++]=(c>='A' && c<='Z') ? c+32 : c;
+    }
+    suffix[i]=0;
+    if (str_eq(suffix,"png") || str_eq(suffix,"jpg") || str_eq(suffix,"jpeg") || str_eq(suffix,"bmp")) {
+      copy(picture_path,path,sizeof(picture_path));
+      image_load(&picture,picture_path);
+      open_app(IMAGES);
+      return;
+    }
   }
   if (editor_dirty) {
     notify("Save or discard the current document first");
@@ -1924,7 +1947,7 @@ static int window_controls(unsigned id) {
   gui_canvas_gloss(canvas,
                    nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
   gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28),
-                  id == BROWSER ? 4 : id,
+                  id == BROWSER ? 4 : id == IMAGES ? 9 : id,
                   active ? rgb(accent()) : rgb(palette()->muted));
   nk_draw_text(canvas,
                nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
@@ -2306,6 +2329,35 @@ static void browser_view(void) {
     nk_group_end(&ui);
   }
 }
+static void images_view(void) {
+  nk_layout_row_begin(&ui,NK_DYNAMIC,32,2);
+  nk_layout_row_push(&ui,0.80f);
+  if (picture_focus) { nk_edit_focus(&ui,NK_EDIT_ALWAYS_INSERT_MODE); picture_focus=false; }
+  nk_flags result=nk_edit_string_zero_terminated(&ui,NK_EDIT_FIELD|NK_EDIT_SIG_ENTER,
+                                                picture_path,sizeof(picture_path),nk_filter_default);
+  nk_layout_row_push(&ui,0.20f);
+  if (nk_button_label(&ui,"Open") || (result&NK_EDIT_COMMITTED)) picture_load_requested=true;
+  nk_layout_row_end(&ui);
+  nk_layout_row_dynamic(&ui,24,1);
+  nk_label(&ui,image_error(),NK_TEXT_LEFT);
+  if (!picture.pixels) return;
+  float w=nk_window_get_content_region(&ui).w-24;
+  float h=nk_window_get_content_region(&ui).h-90;
+  if (w<1 || h<1) return;
+  float factor=w/picture.width;
+  if (factor>h/picture.height) factor=h/picture.height;
+  if (factor>1) factor=1;
+  nk_layout_row_dynamic(&ui,h,1);
+  struct nk_rect bounds;
+  if (nk_widget(&bounds,&ui)) {
+    struct nk_image img=nk_image_ptr(picture.pixels);
+    img.w=picture.width; img.h=picture.height;
+    float iw=picture.width*factor,ih=picture.height*factor;
+    bounds.x+=(bounds.w-iw)/2; bounds.y+=(bounds.h-ih)/2;
+    bounds.w=iw; bounds.h=ih;
+    nk_draw_image(nk_window_get_canvas(&ui),bounds,&img,nk_rgb(255,255,255));
+  }
+}
 static void application(unsigned id) {
   if (!apps[id].visible)
     return;
@@ -2343,6 +2395,8 @@ static void application(unsigned id) {
       packages_view();
     else if (id == BROWSER)
       browser_view();
+    else if (id == IMAGES)
+      images_view();
     else
       settings_view();
   }
@@ -2416,8 +2470,8 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                       int id) {
   static const uint32_t colors[] = {0x263347, 0x279ce0, 0xb561df, 0x23ad95,
                                     0x297fda, 0xe09132, 0x64758e, 0xe6007e};
-  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : (unsigned)id;
-  struct nk_color base = rgb(colors[kind]);
+  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : id == IMAGES ? 9 : (unsigned)id;
+  struct nk_color base = rgb(kind==9 ? 0x7d59c7 : colors[kind]);
   nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
                nk_rgba(0, 0, 0, 65));
   nk_fill_rect(canvas, r, 10, base);
@@ -2650,7 +2704,7 @@ static void launcher_view(void) {
     unsigned matches = 0;
     for (unsigned i = 0; i < APP_COUNT; i++)
       if ((launcher_category == 0 ||
-           (launcher_category == 1 && (i == FILES || i == EDITOR)) ||
+           (launcher_category == 1 && (i == FILES || i == EDITOR || i == IMAGES)) ||
            (launcher_category == 2 &&
             (i == TERMINAL || i == TASKS || i == SETTINGS)) ||
            (launcher_category == 3 &&
@@ -2815,6 +2869,7 @@ static void inputs(void) {
     char c = console_getchar();
     if (!c)
       break;
+    if (active_app==IMAGES && c=='\n') { picture_load_requested=true; continue; }
     if (c == 27) {
       escape_requested = true;
       continue;
@@ -2867,6 +2922,7 @@ static void inputs(void) {
                    : c == 16 ? PACKAGES
                    : c == 2  ? BROWSER
                    : c == 15 ? SETTINGS
+                   : c == 21 ? IMAGES
                              : -1;
     if (shortcut >= 0) {
       open_app(shortcut);
@@ -3084,6 +3140,10 @@ int gui_run(void) {
       gui_canvas_cursor(x, y);
       gui_canvas_present();
       nk_clear(&ui);
+      if (picture_load_requested) {
+        picture_load_requested=false;
+        image_load(&picture,picture_path);
+      }
       last_frame = clock_ticks();
       if (preferences_dirty && !(buttons & 1) &&
           (uint32_t)(clock_ticks() - last_save) >= 50)
@@ -3099,6 +3159,7 @@ int gui_run(void) {
     preference_save(false);
   graphics_console_capture(NULL);
   mouse_interrupt_poll(false);
+  image_release(&picture);
   nk_free(&ui);
   console_clear();
   return 0;

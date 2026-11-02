@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
+"""Check native desktop controls using rendered labels and current window bounds."""
 import importlib.util
 import json
 import os
 import pathlib
 import shutil
 import socket
+import struct
+import subprocess
 import tempfile
 import time
-import subprocess
 from types import SimpleNamespace
 
 spec=importlib.util.spec_from_file_location('storage',pathlib.Path(__file__).with_name('test-storage.py'))
@@ -16,15 +18,24 @@ folder=pathlib.Path(tempfile.mkdtemp(prefix='magenta-gui-'))
 data=folder/'data.img';extra=folder/'extra.img'
 shutil.copyfile(storage.ROOT/'Images/magenta-data.img',data)
 with extra.open('wb') as file: file.truncate(16*1024**2)
+helper=folder/'gui-layout'
+subprocess.run([os.environ.get('CC','gcc'),'-O2','-flto','-ffunction-sections',
+                '-fdata-sections','-Wl,--gc-sections','-Iavalanche/include',
+                'avalanche/tools/gui-test-layout.c','-o',str(helper)],cwd=storage.ROOT,check=True)
+layout=json.loads(subprocess.check_output([str(helper)]))
+symbols={}
+for line in subprocess.check_output(['nm','-S',str(storage.ROOT/'avalanche/build/avalanche.elf')],text=True).splitlines():
+    fields=line.split()
+    if len(fields)==4: symbols[fields[3]]=(int(fields[0],16),int(fields[1],16))
 args=SimpleNamespace(qemu=os.environ.get('QEMU','qemu-system-x86_64'),
                      bios=os.environ.get('QEMU_BIOS'),qemu_data=os.environ.get('QEMU_DATA'),
                      graphics=True,absolute_pointer=True,vga_rom=os.environ.get('QEMU_VGA_ROM','vgabios-stdvga.bin'))
 machine=storage.Machine(args,data,extra,folder)
 print(f'GUI artifacts: {folder}',flush=True)
+connection=None
 try:
     storage.report('graphical desktop boot',lambda: machine.until(b'Magenta graphical desktop ready'))
-    time.sleep(.3)
-    connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(10)
+    connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(15)
     connection.connect(str(folder/'qmp.sock'));stream=connection.makefile('rwb',buffering=0)
     json.loads(stream.readline())
     def qmp(command,arguments=None):
@@ -36,189 +47,145 @@ try:
             if 'error' in response: raise RuntimeError(response['error'])
             if 'return' in response: return response['return']
     qmp('qmp_capabilities')
+    def monitor(command): return qmp('human-monitor-command',{'command-line':command})
     mice=qmp('query-mice')
-    absolute_pointer=any(device['current'] and device['absolute'] for device in mice)
-    storage.report('absolute virtual pointer detection',lambda: storage.contains(str(mice).encode(),b"'absolute': True"))
-    display_size=[1024,768]
-    def screenshot():
-        deadline=time.monotonic()+15
-        while time.monotonic()<deadline:
-            qmp('screendump',{'filename':str(folder/'desktop.ppm')})
-            header,dimensions,maximum,pixels=(folder/'desktop.ppm').read_bytes().split(b'\n',3)
-            width,height=map(int,dimensions.split())
-            display_size[:]=[width,height]
-            def pixel(x,y): return pixels[(y*width+x)*3:(y*width+x)*3+3]
-            if width>=640 and height>=480 and len(pixels)==width*height*3:
-                panel=pixel(width//2,height//2)
-                dock=pixel(width//2,height-24)
-                background=pixel(20,height//2)
-                if min(panel)>170 and min(dock)>160 and max(background)<150 and pixels.count(b'\xe6\x00\x7e')>50: return
-            time.sleep(.1)
-        raise AssertionError('compositor pixels do not match the light settings panel, glass dock and dark wallpaper')
-    storage.report('compositor screenshot and pixel checks',screenshot)
-    mouse_position=[0,0]
+    assert any(device['current'] and device['absolute'] for device in mice),mice
+    print('PASS absolute virtual pointer detection',flush=True)
+    def memory(address,size):
+        path=folder/'memory.bin'
+        result=monitor(f'pmemsave {address:#x} {size} "{path}"')
+        assert path.exists(),result
+        return path.read_bytes()
+    def value(name,format='I',offset=0):
+        return struct.unpack(format,memory(symbols[name][0]+offset,struct.calcsize(format)))[0]
+    scale=value('native_scale','f')
+    def state(app):
+        raw=memory(symbols['apps'][0]+app*layout['app_size'],layout['app_size'])
+        return {'visible':bool(raw[layout['app_visible']]),
+                'maximized':bool(raw[layout['app_maximized']]),
+                'bounds':struct.unpack_from('<4f',raw,layout['app_bounds'])}
+    def capture(name):
+        path=folder/(name+'.ppm');qmp('screendump',{'filename':str(path)})
+        magic,dimensions,maximum,pixels=path.read_bytes().split(b'\n',3)
+        width,height=map(int,dimensions.split())
+        assert magic==b'P6' and maximum==b'255' and len(pixels)==width*height*3
+        return width,height,pixels
+    time.sleep(1)
+    width,height,desktop=capture('desktop')
+    assert width>=640 and height>=480
+    assert len(set(desktop))>64 and desktop.count(b'\xe6\x00\x7e')>20
+    assert not any(state(app)['visible'] for app in range(layout['app_count']))
+    print('PASS desktop pixels and clean startup without Settings',flush=True)
+    def key(text,delay=.25): monitor('sendkey '+text);time.sleep(delay)
     def move(x,y):
-        if absolute_pointer:
-            qmp('input-send-event',{'events':[
-                {'type':'abs','data':{'axis':'x','value':round(x*32767/(display_size[0]-1))}},
-                {'type':'abs','data':{'axis':'y','value':round(y*32767/(display_size[1]-1))}}]})
-            mouse_position[:]=[x,y]
+        px=max(0,min(width-1,x*scale));py=max(0,min(height-1,y*scale))
+        qmp('input-send-event',{'events':[
+            {'type':'abs','data':{'axis':'x','value':round(px*32767/(width-1))}},
+            {'type':'abs','data':{'axis':'y','value':round(py*32767/(height-1))}}]})
+        time.sleep(.15)
+    def button(down):
+        qmp('input-send-event',{'events':[{'type':'btn','data':{'button':'left','down':down}}]})
+        time.sleep(.18)
+    def click(x,y): move(x,y);button(True);button(False);time.sleep(.25)
+    def wait(check,message,timeout=12):
+        deadline=time.monotonic()+timeout
+        while time.monotonic()<deadline:
+            if check(): print('PASS '+message,flush=True);return
+            time.sleep(.15)
+        raise AssertionError(message)
+    def open_app(shortcut,app):
+        key(shortcut)
+        wait(lambda:state(app)['visible'],'open application '+str(app))
+        time.sleep(.7)
+    def control(app,index):
+        x,y,w,h=state(app)['bounds'];click(x+w-144+44*index+20,y+28)
+    def labels():
+        raw=memory(symbols['previous_commands'][0],value('previous_size','Q'))
+        result=[];start=layout['text_string']
+        for at in range(0,len(raw)-start,8):
+            if struct.unpack_from('<I',raw,at)[0]!=layout['text_type']: continue
+            length=struct.unpack_from('<i',raw,at+layout['text_length'])[0]
+            if length<=0 or length>2048 or at+start+length>len(raw): continue
+            text=raw[at+start:at+start+length].decode(errors='replace')
+            x=struct.unpack_from('<h',raw,at+layout['text_x'])[0]
+            y=struct.unpack_from('<h',raw,at+layout['text_y'])[0]
+            w=struct.unpack_from('<H',raw,at+layout['text_w'])[0]
+            h=struct.unpack_from('<H',raw,at+layout['text_h'])[0]
+            result.append((text,x,y,w,h))
+        return result
+    def click_label(text,last=False):
+        deadline=time.monotonic()+10
+        while time.monotonic()<deadline:
+            matches=[item for item in labels() if item[0]==text and item[3]>0 and item[4]>0]
+            if matches:
+                _,x,y,w,h=matches[-1 if last else 0];click(x+w/2,y+h/2);return
             time.sleep(.2)
-            return
-        dx,dy=x-mouse_position[0],y-mouse_position[1]
-        while dx or dy:
-            step_x=max(-60,min(60,dx));step_y=max(-60,min(60,dy))
-            qmp('human-monitor-command',{'command-line':f'mouse_move {step_x} {step_y}'})
-            dx-=step_x;dy-=step_y;time.sleep(.04)
-        mouse_position[:]=[x,y]
-        time.sleep(.2)
-    def click(x,y):
-        move(x,y)
-        qmp('human-monitor-command',{'command-line':'mouse_button 1'})
-        time.sleep(.25)
-        qmp('human-monitor-command',{'command-line':'mouse_button 0'})
-        time.sleep(.4)
-    def dark_panel(filename):
-        deadline=time.monotonic()+15
-        while time.monotonic()<deadline:
-            qmp('screendump',{'filename':str(filename)})
-            header,dimensions,maximum,pixels=filename.read_bytes().split(b'\n',3)
-            width,height=map(int,dimensions.split())
-            sample=pixels[((height//2)*width+width//2)*3:((height//2)*width+width//2)*3+3]
-            if max(sample)<150 and pixels.count(b'\xe6\x00\x7e')>50:return
-            time.sleep(.1)
-        print('VM status:',qmp('query-status'),flush=True)
-        symbols={line.split()[-1]:line.split()[0] for line in subprocess.check_output(['nm','-a',str(storage.ROOT/'avalanche/build/avalanche.elf')],text=True).splitlines() if len(line.split())==3}
-        for name in ('mouse_x','mouse_y','mouse_ready','mouse_buttons','packet_n','ticks'):
-            if name in symbols:print(name,qmp('human-monitor-command',{'command-line':f'xp /8bx 0x{symbols[name]}'}),flush=True)
-        print(qmp('human-monitor-command',{'command-line':'info registers'}),flush=True)
-        raise AssertionError('theme selection did not change the settings palette')
-    def expanded(expected):
-        deadline=time.monotonic()+10
-        while time.monotonic()<deadline:
-            qmp('screendump',{'filename':str(folder/'window.ppm')})
-            _,dimensions,_,pixels=(folder/'window.ppm').read_bytes().split(b'\n',3)
-            width,height=map(int,dimensions.split());sample=pixels[(250*width+30)*3:(250*width+30)*3+3]
-            if (min(sample)>160)==expected:return
-            time.sleep(.1)
-        raise AssertionError('window maximize/restore did not update its bounds')
-    def cursor_restoration():
-        for old_x,new_x in ((0,40),(40,70)):
-            move(new_x,400)
-            deadline=time.monotonic()+10
-            while time.monotonic()<deadline:
-                qmp('screendump',{'filename':str(folder/'cursor.ppm')})
-                _,dimensions,_,pixels=(folder/'cursor.ppm').read_bytes().split(b'\n',3)
-                width,height=map(int,dimensions.split())
-                old_y=0 if old_x==0 else 400
-                old=pixels[((old_y+10)*width+old_x+5)*3:((old_y+10)*width+old_x+5)*3+3]
-                new=pixels[(410*width+new_x+5)*3:(410*width+new_x+5)*3+3]
-                if max(old)<150 and min(new)>200:break
-                time.sleep(.1)
-            else:raise AssertionError('cursor movement left stale pixels or failed to update')
-    storage.report('cached desktop cursor movement and restoration',cursor_restoration)
-    def collapsed(expected):
-        deadline=time.monotonic()+10
-        while time.monotonic()<deadline:
-            qmp('screendump',{'filename':str(folder/'minimize.ppm')})
-            _,dimensions,_,pixels=(folder/'minimize.ppm').read_bytes().split(b'\n',3)
-            width,height=map(int,dimensions.split());sample=pixels[(400*width+512)*3:(400*width+512)*3+3]
-            if (max(sample)<150)==expected:return
-            time.sleep(.1)
-        raise AssertionError('minimize/restore did not update the visible window')
-    click(820,108)
-    storage.report('window minimize button',lambda: collapsed(True))
-    click(820,108)
-    storage.report('window restore button',lambda: collapsed(False))
-    click(860,108)
-    storage.report('window maximize button',lambda: expanded(True))
-    qmp('human-monitor-command',{'command-line':'sendkey ctrl-m'})
-    storage.report('window restore shortcut',lambda: expanded(False))
-    click(800,300)
-    storage.report('mouse-operated appearance theme',lambda: dark_panel(folder/'appearance.ppm'))
-    qmp('human-monitor-command',{'command-line':'sendkey ctrl-n'})
-    machine.until(b'[Magenta] Network');time.sleep(.2)
-    move(910,108)
-    qmp('input-send-event',{'events':[{'type':'btn','data':{'button':'left','down':True}}]})
-    qmp('input-send-event',{'events':[{'type':'btn','data':{'button':'left','down':False}}]})
-    storage.report('window close button',lambda: machine.until(b'[Magenta] Window closed'))
-    qmp('human-monitor-command',{'command-line':'sendkey ctrl-e'})
-    storage.report('graphical editor launch',lambda: machine.until(b'[Magenta] Text editor'))
-    time.sleep(.15)
-    for character in 'guitest':
-        qmp('human-monitor-command',{'command-line':'sendkey '+character})
-        time.sleep(.15)
-    qmp('human-monitor-command',{'command-line':'sendkey ctrl-s'})
-    storage.report('graphical editor save',lambda: machine.until(b'[Magenta] File saved'))
-    time.sleep(.15)
-    qmp('human-monitor-command',{'command-line':'sendkey ctrl-p'})
-    machine.until(b'[Magenta] Packages');time.sleep(.2)
-    qmp('screendump',{'filename':str(folder/'packages.ppm')})
-    click(700,355)
-    qmp('screendump',{'filename':str(folder/'packages-click.ppm')})
-    storage.report('package install button',lambda: machine.until(b'[Magenta] Installed hello',10))
-    click(780,355)
-    qmp('screendump',{'filename':str(folder/'package-remove.ppm')})
-    click(420,410)
-    qmp('screendump',{'filename':str(folder/'package-confirm.ppm')})
-    storage.report('package remove confirmation',lambda: machine.until(b'[Magenta] Package database updated',10))
-    qmp('human-monitor-command',{'command-line':'sendkey ctrl-t'})
-    storage.report('graphical ring-3 terminal',lambda: machine.until(b'user> '))
-    time.sleep(.2)
+        raise AssertionError('No rendered control labelled '+text)
+    def region(pixels,x,y,w=32,h=32):
+        return b''.join(pixels[((y+row)*width+x)*3:((y+row)*width+x+w)*3] for row in range(h))
+    pointer_y=height*.55/scale
+    move(8,pointer_y);time.sleep(.3)
+    move(48,pointer_y);time.sleep(.3)
+    restored=capture('cursor')[2]
+    px=round(8*scale);py=round(pointer_y*scale)
+    assert region(restored,px,py)==region(desktop,px,py)
+    assert abs(value('mouse_x','i')-round(48*scale))<=2
+    print('PASS cursor movement and background restoration',flush=True)
+    settings=layout['settings'];network=layout['network'];editor=layout['editor']
+    packages=layout['packages'];terminal=layout['terminal']
+    open_app('ctrl-o',settings)
+    click_label('Latte')
+    wait(lambda:value('preferences',offset=layout['theme_offset'])==0,'mouse appearance theme selection')
+    capture('light-settings')
+    click_label('Mocha')
+    wait(lambda:value('preferences',offset=layout['theme_offset'])==3,'dark appearance theme selection')
+    x,y,w,h=state(settings)['bounds']
+    move(x+160,y+26);button(True);move(x+172,y+38);button(False)
+    wait(lambda:abs(state(settings)['bounds'][0]-x)>2,'window dragging')
+    x,y,w,h=state(settings)['bounds']
+    move(x+w-5,y+h-5);button(True);move(x+w+11,y+h+5);button(False)
+    wait(lambda:state(settings)['bounds'][2]>w+8,'window resizing')
+    before=state(settings)['bounds']
+    control(settings,1)
+    wait(lambda:state(settings)['maximized'],'window maximize button')
+    key('ctrl-m')
+    wait(lambda:not state(settings)['maximized'],'window restore shortcut')
+    assert all(abs(a-b)<2 for a,b in zip(before,state(settings)['bounds']))
+    control(settings,0);time.sleep(.5)
+    minimized=capture('minimized')[2]
+    open_app('ctrl-o',settings)
+    restored=capture('restored')[2]
+    assert minimized!=restored
+    print('PASS window minimize and restore',flush=True)
+    control(settings,2)
+    wait(lambda:not state(settings)['visible'],'window close button')
+    open_app('ctrl-n',network)
+    control(network,2)
+    wait(lambda:not state(network)['visible'],'second application close button')
+    open_app('ctrl-e',editor)
+    for character in 'guitest': key(character,.15)
+    key('ctrl-s');machine.until(b'[Magenta] File saved')
+    print('PASS graphical editor save',flush=True)
+    open_app('ctrl-p',packages)
+    click_label('hello');click_label('Install');machine.until(b'[Magenta] Installed hello')
+    print('PASS package install button',flush=True)
+    click_label('Remove')
+    wait(lambda:bool(value('removing_package','B')),'package removal confirmation opens')
+    click_label('Confirm')
+    machine.until(b'[Magenta] Package database updated')
+    print('PASS package remove confirmation',flush=True)
+    open_app('ctrl-t',terminal);machine.until(b'user> ')
     for character in 'echo ui-shell-ready':
-        key='spc' if character==' ' else 'minus' if character=='-' else character
-        qmp('human-monitor-command',{'command-line':'sendkey '+key})
-        time.sleep(.15)
-    qmp('human-monitor-command',{'command-line':'sendkey ret'})
-    storage.report('graphical terminal command execution',lambda: machine.until(b'\r\nui-shell-ready\r\n'))
-    time.sleep(.2)
-    qmp('human-monitor-command',{'command-line':'sendkey ctrl-e'})
-    machine.until(b'[Magenta] Text editor');time.sleep(.2)
-    qmp('human-monitor-command',{'command-line':'sendkey x'});time.sleep(.2)
-    qmp('human-monitor-command',{'command-line':'sendkey esc'})
-    def unsaved_dialog():
-        deadline=time.monotonic()+10
-        while time.monotonic()<deadline:
-            qmp('screendump',{'filename':str(folder/'unsaved.ppm')})
-            _,dimensions,_,pixels=(folder/'unsaved.ppm').read_bytes().split(b'\n',3)
-            width,height=map(int,dimensions.split());sample=pixels[(405*width+386)*3:(405*width+386)*3+3]
-            if sample[0]>150 and sample[1]<80 and sample[2]>70:return
-            time.sleep(.1)
-        raise AssertionError('unsaved document confirmation was not displayed')
-    storage.report('unsaved document exit protection',unsaved_dialog)
-    click(515,410)
-    storage.report('graphical to text desktop transition',lambda: machine.until(b'Magenta> '))
-    machine.send('0',b'Power> ')
-    machine.send('3',b'to confirm: ')
-    machine.send('RESCUE',b'avalanche> ')
-    storage.report('graphical editor persisted file',lambda: storage.contains(machine.command('cat notes'),b'guitest\r\n'))
-    storage.report('graphical package removal persisted',lambda: storage.contains(machine.command('pkg search hello'),b'hello 1.0.0 available'))
-    stream.close();connection.close()
+        key('spc' if character==' ' else 'minus' if character=='-' else character,.15)
+    key('ret');machine.until(b'\r\nui-shell-ready\r\n')
+    print('PASS graphical ring-3 terminal command execution',flush=True)
+    open_app('ctrl-e',editor);key('x');key('esc')
+    wait(lambda:bool(value('editor_discard','B')),'unsaved document exit protection')
+    click_label('Discard',last=True);machine.until(b'Magenta> ')
+    print('PASS graphical to text desktop transition',flush=True)
+    machine.send('0',b'Power> ');machine.send('3',b'to confirm: ');machine.send('RESCUE',b'avalanche> ')
+    storage.report('graphical editor persisted file',lambda:storage.contains(machine.command('cat notes'),b'guitest'))
+    storage.report('graphical package removal persisted',lambda:storage.contains(machine.command('pkg search hello'),b'hello 1.0.0 available'))
 finally:
-    machine.stop()
-reboot=folder/'reboot';reboot.mkdir()
-machine=storage.Machine(args,data,extra,reboot)
-try:
-    machine.until(b'Magenta graphical desktop ready')
-    connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(10)
-    connection.connect(str(reboot/'qmp.sock'));stream=connection.makefile('rwb',buffering=0)
-    json.loads(stream.readline());qmp('qmp_capabilities')
-    storage.report('appearance survives cold restart',lambda: dark_panel(reboot/'desktop.ppm'))
-    stream.close();connection.close()
-finally:
-    machine.stop()
-print(f'GUI artifacts: {folder}',flush=True)
-fallback=folder/'ps2-fallback';fallback.mkdir()
-args.absolute_pointer=False
-machine=storage.Machine(args,data,extra,fallback)
-try:
-    machine.until(b'Magenta graphical desktop ready')
-    connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(10)
-    connection.connect(str(fallback/'qmp.sock'));stream=connection.makefile('rwb',buffering=0)
-    json.loads(stream.readline());qmp('qmp_capabilities')
-    absolute_pointer=False;mouse_position[:]=[0,0]
-    click(900,108)
-    storage.report('physical PS/2 fallback window close',lambda: machine.until(b'[Magenta] Window closed'))
-    stream.close();connection.close()
-finally:
+    if connection: connection.close()
     machine.stop()

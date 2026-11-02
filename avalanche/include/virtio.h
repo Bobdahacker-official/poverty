@@ -16,6 +16,8 @@ struct virtq {
   volatile uint16_t *used;
 };
 void virtio_block_init(void);
+void virtio_rng_init(void);
+bool virtio_random(void *,unsigned);
 bool virtio_block_transfer(uint32_t, void *, bool);
 bool virtio_block_flush(void);
 bool virtio_net_init(uint8_t *);

@@ -137,16 +137,23 @@ def main():
     folder = pathlib.Path(tempfile.mkdtemp(prefix='avalanche-storage-'))
     print(f'Artifacts: {folder}', flush=True)
     repository=folder/'repository';repository.mkdir()
+    signing_key=folder/'signing-key.pem';certificate=folder/'signing-certificate.pem'
+    run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(signing_key),
+         '-out',str(certificate),'-subj','/CN=Storage-package-check','-days','1'])
     payload=(ROOT/'avalanche/build/user/hello.elf').read_bytes()
     (repository/'webhello').write_bytes(payload)
     (repository/'badhello').write_bytes(payload)
     for name,digest in [('webhello',hashlib.sha256(payload).hexdigest()),('badhello','0'*64)]:
         (repository/f'{name}.manifest').write_text(f'name {name}\nversion 1.0.0\ndepends hello\nfile {name}\nsha256 {digest}\n')
+        run(['openssl','dgst','-sha256','-sign',str(signing_key),'-out',
+             str(repository/f'{name}.manifest.sig'),str(repository/f'{name}.manifest')])
     handler=functools.partial(http.server.SimpleHTTPRequestHandler,directory=str(repository))
-    server=http.server.ThreadingHTTPServer(('127.0.0.1',80),handler)
+    server=http.server.ThreadingHTTPServer(('127.0.0.1',0),handler)
+    package_host=f'http://10.0.2.2:{server.server_port}'
     threading.Thread(target=server.serve_forever,daemon=True).start()
     image, source = folder/'ext4.img', folder/'fixture'
     source.mkdir()
+    (source/'.pkg-trust.der').write_bytes(run(['openssl','x509','-in',str(certificate),'-outform','DER']))
     (source/'sample-text').write_bytes(b'EXT4-READ-SUCCESS\n')
     (source/'directory').mkdir()
     (source/'directory'/'nested').write_bytes(b'EXT4-NESTED-SUCCESS\n')
@@ -205,8 +212,8 @@ def main():
         report('package dependency removal guard', lambda: contains(machine.command('pkg remove udp'), b'installed dependents'))
         report('package search', lambda: contains(machine.command('pkg search http'), b'http 1.0.0 installed'))
         report('DHCP lease',lambda: contains(machine.command('dhcp'),b'avalanche> '))
-        report('HTTP package download',lambda: contains(machine.command('pkg fetch 10.0.2.2 /webhello.manifest'),b'Installed webhello'))
-        report('download SHA-256 rejection',lambda: contains(machine.command('pkg fetch 10.0.2.2 /badhello.manifest'),b'Package download error 74'))
+        report('signed HTTP package download',lambda: contains(machine.command(f'pkg fetch {package_host} /webhello.manifest'),b'Installed webhello'))
+        report('download SHA-256 rejection',lambda: contains(machine.command(f'pkg fetch {package_host} /badhello.manifest'),b'Package download error 74'))
         report('downloaded package database',lambda: contains(machine.command('pkg query webhello'),b'name webhello'))
         report('downloaded ELF execution',lambda: contains(machine.command('run webhello'),b'Hello from ring 3!'))
         report('Linux anonymous demand paging and TLS',lambda: contains(machine.command('run linuxhello'),b'file, memory, TLS, uname OK'))

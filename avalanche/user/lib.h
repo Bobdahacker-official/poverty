@@ -12,6 +12,9 @@ static inline int av_call(uint64_t n, uint64_t a, uint64_t b, uint64_t c,
                    : "memory", "cc");
   return r;
 }
+static inline int av_random(void *data,unsigned size) {
+  return av_call(AV_RANDOM,(uintptr_t)data,size,0,0);
+}
 static inline int av_recv(uint16_t port, void *data, uint32_t cap,
                           uint32_t *source, uint16_t *srcport) {
   uint32_t a = AV_UDP_RECV, c = (uintptr_t)data, d = cap;

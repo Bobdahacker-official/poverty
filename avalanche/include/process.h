@@ -6,6 +6,8 @@
 #define PROCESS_FDS 16
 #define PROCESS_STACK 32768
 #define PROCESS_PAGE_LIMIT 2048
+#define PROCESS_PHYSICAL_MASK UINT64_C(0x000ffffffffff000)
+#define PROCESS_NO_EXECUTE UINT64_C(0x8000000000000000)
 #define FD_UNUSED (-1)
 #define FD_INPUT (-2)
 #define FD_OUTPUT (-3)
@@ -55,6 +57,7 @@ bool process_string(struct process *, uint32_t, char *, unsigned);
 uint64_t *process_pte(struct process *, uint32_t);
 bool process_map(struct process *, uint32_t, bool);
 bool process_map_lazy(struct process *, uint32_t, bool);
+bool process_execute(struct process *,uint32_t,bool);
 bool process_private(struct process *, uint32_t);
 bool process_page_fault(struct process *, uint32_t, bool);
 void process_unmap(struct process *, uint32_t);
