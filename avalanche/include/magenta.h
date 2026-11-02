@@ -1,6 +1,11 @@
 #ifndef MAGENTA_ABI_H
 #define MAGENTA_ABI_H
 #include <stdint.h>
+struct av_audio_status {
+  uint32_t available, playing, rate, channels, frames_played, frames_total;
+  int32_t error;
+  char path[256];
+};
 struct av_status {
   uint32_t ticks, managed_kib, allocated_kib, disks;
   int32_t mounted_disk;

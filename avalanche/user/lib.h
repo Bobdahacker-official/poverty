@@ -1,6 +1,7 @@
 #ifndef AV_USER_LIB_H
 #define AV_USER_LIB_H
 #include "abi.h"
+#include "magenta.h"
 #include <stddef.h>
 #include <stdint.h>
 static inline int av_call(uint64_t n, uint64_t a, uint64_t b, uint64_t c,
@@ -14,6 +15,15 @@ static inline int av_call(uint64_t n, uint64_t a, uint64_t b, uint64_t c,
 }
 static inline int av_random(void *data,unsigned size) {
   return av_call(AV_RANDOM,(uintptr_t)data,size,0,0);
+}
+static inline int av_audio_play(const char *path) {
+  return av_call(AV_AUDIO_PLAY,(uintptr_t)path,0,0,0);
+}
+static inline int av_audio_status(struct av_audio_status *status) {
+  return av_call(AV_AUDIO_STATUS,(uintptr_t)status,0,0,0);
+}
+static inline int av_audio_stop(void) {
+  return av_call(AV_AUDIO_STOP,0,0,0,0);
 }
 static inline int av_recv(uint16_t port, void *data, uint32_t cap,
                           uint32_t *source, uint16_t *srcport) {

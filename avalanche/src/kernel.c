@@ -535,6 +535,20 @@ static void command(char *line) {
   char *rest = line, *cmd = token(&rest);
   if (!*cmd)
     return;
+  if (eq(cmd,"audio")) {audio_info();return;}
+  if (eq(cmd,"play")) {
+    int status=audio_play(token(&rest));
+    if(!status) while((status=audio_status())>0) {devices_poll();net_poll();user_poll();user_yield_kernel();}
+    result(status);return;
+  }
+  if (eq(cmd,"stopaudio")) {audio_stop();return;}
+  if (eq(cmd,"diskcrc")) {
+    bool a,b; unsigned disk=parse_uint(token(&rest),&a),lba=parse_uint(token(&rest),&b);
+    uint8_t data[512];
+    if(a && b && disk_read(disk,lba,data)) { print_hex(crc32(data,512)); console_putc('\n'); }
+    else result(-5);
+    return;
+  }
   if (eq(cmd, "priority")) {
     bool pid_ok, level_ok;
     unsigned pid = parse_uint(token(&rest), &pid_ok),
@@ -633,6 +647,7 @@ static void command(char *line) {
   if (eq(cmd, "help"))
     console_write(
         "help version clear echo mem ticks date beep mouse devices display ps\n"
+        "audio play PATH.wav stopaudio diskcrc DISK SECTOR\n"
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
         "ext4ls DISK /PATH  ext4cat DISK /PATH\n"
         "ext4read DISK /PATH OFFSET COUNT  - up to 4096 bytes\n"

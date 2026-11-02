@@ -37,11 +37,13 @@ APP(worker);
 APP(magenta);
 APP(linuxhello);
 APP(linuxfork);
+APP(aplay);
 struct builtin {
   const char *name;
   const uint8_t *start, *end;
 };
 static const struct builtin builtins[] = {
+    {"aplay", app_aplay_start, app_aplay_end},
     {"magenta", app_magenta_start, app_magenta_end},
     {"hello", app_hello_start, app_hello_end},
     {"cat", app_cat_start, app_cat_end},
@@ -906,6 +908,7 @@ bool user_task_info(unsigned index, struct task_info *out) {
   return true;
 }
 void user_poll(void) {
+  audio_poll();
   if (tcp_cleanup) {
     net_tcp_close();
     tcp_owner = 0;
@@ -1385,6 +1388,20 @@ void user_syscall(struct trap_frame *f) {
     kernel_power(f->ebx);
     result = -5;
     break;
+  case AV_AUDIO_PLAY: {
+    char path[256];
+    if(user_string(f->ebx,path,sizeof(path))) result=audio_play(path);
+    else result=-14;
+    break;
+  }
+  case AV_AUDIO_STATUS:
+    result=audio_status();
+    if(f->ebx) {
+      struct av_audio_status status;audio_snapshot(&status);
+      if(!process_copyout(t,f->ebx,&status,sizeof(status))) result=-14;
+    }
+    break;
+  case AV_AUDIO_STOP: audio_stop(); result=0; break;
   case AV_RANDOM: {
     uint8_t entropy[256];
     unsigned size=f->ecx;

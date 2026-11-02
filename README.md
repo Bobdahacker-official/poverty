@@ -29,9 +29,13 @@ Keep the VM's data disk when replacing the ISO. `./copy.sh /path/to/Magenta` cop
 
 ## Desktop
 
-The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings, Browser, and Images. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
+The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings, Browser, Images, and Music. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
 
 Images opens PNG, JPEG, and BMP pictures from Files or a typed path. Ctrl-U opens the viewer. Images retain their aspect ratio and fit the available window space. The decoder uses runtime-sized memory buffers, accepts files up to 16 MiB, and keeps the current picture open if another file fails to decode. Ext4 reads can span larger files through the offset-based file API.
+
+Music opens PCM16 WAV files from Files or a typed path. Ctrl-D opens the player. Play and Stop control the HDA stream; progress, duration, sample rate, and channel count come from the running playback state. Other windows and processes keep running during playback. `run aplay /PATH.wav` plays a file from the console, and `aplay /PATH.wav` works in Terminal. Native programs have `av_audio_play`, `av_audio_status`, and `av_audio_stop` SDK calls.
+
+![Music player](Images/music.png)
 
 ![Application launcher](Images/launcher.png)
 
@@ -96,9 +100,11 @@ GeForce RTX 4060-class cards use the UEFI GOP framebuffer supplied by the card's
 
 Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, USB mass storage, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. USB 1.1 UHCI controllers handle boot-protocol keyboards and mice, including devices behind a hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks.
 
-USB disks connected at boot use SCSI commands over Bulk-Only Transport on the UHCI controller. The driver reads, writes, and flushes disks with 512-byte, 1 KiB, 2 KiB, or 4 KiB logical sectors. Writes to part of a larger sector preserve the other bytes. USB disks use the same block cache and ext4 filesystem as internal drives. Malformed command-status replies trigger transport reset and endpoint recovery. The checks cover a directly attached disk, a hub with a disk and keyboard, and a disk with 4 KiB sectors.
+USB disks connected at boot use SCSI commands over Bulk-Only Transport on UHCI or xHCI controllers. xHCI handles USB 2 and USB 3 devices, command and transfer rings, controller ownership, root-port reset, endpoint configuration, hubs, and interrupt HID reports. Keyboards, mice, and storage can share a controller. The storage driver reads, writes, and flushes disks with 512-byte, 1 KiB, 2 KiB, or 4 KiB logical sectors. Writes to part of a larger sector preserve the other bytes. USB disks use the same block cache and ext4 filesystem as internal drives. Malformed command-status replies trigger transport reset and endpoint recovery. The checks cover directly attached disks, hubs with disks and keyboards, producer-ring wraparound, and disks with 4 KiB sectors.
 
 Keyboard and mouse reports continue to be processed during bulk disk transfers. A separate check disables PS/2 and types commands through a USB keyboard while writes are in progress on a disk attached to the same hub.
+
+Intel HD Audio supplies analogue PCM playback. Codec discovery follows pin, selector, mixer, and DAC connections; it configures power, amplifiers, stream format, and the output stream. A DMA ring buffers playback while polling refills it from storage. Mono and stereo PCM16 WAV playback supports 8, 16, 22.05, 24, 32, 44.1, 48, and 96 kHz when the codec accepts the rate. Tests capture the emulated audio output and check the actual stereo samples, including playback from a ring-3 app and a responsive Music window.
 
 The kernel maps physical addresses through 64 GiB. Allocated pages use a separate, supervisor-only memory mapping, so RAM above 4 GiB stays accessible while applications run. Native programs have a 64 MiB address window and up to 64 MiB of mapped pages, with 64 KiB reserved for the stack. Disk-backed ELF files can be up to 32 MiB. `mem` reports managed RAM, free pages, and allocations above 4 GiB. The memory checks boot with 256 MiB, 8 GiB, and 32 GiB and run an ext4 executable with 16 MiB of writable data.
 

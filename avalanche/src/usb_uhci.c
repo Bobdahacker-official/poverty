@@ -45,6 +45,9 @@ static void td(struct td *t, unsigned pid, unsigned address, unsigned endpoint,
 bool usb_control(unsigned address, bool low, unsigned packet,
                  uint8_t request_type, uint8_t request, uint16_t value,
                  uint16_t index, uint16_t size, bool input) {
+  if (address>=128)
+    return size<=sizeof(control_data) && xhci_control(address-128,request_type,
+             request,value,index,control_data,size);
   if (size > sizeof(control_data) || !packet || packet > 64)
     return false;
   setup[0] = request_type;
@@ -100,6 +103,7 @@ bool usb_control(unsigned address, bool low, unsigned packet,
 #define transfer usb_control
 int usb_bulk(unsigned address, unsigned endpoint, unsigned packet,
              unsigned *toggle, void *data, unsigned size, bool input) {
+  if (address>=128) return xhci_bulk(address-128,endpoint,data,size,input);
   if (!running || !size || size > 4096 || !endpoint || endpoint > 15 ||
       (packet != 8 && packet != 16 && packet != 32 && packet != 64))
     return -1;
@@ -193,10 +197,14 @@ static bool present(const uint8_t *keys, uint8_t value) {
   return false;
 }
 static void keyboard_report(struct hid *device) {
-  uint8_t modifiers = device->data[0];
+  usb_keyboard_report(device->old_keys,&device->modifiers,device->data);
+}
+void usb_keyboard_report(uint8_t old_keys[6],uint8_t *old_modifiers,const uint8_t *data) {
+  for (unsigned i=2;i<8;i++) if (data[i] && data[i]<=3) return;
+  uint8_t modifiers = data[0];
   static const uint8_t modifier_codes[] = {29, 42, 56, 0, 29, 54, 56, 0};
   for (unsigned i = 0; i < 8; i++)
-    if ((modifiers ^ device->modifiers) & (1u << i)) {
+    if ((modifiers ^ *old_modifiers) & (1u << i)) {
       uint8_t code = modifier_codes[i];
       if (!code)
         continue;
@@ -204,21 +212,21 @@ static void keyboard_report(struct hid *device) {
         keyboard_feed_scancode(0xe0);
       keyboard_feed_scancode((modifiers & (1u << i)) ? code : code | 0x80);
     }
-  device->modifiers = modifiers;
+  *old_modifiers = modifiers;
   for (unsigned i = 0; i < 6; i++) {
-    uint8_t old = device->old_keys[i], now = device->data[2 + i];
-    if (old && !present(device->data + 2, old)) {
+    uint8_t old = old_keys[i], now = data[2 + i];
+    if (old && !present(data + 2, old)) {
       uint8_t code = scancode(old);
       if (code)
         keyboard_feed_scancode(code | 0x80);
     }
-    if (now && now < 0x80 && !present(device->old_keys, now)) {
+    if (now && now < 0x80 && !present(old_keys, now)) {
       uint8_t code = scancode(now);
       if (code)
         keyboard_feed_scancode(code);
     }
   }
-  memcpy(device->old_keys, device->data + 2, 6);
+  memcpy(old_keys, data + 2, 6);
 }
 static void prepare(struct hid *device) {
   td(&device->transaction, 0x69, device->address, device->endpoint,
@@ -227,6 +235,7 @@ static void prepare(struct hid *device) {
   __asm__ volatile("sfence" ::: "memory");
 }
 void usb_poll(void) {
+  xhci_poll();
   if (!running)
     return;
   for (unsigned i = 0; i < hid_count; i++) {
@@ -384,6 +393,7 @@ static bool enumerate_port(unsigned slot) {
   return enumerate_device(state & 0x100, 0);
 }
 void usb_init(void) {
+  xhci_init();
   const struct pci_device *controller = pci_find_class(12, 3, 0);
   if (!controller || !(controller->bar[4] & 1))
     return;

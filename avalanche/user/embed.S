@@ -1,5 +1,9 @@
 .section .rodata
 .balign 16
+.global app_aplay_start,app_aplay_end
+app_aplay_start: .incbin "build/user/aplay.elf"
+app_aplay_end:
+.balign 16
 .global app_hello_start,app_hello_end
 app_hello_start: .incbin "build/user/hello.elf"
 app_hello_end:

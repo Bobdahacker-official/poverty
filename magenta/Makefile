@@ -1,4 +1,4 @@
-APPS = magenta ush hello cat udp http worker linuxhello linuxfork
+APPS = magenta ush hello cat udp http worker linuxhello linuxfork aplay
 APP_FILES = $(addprefix ../avalanche/build/user/,$(addsuffix .elf,$(APPS)))
 .PHONY: all package
 all:

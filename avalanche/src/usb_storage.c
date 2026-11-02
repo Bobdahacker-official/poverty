@@ -80,7 +80,7 @@ failed:
 bool usb_storage_attach(unsigned address, unsigned packet, unsigned interface,
                         unsigned input, unsigned output, unsigned input_packet,
                         unsigned output_packet) {
-  if (unit_count == USB_DISKS || input_packet > 64 || output_packet > 64 ||
+  if (unit_count == USB_DISKS || input_packet > 1024 || output_packet > 1024 ||
       !input_packet || !output_packet)
     return false;
   struct storage *s = &units[unit_count];

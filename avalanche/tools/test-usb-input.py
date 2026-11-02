@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Type through a USB keyboard while the root filesystem uses the same hub."""
 import os
+import argparse
 import pathlib
 import subprocess
 import tempfile
 import time
 
 root = pathlib.Path(__file__).resolve().parents[2]
+parser = argparse.ArgumentParser()
+parser.add_argument("--xhci", action="store_true")
+args = parser.parse_args()
 with tempfile.TemporaryDirectory(prefix="avalanche-usb-input-") as directory:
     folder = pathlib.Path(directory)
     disk, serial = folder / "usb.img", folder / "serial.log"
@@ -23,6 +27,12 @@ with tempfile.TemporaryDirectory(prefix="avalanche-usb-input-") as directory:
                "-device", "usb-hub,bus=usb.0,port=1",
                "-device", "usb-storage,drive=data,bus=usb.0,port=1.1",
                "-device", "usb-kbd,bus=usb.0,port=1.2"]
+    if args.xhci:
+        command[command.index("piix3-usb-uhci,id=usb")] = "qemu-xhci,id=usb"
+        at = command.index("usb-hub,bus=usb.0,port=1")
+        del command[at-1:at+1]
+        command[command.index("usb-storage,drive=data,bus=usb.0,port=1.1")] = "usb-storage,drive=data,bus=usb.0"
+        command[command.index("usb-kbd,bus=usb.0,port=1.2")] = "usb-kbd,bus=usb.0"
     for variable, option in [("QEMU_BIOS", "-bios"), ("QEMU_DATA", "-L")]:
         if os.environ.get(variable):
             command.extend([option, os.environ[variable]])

@@ -429,6 +429,7 @@ static void mouse_poll(void) {
   }
 }
 void devices_poll(void) {
+  audio_poll();
   if (!mouse_irq_poll) mouse_poll();
   usb_poll();
 }
@@ -595,6 +596,7 @@ void devices_init(void) {
   virtio_rng_init();
   mouse_init();
   usb_init();
+  audio_init();
 }
 void devices_list(void) {
   console_write(pci_ecam_bus(0) ? "PCI Express ECAM: " : "PCI configuration ports: ");
@@ -629,7 +631,7 @@ void devices_list(void) {
   console_write(
       "Drivers: PCI, ATA PIO/LBA28, AHCI SATA/DMA48, NVMe, VirtIO "
       "block/network, "
-      "PS/2 keyboard/mouse, USB 1.1 UHCI HID keyboard/mouse and mass storage, "
+      "PS/2 keyboard/mouse, UHCI/xHCI USB HID and mass storage, HDA PCM audio, "
       "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000, AMD "
       "PCnet.\n");
 }

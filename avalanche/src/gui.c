@@ -18,6 +18,7 @@ enum {
   SETTINGS,
   BROWSER,
   IMAGES,
+  MUSIC,
   APP_COUNT
 };
 static struct nk_context ui;
@@ -27,7 +28,7 @@ static unsigned width, height, display_width, display_height;
 static float native_scale = 1;
 static const char *app_names[APP_COUNT] = {"Terminal", "Files",   "Text editor",
                                            "System Monitor", "Network", "Packages",
-                                           "Settings", "Browser", "Images"};
+                                           "Settings", "Browser", "Images", "Music"};
 static const char *app_summaries[APP_COUNT] = {
     "Run programs and shell commands",
     "Browse your disks and documents",
@@ -37,7 +38,10 @@ static const char *app_summaries[APP_COUNT] = {
     "Install and update applications",
     "Make Magenta your own",
     "Read web pages and local documents",
-    "View PNG, JPEG and BMP pictures"};
+    "View PNG, JPEG and BMP pictures", "Listen to music and WAV recordings"};
+static char music_path[256];
+static bool music_focus,music_play_requested;
+static int music_result;
 static struct image_document picture;
 static char picture_path[256];
 static bool picture_focus;
@@ -472,6 +476,7 @@ static void open_app(unsigned id) {
   if (id >= APP_COUNT)
     return;
   if (id==IMAGES) picture_focus=true;
+  if (id==MUSIC) music_focus=true;
   bool was_visible =
       apps[id].visible && !nk_window_is_collapsed(&ui, app_names[id]);
   apps[id].visible = true;
@@ -706,6 +711,10 @@ static void open_file(unsigned index) {
       char c=extension[i]; suffix[i++]=(c>='A' && c<='Z') ? c+32 : c;
     }
     suffix[i]=0;
+    if(str_eq(suffix,"wav")) {
+      copy(music_path,path,sizeof(music_path));
+      music_result=audio_play(music_path);open_app(MUSIC);return;
+    }
     if (str_eq(suffix,"png") || str_eq(suffix,"jpg") || str_eq(suffix,"jpeg") || str_eq(suffix,"bmp")) {
       copy(picture_path,path,sizeof(picture_path));
       image_load(&picture,picture_path);
@@ -1948,7 +1957,7 @@ static int window_controls(unsigned id) {
   gui_canvas_gloss(canvas,
                    nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
   gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28),
-                  id == BROWSER ? 4 : id == IMAGES ? 9 : id,
+                  id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : id,
                   active ? rgb(accent()) : rgb(palette()->muted));
   nk_draw_text(canvas,
                nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
@@ -2396,6 +2405,31 @@ static void application(unsigned id) {
       packages_view();
     else if (id == BROWSER)
       browser_view();
+    else if (id == MUSIC) {
+      struct av_audio_status status;audio_snapshot(&status);
+      heading("Music");
+      nk_layout_row_dynamic(&ui,34,1);
+      if(music_focus) {nk_edit_focus(&ui,NK_EDIT_ALWAYS_INSERT_MODE);music_focus=false;}
+      nk_edit_string_zero_terminated(&ui,NK_EDIT_FIELD,music_path,sizeof(music_path),nk_filter_default);
+      nk_layout_row_dynamic(&ui,38,2);
+      if(accent_button("Play")) music_result=audio_play(music_path);
+      if(nk_button_label(&ui,"Stop")) {audio_stop();music_result=0;}
+      nk_layout_row_dynamic(&ui,36,1);
+      nk_label_wrap(&ui,!status.available ? "No compatible audio output detected." :
+                        status.playing ? "Playing" : status.frames_total && status.frames_played>=status.frames_total ?
+                        "Playback finished" : "Choose a WAV file, or open one from Files.");
+      if(*status.path) {nk_layout_row_dynamic(&ui,42,1);nk_label_wrap(&ui,status.path);}
+      nk_size progress=status.frames_total ? (uint64_t)status.frames_played*1000/status.frames_total : 0;
+      nk_layout_row_dynamic(&ui,18,1);nk_progress(&ui,&progress,1000,NK_FIXED);
+      nk_layout_row_dynamic(&ui,26,2);
+      label_value("Sample rate: ",status.rate," Hz");label_value("Channels: ",status.channels,"");
+      label_value("Played: ",status.rate ? status.frames_played/status.rate : 0," s");
+      label_value("Duration: ",status.rate ? status.frames_total/status.rate : 0," s");
+      if(music_result<0 || status.error<0) {
+        nk_layout_row_dynamic(&ui,32,1);
+        label_value("Playback error: ",-(music_result<0 ? music_result : status.error),"");
+      }
+    }
     else if (id == IMAGES)
       images_view();
     else
@@ -2471,8 +2505,8 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                       int id) {
   static const uint32_t colors[] = {0x263347, 0x279ce0, 0xb561df, 0x23ad95,
                                     0x297fda, 0xe09132, 0x64758e, 0xe6007e};
-  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : id == IMAGES ? 9 : (unsigned)id;
-  struct nk_color base = rgb(kind==9 ? 0x7d59c7 : colors[kind]);
+  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : (unsigned)id;
+  struct nk_color base = rgb(kind>=9 ? (kind==10 ? 0xd64a8c : 0x7d59c7) : colors[kind]);
   nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
                nk_rgba(0, 0, 0, 65));
   nk_fill_rect(canvas, r, 10, base);
@@ -2871,6 +2905,7 @@ static void inputs(void) {
     if (!c)
       break;
     if (active_app==IMAGES && c=='\n') { picture_load_requested=true; continue; }
+    if (active_app==MUSIC && c=='\n') {music_play_requested=true;continue;}
     if (c == 27) {
       escape_requested = true;
       continue;
@@ -2924,6 +2959,7 @@ static void inputs(void) {
                    : c == 2  ? BROWSER
                    : c == 15 ? SETTINGS
                    : c == 21 ? IMAGES
+                   : c == 4 ? MUSIC
                              : -1;
     if (shortcut >= 0) {
       open_app(shortcut);
@@ -3061,6 +3097,7 @@ int gui_run(void) {
   escape_requested = save_requested = false;
   preferences_dirty = theme_dirty = false;
   running = true;
+  music_focus=false;music_play_requested=false;music_result=0;
   clipboard[0] = 0;
   graphics_console_capture(terminal_character);
   mouse_interrupt_poll(true);
@@ -3144,6 +3181,10 @@ int gui_run(void) {
       if (picture_load_requested) {
         picture_load_requested=false;
         image_load(&picture,picture_path);
+      }
+      if(music_play_requested) {
+        music_play_requested=false;
+        music_result=audio_play(music_path);
       }
       last_frame = clock_ticks();
       if (preferences_dirty && !(buttons & 1) &&

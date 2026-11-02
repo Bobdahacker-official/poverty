@@ -11,6 +11,15 @@ import time
 
 root = pathlib.Path(__file__).resolve().parents[2]
 profiles = [
+    ("pc", "USB-xHCI-hub", "e1000", "Intel E1000",
+     ["-device", "qemu-xhci,id=usb", "-device", "usb-hub,bus=usb.0,port=1",
+      "-device", "usb-storage,drive=data,bus=usb.0,port=1.1", "-device", "usb-kbd,bus=usb.0,port=1.2"]),
+    ("pc", "USB-xHCI-4K", "e1000", "Intel E1000",
+     ["-device", "qemu-xhci,id=usb", "-device",
+      "usb-storage,drive=data,bus=usb.0,logical_block_size=4096,physical_block_size=4096"]),
+    ("pc", "USB-xHCI", "e1000", "Intel E1000",
+     ["-device", "qemu-xhci,id=usb", "-device", "usb-storage,drive=data,bus=usb.0",
+      "-device", "usb-kbd,bus=usb.0"]),
     ("pc", "ATA", "pcnet", "AMD PCnet", []),
     ("pc", "AHCI", "rtl8139", "RTL8139",
      ["-device", "ich9-ahci,id=sata", "-device", "ide-hd,drive=data,bus=sata.0"]),
@@ -86,13 +95,24 @@ with tempfile.TemporaryDirectory(prefix="avalanche-hardware-") as directory:
                     assert b"PCI Express ECAM:" in inventory, inventory
                 assert b"ext4" in run("fs"), inventory
                 if not boot:
+                    if storage == "USB-xHCI":
+                        import zlib
+                        journal = int(subprocess.check_output(["debugfs", "-R", "bmap <8> 0", str(disk)],stderr=subprocess.DEVNULL).strip())
+                        for lba in (2, 8, journal*8):
+                            with disk.open("rb") as host:
+                                host.seek(lba*512); expected=zlib.crc32(host.read(512))
+                            actual = run(f"diskcrc 0 {lba}")
+                            assert f"0x{expected:08X}".encode() in actual, actual
+                        print("PASS xHCI sector checksums match the host image",flush=True)
                     assert nic.encode() in run("net")
                     lease = run("dhcp")
                     assert b"IPv4 10.0.2.15" in lease, lease
                     reply = run("ping 10.0.2.2")
                     assert b"Reply in " in reply, reply
-                    run("write transport-check PERSISTENT-" + storage)
-                    assert b"Disks synchronized." in run("sync")
+                    written = run("write transport-check PERSISTENT-" + storage)
+                    assert b"Done." in written, written
+                    flushed = run("sync")
+                    assert b"Disks synchronized." in flushed, flushed
                     print(f"PASS {chipset}: {storage} write/flush, {nic} DHCP/ARP/ICMP, "
                           "8 GiB RAM", flush=True)
                 contents = run("run cat transport-check" if boot else "cat transport-check")

@@ -38,6 +38,9 @@ test:
 	QEMU=$(QEMU) python3 avalanche/tools/test-entropy.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-hardware.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-usb-input.py
+	QEMU=$(QEMU) python3 avalanche/tools/test-usb-input.py --xhci
+	QEMU=$(QEMU) python3 avalanche/tools/test-audio.py
+	QEMU=$(QEMU) python3 avalanche/tools/test-audio.py --gui
 	QEMU=$(QEMU) python3 avalanche/tools/test-storage.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-gui.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-image-gui.py
