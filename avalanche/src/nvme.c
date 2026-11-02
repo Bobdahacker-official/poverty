@@ -91,6 +91,7 @@ void nvme_init(void) {
   uint64_t base = pci_memory_bar(controller, 0);
   if (!base || !platform_mmio(base, 0x2000))
     return;
+  pci_enable(controller, 6);
   registers = page_pointer(base);
   uint64_t cap = read_reg(0) | (uint64_t)read_reg(4) << 32;
   if ((cap & 65535) + 1 < QUEUE_DEPTH || !(cap & (UINT64_C(1) << 37)) ||
@@ -159,6 +160,7 @@ void nvme_init(void) {
                            : blocks << (shift - 9);
     struct block_device disk = {.backend = 3,
                                 .unit = unit,
+                                .logical_sector_size = 1u << shift,
                                 .sectors = sectors > UINT32_MAX ? UINT32_MAX
                                                                 : sectors};
     memcpy(disk.model, model, sizeof(model));

@@ -597,7 +597,7 @@ static int load_name(struct process *t, const char *name, const char *args) {
   for (unsigned disk = 0; disk < disk_count(); disk++) {
     struct ext4_volume volume;
     struct ext4_inode inode;
-    if (ext4_mount(&volume, disk, 0) || ext4_lookup(&volume, name, &inode))
+    if (ext4_discover(&volume, disk) || ext4_lookup(&volume, name, &inode))
       continue;
     if ((inode.mode & 0xf000) != 0x8000 || !inode.size ||
         inode.size > PROCESS_IMAGE_LIMIT)

@@ -84,6 +84,14 @@ make run
 
 The build writes to `avalanche/build/`. `make package` copies both boot ISOs and fresh data disks into `Images/`, then updates their SHA-256 checksums. `make run` creates and attaches a 9 GiB ext4 disk when needed. `make test` runs the host and QEMU checks. `make packages` builds the sample packages.
 
+The UEFI tests use OVMF firmware. Install `ovmf`, or set `OVMF_DIR` to a directory containing `OVMF_CODE_4M.fd` and `OVMF_VARS_4M.fd`.
+
+## Desktop PC hardware
+
+The hardware checks include a UEFI desktop with 32 GiB of RAM and a 1 TB NVMe disk, using both 512-byte and 4 KiB native sectors. Ext4 partitions are found on GPT disks and primary Linux MBR partitions. GPT header and table checksums are verified, backup GPT headers are supported, and overlapping partitions are rejected. Filesystem reads, journal replay, and writes stay within the partition's bounds. Windows data partitions are left alone.
+
+GeForce RTX 4060-class cards use the UEFI GOP framebuffer supplied by the card's firmware. GRUB selects an available graphics mode and passes it to the kernel. Magenta renders the desktop on the CPU; this path provides display output without NVIDIA 3D or CUDA acceleration. Boot the ISO in UEFI mode with Secure Boot disabled. `display` reports the boot firmware, framebuffer dimensions and pixel layout, renderer, and actual PCI display-adapter IDs.
+
 ## Kernel
 
 Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, USB mass storage, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. USB 1.1 UHCI controllers handle boot-protocol keyboards and mice, including devices behind a hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks.

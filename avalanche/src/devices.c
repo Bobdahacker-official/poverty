@@ -633,3 +633,15 @@ void devices_list(void) {
       "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000, AMD "
       "PCnet.\n");
 }
+void devices_display(void) {
+  for (unsigned i=0;i<pci_count;i++) {
+    const struct pci_device *d=&pci[i];
+    if (d->class_id!=3) continue;
+    console_write("Display adapter: ");
+    console_write(d->vendor==0x10de ? "NVIDIA" : d->vendor==0x1002 ? "AMD" :
+                  d->vendor==0x8086 ? "Intel" : "PCI");
+    console_write(" vendor="); print_hex(d->vendor);
+    console_write(" device="); print_hex(d->device);
+    console_putc('\n');
+  }
+}

@@ -131,6 +131,7 @@ bool page_free(void *p) {
 }
 static volatile uint8_t *fb;
 static uint64_t fb_address;
+static bool uefi_boot;
 static uint32_t pitch, fw, fh, fg, bg;
 static uint8_t bytespp, rpos, gpos, bpos, rbits, gbits, bbits;
 static uint32_t col, row, cols = 80, rows = 25;
@@ -631,7 +632,7 @@ static void command(char *line) {
   }
   if (eq(cmd, "help"))
     console_write(
-        "help version clear echo mem ticks date beep mouse devices ps\n"
+        "help version clear echo mem ticks date beep mouse devices display ps\n"
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
         "ext4ls DISK /PATH  ext4cat DISK /PATH\n"
         "ext4read DISK /PATH OFFSET COUNT  - up to 4096 bytes\n"
@@ -671,6 +672,16 @@ static void command(char *line) {
     speaker_beep(880, 20);
   else if (eq(cmd, "mouse"))
     mouse_print();
+  else if (eq(cmd, "display")) {
+    console_write(uefi_boot ? "Firmware: UEFI\n" : "Firmware: BIOS\n");
+    if (fb) {
+      console_write("Framebuffer: "); print_uint(fw); console_putc('x');
+      print_uint(fh); console_write(" depth="); print_uint(bytespp*8);
+      console_write(" stride="); print_uint(pitch); console_putc('\n');
+      console_write("Renderer: CPU software compositor\n");
+    } else console_write("Display: serial console\n");
+    devices_display();
+  }
   else if (eq(cmd, "devices"))
     devices_list();
   else if (eq(cmd, "fs"))
@@ -984,6 +995,7 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
         bg = rgb(13, 23, 39);
       }
     }
+    if (t->type==11 || t->type==12) uefi_boot=true;
     uint32_t next = (t->size + 7) & ~7u;
     if (next > end - (uintptr_t)t)
       break;

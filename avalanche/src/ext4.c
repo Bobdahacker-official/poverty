@@ -1,4 +1,5 @@
 #include "ext4.h"
+#include "partition.h"
 #define TX_LIMIT 32
 static struct {
   uint64_t block;
@@ -13,6 +14,8 @@ static uint32_t u32(const uint8_t *p) {
 }
 static int bytes(struct ext4_volume *v, uint64_t offset, void *out,
                  uint32_t n) {
+  uint64_t limit=(uint64_t)v->sectors*512;
+  if (offset>limit || n>limit-offset) return -5;
   uint8_t sector[512], *p = out;
   while (n) {
     if (transaction_volume == v) {
@@ -45,11 +48,12 @@ static int bytes(struct ext4_volume *v, uint64_t offset, void *out,
   }
   return 0;
 }
-int ext4_mount(struct ext4_volume *v, unsigned disk, uint32_t start) {
+static int mount_range(struct ext4_volume *v, unsigned disk, uint32_t start, uint32_t sectors) {
   uint8_t super[1024];
   memset(v, 0, sizeof(*v));
   v->disk = disk;
   v->start = start;
+  v->sectors = sectors;
   if (bytes(v, 1024, super, sizeof(super)))
     return -5;
   if (u16(super + 56) != 0xef53 || u32(super + 24) != 2)
@@ -69,12 +73,28 @@ int ext4_mount(struct ext4_volume *v, unsigned disk, uint32_t start) {
   v->descriptor_size = incompatible & 0x80 ? u16(super + 254) : 32;
   const struct block_device *d = disk_get(disk);
   if (!d || start >= d->sectors || !v->blocks ||
-      v->blocks > (d->sectors - (uint64_t)start) / 8 || !v->inodes_per_group ||
+      sectors>d->sectors-(uint64_t)start || v->blocks > sectors / 8 || !v->inodes_per_group ||
       v->inodes_per_group > 32768 || v->inode_size < 128 ||
       v->inode_size > 4096 || 4096 % v->inode_size || v->descriptor_size < 32 ||
       v->descriptor_size > 4096 || 4096 % v->descriptor_size)
     return -22;
   return incompatible & 4 ? journal_replay(v) : 0;
+}
+int ext4_mount(struct ext4_volume *v,unsigned disk,uint32_t start) {
+  const struct block_device *d=disk_get(disk);
+  if (!d || start>=d->sectors) return -22;
+  return mount_range(v,disk,start,d->sectors-start);
+}
+int ext4_discover(struct ext4_volume *v,unsigned disk) {
+  int result=ext4_mount(v,disk,0);
+  if (!result) return 0;
+  struct disk_partition parts[16];
+  int count=partition_linux(disk,parts,16);
+  for (int i=0;i<count;i++) {
+    result=mount_range(v,disk,parts[i].start,parts[i].sectors);
+    if (!result) return 0;
+  }
+  return result;
 }
 int ext4_inode_read(struct ext4_volume *v, uint32_t ino,
                     struct ext4_inode *out) {
@@ -245,6 +265,8 @@ static void putbe(uint8_t *p, uint32_t n) {
 }
 static int store(struct ext4_volume *v, uint64_t offset, const void *data,
                  unsigned n) {
+  uint64_t limit=(uint64_t)v->sectors*512;
+  if (offset>limit || n>limit-offset) return -5;
   const uint8_t *p = data;
   uint8_t sector[512];
   while (n) {

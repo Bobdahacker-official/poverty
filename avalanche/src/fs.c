@@ -107,7 +107,7 @@ static bool bank_valid(unsigned d, unsigned bank) {
 }
 int fs_mount(unsigned disk) {
   struct ext4_volume candidate;
-  if (!ext4_mount(&candidate, disk, 0)) {
+  if (!ext4_discover(&candidate, disk)) {
     root_ext4 = candidate;
     mounted_ext4 = true;
     mounted = disk;
@@ -194,7 +194,7 @@ int fs_format(unsigned disk) {
 void fs_init(void) {
   for (unsigned d = 0; d < disk_count(); d++) {
     struct ext4_volume volume;
-    if (!ext4_mount(&volume, d, 0)) {
+    if (!ext4_discover(&volume, d)) {
       root_ext4 = volume;
       mounted_ext4 = true;
       mounted = d;
@@ -415,6 +415,8 @@ void fs_info(void) {
   if (mounted_ext4) {
     console_write("ext4 root filesystem on disk ");
     print_uint(root_ext4.disk);
+    console_write(" at sector ");
+    print_uint(root_ext4.start);
     console_write(
         "; 4096-byte blocks, extents and persistent JBD2 transactions.\n");
     return;

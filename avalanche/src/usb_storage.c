@@ -128,6 +128,7 @@ bool usb_storage_attach(unsigned address, unsigned packet, unsigned interface,
   s->ready = true;
   uint64_t sectors = (uint64_t)s->blocks * (bytes / 512);
   struct block_device disk = {.backend = 4,
+                              .logical_sector_size = bytes,
                               .unit = unit_count,
                               .sectors =
                                   sectors > UINT32_MAX ? UINT32_MAX : sectors};

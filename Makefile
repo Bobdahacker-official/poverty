@@ -28,10 +28,13 @@ test:
 	avalanche/build/test-pci-bars
 	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-usb-storage.c -o avalanche/build/test-usb-storage
 	avalanche/build/test-usb-storage
+	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-partitions.c -o avalanche/build/test-partitions
+	avalanche/build/test-partitions
 	python3 avalanche/tools/test-package-security.py
 	python3 avalanche/tools/test-images.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-memory-protection.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-large-memory.py
+	QEMU=$(QEMU) python3 avalanche/tools/test-modern-pc.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-entropy.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-hardware.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-usb-input.py

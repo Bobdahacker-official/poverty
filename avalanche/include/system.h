@@ -65,6 +65,7 @@ void devices_poll(void);
 void devices_tick(void);
 void mouse_interrupt_poll(bool);
 void devices_list(void);
+void devices_display(void);
 void rtc_print(void);
 void speaker_beep(uint32_t hz, uint32_t duration);
 void mouse_print(void);
@@ -97,6 +98,7 @@ struct block_device {
   uint16_t port, control;
   uint8_t slave, backend, unit, read_only;
   uint32_t sectors;
+  uint32_t logical_sector_size;
   char model[41];
 };
 unsigned disk_count(void);
