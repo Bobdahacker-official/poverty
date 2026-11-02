@@ -47,14 +47,16 @@ return -ENOSYS.
 
 Hardware: PCI, legacy ATA PIO/LBA28, AHCI SATA DMA48, legacy/transitional
 VirtIO block, network and RNG, NVMe, RTL8139, E1000, AMD PCnet, PIC/PIT,
-CMOS RTC, COM1 serial, USB UHCI HID keyboards and mice, PS/2 keyboard/mouse,
+CMOS RTC, COM1 serial, USB UHCI HID keyboards and mice, USB Bulk-Only
+SCSI mass storage, PS/2 keyboard/mouse,
 PC speaker and RGB framebuffer. The virtual pointer
 also supports the VMware absolute-pointer I/O protocol under QEMU and
 compatible hypervisors, with PS/2 fallback on other machines. VirtIO uses
 the legacy PCI I/O interface and supports queue sizes through 1024; modern
 VirtIO-only/MMIO devices are not supported. AHCI uses the first discovered
 controller and at most eight SATA ports. Block I/O requires 512-byte
-logical sectors; the NVMe transport also handles 4 KiB namespace blocks.
+logical sectors; NVMe and USB storage translate larger logical blocks through
+512-byte block I/O. USB disks support native blocks through 4096 bytes.
 
 Networking: ARP, IPv4, ICMP, UDP, DHCP, DNS, an active-open TCP stream,
 and HTTP/1.0 clients. TCP has one process-owned connection, in-order

@@ -18,6 +18,17 @@ profiles = [
      ["-device", "virtio-blk-pci,drive=data,disable-modern=on"]),
     ("q35", "NVMe", "e1000", "Intel E1000",
      ["-device", "nvme,drive=data,serial=AVALANCHE-TEST"]),
+    ("pc", "USB", "e1000", "Intel E1000",
+     ["-device", "piix3-usb-uhci,id=usb", "-device",
+      "usb-storage,drive=data,bus=usb.0,port=1", "-device",
+      "usb-kbd,bus=usb.0,port=2"]),
+    ("pc", "USB-4K", "e1000", "Intel E1000",
+     ["-device", "piix3-usb-uhci,id=usb", "-device",
+      "usb-storage,drive=data,bus=usb.0,logical_block_size=4096,physical_block_size=4096"]),
+    ("pc", "USB-hub", "e1000", "Intel E1000",
+     ["-device", "piix3-usb-uhci,id=usb", "-device", "usb-hub,bus=usb.0,port=1",
+      "-device", "usb-storage,drive=data,bus=usb.0,port=1.1", "-device",
+      "usb-kbd,bus=usb.0,port=1.2"]),
 ]
 parser = argparse.ArgumentParser()
 parser.add_argument("--storage", choices=[profile[1] for profile in profiles])
@@ -64,9 +75,13 @@ with tempfile.TemporaryDirectory(prefix="avalanche-hardware-") as directory:
                 machine.stdin.flush()
                 return prompt()
             try:
-                prompt()
+                boot_output = prompt()
+                if storage in ("USB", "USB-hub"):
+                    assert b"USB keyboard ready" in boot_output, boot_output
+                if storage == "USB-hub":
+                    assert b"USB hub ready" in boot_output, boot_output
                 inventory = run("devices")
-                assert (storage + " disk ").encode() in inventory, inventory
+                assert (storage.split("-")[0] + " disk ").encode() in inventory, inventory
                 if chipset == "q35":
                     assert b"PCI Express ECAM:" in inventory, inventory
                 assert b"ext4" in run("fs"), inventory

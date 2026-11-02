@@ -43,6 +43,8 @@ void keyboard_feed_scancode(uint8_t);
 void mouse_feed_relative(int,int,uint8_t);
 void usb_init(void);
 void usb_poll(void);
+bool usb_storage_transfer(unsigned, uint32_t, void *, bool);
+bool usb_storage_flush(unsigned);
 void console_clear(void);
 void console_color(uint32_t);
 void kernel_status(struct av_status *);

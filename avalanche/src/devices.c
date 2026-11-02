@@ -175,7 +175,12 @@ static bool ata_select(unsigned n, uint32_t lba) {
   return true;
 }
 bool disk_raw_read(unsigned n, uint32_t lba, void *buf) {
-  if (n < ndisks && disks[n].backend == 3) return lba < disks[n].sectors && nvme_transfer(disks[n].unit,lba,buf,false);
+  if (n < ndisks && disks[n].backend == 4)
+    return lba < disks[n].sectors &&
+           usb_storage_transfer(disks[n].unit, lba, buf, false);
+  if (n < ndisks && disks[n].backend == 3)
+    return lba < disks[n].sectors &&
+           nvme_transfer(disks[n].unit, lba, buf, false);
   if (n < ndisks && disks[n].backend == 2)
     return lba < disks[n].sectors && virtio_block_transfer(lba, buf, false);
   if (n < ndisks && disks[n].backend == 1)
@@ -195,7 +200,12 @@ bool disk_raw_read(unsigned n, uint32_t lba, void *buf) {
   return ata_wait(d, false);
 }
 bool disk_raw_write(unsigned n, uint32_t lba, const void *buf) {
-  if (n < ndisks && disks[n].backend == 3) return !disks[n].read_only && lba < disks[n].sectors && nvme_transfer(disks[n].unit,lba,(void *)buf,true);
+  if (n < ndisks && disks[n].backend == 4)
+    return !disks[n].read_only && lba < disks[n].sectors &&
+           usb_storage_transfer(disks[n].unit, lba, (void *)buf, true);
+  if (n < ndisks && disks[n].backend == 3)
+    return !disks[n].read_only && lba < disks[n].sectors &&
+           nvme_transfer(disks[n].unit, lba, (void *)buf, true);
   if (n < ndisks && disks[n].read_only)
     return false;
   if (n < ndisks && disks[n].backend == 2)
@@ -218,7 +228,10 @@ bool disk_raw_write(unsigned n, uint32_t lba, const void *buf) {
   return ata_wait(d, false);
 }
 bool disk_raw_flush(unsigned n) {
-  if (n < ndisks && disks[n].backend == 3) return nvme_flush(disks[n].unit);
+  if (n < ndisks && disks[n].backend == 4)
+    return usb_storage_flush(disks[n].unit);
+  if (n < ndisks && disks[n].backend == 3)
+    return nvme_flush(disks[n].unit);
   if (n < ndisks && disks[n].backend == 2)
     return virtio_block_flush();
   if (n < ndisks && disks[n].backend == 1)
@@ -601,9 +614,11 @@ void devices_list(void) {
     console_putc('\n');
   }
   for (unsigned i = 0; i < ndisks; i++) {
-    console_write(disks[i].backend == 3 ? "NVMe disk " : disks[i].backend == 2 ? "VirtIO disk "
-                  : disks[i].backend    ? "AHCI disk "
-                                        : "ATA disk ");
+    console_write(disks[i].backend == 4   ? "USB disk "
+                  : disks[i].backend == 3 ? "NVMe disk "
+                  : disks[i].backend == 2 ? "VirtIO disk "
+                  : disks[i].backend      ? "AHCI disk "
+                                          : "ATA disk ");
     print_uint(i);
     console_write(" ");
     console_write(disks[i].model);
@@ -612,7 +627,9 @@ void devices_list(void) {
     console_putc('\n');
   }
   console_write(
-      "Drivers: PCI, ATA PIO/LBA28, AHCI SATA/DMA48, VirtIO block/network, "
-      "PS/2 keyboard/mouse, USB 1.1 UHCI HID keyboard/mouse, "
-      "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000, AMD PCnet.\n");
+      "Drivers: PCI, ATA PIO/LBA28, AHCI SATA/DMA48, NVMe, VirtIO "
+      "block/network, "
+      "PS/2 keyboard/mouse, USB 1.1 UHCI HID keyboard/mouse and mass storage, "
+      "COM1,\nCMOS RTC, PIT timer/speaker, framebuffer, RTL8139, E1000, AMD "
+      "PCnet.\n");
 }

@@ -26,12 +26,15 @@ test:
 	avalanche/build/test-sha256
 	$(CC) -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/src/devices.c avalanche/tools/test-pci-bars.c -o avalanche/build/test-pci-bars
 	avalanche/build/test-pci-bars
+	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-usb-storage.c -o avalanche/build/test-usb-storage
+	avalanche/build/test-usb-storage
 	python3 avalanche/tools/test-package-security.py
 	python3 avalanche/tools/test-images.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-memory-protection.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-large-memory.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-entropy.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-hardware.py
+	QEMU=$(QEMU) python3 avalanche/tools/test-usb-input.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-storage.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-gui.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-image-gui.py

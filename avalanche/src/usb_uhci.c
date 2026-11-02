@@ -1,4 +1,4 @@
-#include "system.h"
+#include "usb.h"
 /* USB 1.1 UHCI with boot-protocol HID keyboard and mouse. Polling schedules
  * use the controller's real TD/QH DMA format. */
 #define ACTIVE (1u << 23)
@@ -6,10 +6,11 @@
 #define ERROR_BITS (0x7eu << 16)
 #define END 1u
 struct td {
-  uint32_t next, status, token, buffer;
+  volatile uint32_t next, status;
+  uint32_t token, buffer;
 } __attribute__((packed, aligned(16)));
 struct qh {
-  uint32_t next, element;
+  volatile uint32_t next, element;
 } __attribute__((packed, aligned(16)));
 struct hid {
   struct qh queue;
@@ -23,7 +24,7 @@ static struct hid devices[8];
 static unsigned hid_count, next_address;
 static uint32_t frames[1024] __attribute__((aligned(4096)));
 static struct qh control_queue;
-static struct td transfers[66];
+static struct td transfers[514];
 static uint8_t setup[8] __attribute__((aligned(16)));
 static uint8_t control_data[512] __attribute__((aligned(16)));
 static uint16_t port;
@@ -41,9 +42,9 @@ static void td(struct td *t, unsigned pid, unsigned address, unsigned endpoint,
   t->token = token(pid, address, endpoint, toggle, count);
   t->buffer = pointer(data);
 }
-static bool transfer(unsigned address, bool low, unsigned packet,
-                     uint8_t request_type, uint8_t request, uint16_t value,
-                     uint16_t index, uint16_t size, bool input) {
+bool usb_control(unsigned address, bool low, unsigned packet,
+                 uint8_t request_type, uint8_t request, uint16_t value,
+                 uint16_t index, uint16_t size, bool input) {
   if (size > sizeof(control_data) || !packet || packet > 64)
     return false;
   setup[0] = request_type;
@@ -95,6 +96,78 @@ static bool transfer(unsigned address, bool low, unsigned packet,
         ((transfers[i].status & 0x7ff) != 7 && i == 0))
       return false;
   return true;
+}
+#define transfer usb_control
+int usb_bulk(unsigned address, unsigned endpoint, unsigned packet,
+             unsigned *toggle, void *data, unsigned size, bool input) {
+  if (!running || !size || size > 4096 || !endpoint || endpoint > 15 ||
+      (packet != 8 && packet != 16 && packet != 32 && packet != 64))
+    return -1;
+  unsigned count = (size + packet - 1) / packet;
+  if (count > sizeof(transfers) / sizeof(transfers[0]))
+    return -1;
+  for (unsigned i = 0; i < count; i++) {
+    unsigned amount = size - i * packet;
+    if (amount > packet)
+      amount = packet;
+    td(&transfers[i], input ? 0x69 : 0xe1, address, endpoint, (*toggle + i) & 1,
+       amount, (uint8_t *)data + i * packet, false);
+    if (input)
+      transfers[i].status |= 1u << 29; /* Stop on a short packet. */
+    if (i + 1 < count)
+      transfers[i].next = pointer(&transfers[i + 1]) | 4;
+  }
+  __asm__ volatile("sfence" ::: "memory");
+  control_queue.element = pointer(transfers);
+  unsigned completed = 0, bytes = 0;
+  uint32_t start = clock_ticks();
+  while (completed < count) {
+    /* HID queues run alongside bulk traffic; drain reports during disk I/O. */
+    usb_poll();
+    unsigned status = *(volatile uint32_t *)&transfers[completed].status;
+    if (!(status & ACTIVE)) {
+      __asm__ volatile("lfence" ::: "memory");
+      if (status & ERROR_BITS) {
+        control_queue.element = END;
+        sleep_ticks(2);
+        return -1;
+      }
+      unsigned amount = (status + 1) & 0x7ff;
+      unsigned expected = size - completed * packet;
+      if (expected > packet)
+        expected = packet;
+      if (amount > expected) {
+        control_queue.element = END;
+        sleep_ticks(1);
+        return -1;
+      }
+      bytes += amount;
+      completed++;
+      *toggle ^= 1;
+      if (amount < expected)
+        break;
+    } else if (clock_ticks() - start > 200) {
+      io_out16(port, 0);
+      running = false;
+      return -1;
+    } else
+      cpu_pause();
+  }
+  control_queue.element = END;
+  __asm__ volatile("sfence" ::: "memory");
+  /* DMA descriptors stay alive; wait a frame before reusing their storage. */
+  uint16_t frame = io_in16(port + 6);
+  start = clock_ticks();
+  while (io_in16(port + 6) == frame) {
+    usb_poll();
+    if (clock_ticks() - start > 2) {
+      io_out16(port, 0);
+      running = false;
+      return -1;
+    }
+    cpu_pause();
+  }
+  return bytes;
 }
 static uint8_t scancode(unsigned usage) {
   static const uint8_t map[] = {
@@ -200,6 +273,9 @@ static bool enumerate_device(bool low, unsigned depth) {
     return false;
   unsigned configuration = control_data[5], interface = 0, protocol = 0,
            interface_class = 0, endpoint = 0, length = 0, interval = 0;
+  unsigned storage_interface = 0, bulk_in = 0, bulk_out = 0, input_packet = 0,
+           output_packet = 0;
+  bool storage = false;
   for (unsigned at = 0; at + 2 <= total;) {
     unsigned size = control_data[at], type = control_data[at + 1];
     if (size < 2 || size > total - at)
@@ -210,6 +286,22 @@ static bool enumerate_device(bool low, unsigned depth) {
                      ? control_data[at + 7]
                      : 0;
       interface = control_data[at + 2];
+      storage = interface_class == 8 && control_data[at + 6] == 6 &&
+                control_data[at + 7] == 0x50 && !control_data[at + 3];
+      if (storage)
+        storage_interface = interface;
+    } else if (type == 5 && size >= 7 && storage &&
+               (control_data[at + 3] & 3) == 2) {
+      unsigned address = control_data[at + 2];
+      unsigned packet =
+          control_data[at + 4] | ((unsigned)control_data[at + 5] << 8);
+      if (address & 0x80) {
+        bulk_in = address & 15;
+        input_packet = packet;
+      } else {
+        bulk_out = address & 15;
+        output_packet = packet;
+      }
     } else if (type == 5 && size >= 7 && protocol &&
                (control_data[at + 2] & 0x80) &&
                (control_data[at + 3] & 3) == 3) {
@@ -219,6 +311,12 @@ static bool enumerate_device(bool low, unsigned depth) {
       break;
     }
     at += size;
+  }
+  if (!low && configuration && bulk_in && bulk_out) {
+    if (!transfer(address, false, packet, 0, 9, configuration, 0, 0, false))
+      return false;
+    return usb_storage_attach(address, packet, storage_interface, bulk_in,
+                              bulk_out, input_packet, output_packet);
   }
   if ((device_class == 9 || interface_class == 9) && configuration &&
       depth < 2) {
@@ -291,7 +389,7 @@ void usb_init(void) {
     return;
   port = controller->bar[4] & ~3u;
   console_write("UHCI controller found\n");
-  pci_enable(controller, 1);
+  pci_enable(controller, 5); /* I/O decoding and DMA bus mastering. */
   io_out16(port, 2);
   sleep_ticks(2);
   io_out16(port, 0);
