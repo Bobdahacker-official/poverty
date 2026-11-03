@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Boot the ClassiCube disk and verify its native Magenta window lifecycle."""
+import argparse
 import collections
 import gzip
 import json
@@ -12,6 +13,10 @@ import subprocess
 import tempfile
 import time
 from PIL import Image
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--singleplayer", action="store_true")
+args = parser.parse_args()
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 folder = pathlib.Path(tempfile.mkdtemp(prefix="classicube-test-"))
@@ -44,7 +49,7 @@ try:
             response = json.loads(stream.readline())
             if "error" in response: raise RuntimeError(response)
             if "return" in response: return response["return"]
-    qmp("qmp_capabilities"); qmp("human-monitor-command", {"command-line": "sendkey ctrl-t 50"}); until(b"user> "); send("classicube.mgnta")
+    qmp("qmp_capabilities"); qmp("human-monitor-command", {"command-line": "sendkey ctrl-t 50"}); until(b"user> "); send("classicube.mgnta --singleplayer" if args.singleplayer else "classicube.mgnta")
     time.sleep(8)
     shot = folder / "classicube.ppm"; qmp("screendump", {"filename": str(shot)}); screen = Image.open(shot).convert("RGB")
     colors = collections.Counter(screen.get_flattened_data())
@@ -57,6 +62,10 @@ try:
     qmp("human-monitor-command", {"command-line": f'pmemsave {symbols["gui_clients"] - 0xFFFF800000000000:#x} 100 "{client}"'})
     state = client.read_bytes()
     assert struct.unpack_from("Q", state, 24)[0] != 0 and b"ClassiCube" in state, "ClassiCube has no live window"
+    if args.singleplayer:
+        game_width, game_height = struct.unpack_from("II", state, 4)
+        assert game_width > 640, "Singleplayer game surface did not replace launcher"
+        print("PASS Singleplayer creates a live game surface", flush=True)
     address = symbols["client_bounds"] - 0xFFFF800000000000
     data = folder / "bounds.bin"; qmp("human-monitor-command", {"command-line": f'pmemsave {address:#x} 16 "{data}"'})
     x, y, width, height = struct.unpack("ffff", data.read_bytes())

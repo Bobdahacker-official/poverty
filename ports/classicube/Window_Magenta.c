@@ -83,7 +83,9 @@ static void DoCreateWindow(int width, int height) {
 }
 void Window_Create2D(int width, int height) { DoCreateWindow(width, height); }
 void Window_Create3D(int width, int height) { DoCreateWindow(width, height); }
-void Window_Destroy(void) { if (opened) { syscall(4099, 0); opened = false; } Window_Main.Exists = false; }
+/* Destroying a surface during launcher/game transitions is not an app quit.
+ * Window_ProcessEvents marks Exists false only for an explicit close request. */
+void Window_Destroy(void) { if (opened) { syscall(4099, 0); opened = false; } }
 void Window_SetTitle(const cc_string* title) { (void)title; }
 void Clipboard_GetText(cc_string* value) { value->length = 0; }
 void Clipboard_SetText(const cc_string* value) { (void)value; }

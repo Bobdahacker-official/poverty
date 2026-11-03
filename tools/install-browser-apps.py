@@ -48,6 +48,9 @@ for app in ("classicube", "netsurf"):
                 raise RuntimeError("NetSurf resources are missing")
             paths += sorted(resources.rglob("*"), key=lambda p: (len(p.parts), str(p)))
             paths.insert(1, resources)
+        if app == "classicube":
+            resources = files / "texpacks"
+            paths += [resources, *sorted(resources.rglob("*"))]
         for path in paths:
             target = "/" + path.relative_to(files).as_posix()
             if path.is_dir():

@@ -45,12 +45,19 @@ def main():
         'Thread_Run(&workerThread, WorkerLoop, 128 * 1024, "HTTP");',
         '#ifndef CC_BUILD_MAGENTA\nThread_Run(&workerThread, WorkerLoop, 128 * 1024, "HTTP");\n#endif')
     worker.write_text(worker_text)
+    resources = tree / "src/Resources.c"
+    resource_text = resources.read_text()
+    if "#ifndef CC_BUILD_MAGENTA" not in resource_text:
+        resource_text = resource_text.replace("\t&mccTexsAssetSet,", "#ifndef CC_BUILD_MAGENTA\n\t&mccTexsAssetSet,\n#endif")
+    resources.write_text(resource_text)
     output = cache / "classicube.mgnta"
-    flags = ["-O2", "-pipe", "-std=c99", "-static", "-no-pie", "-fno-pie", "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE", "-DCC_BUILD_MANUAL", "-DCC_BUILD_MAGENTA", "-DCC_BUILD_POSIX", "-DCC_BUILD_LINUX", "-DCC_BUILD_COOPTHREADED", "-DCC_WIN_BACKEND=CC_WIN_BACKEND_TERMINAL", "-DCC_GFX_BACKEND=CC_GFX_BACKEND_SOFTGPU", "-DCC_AUD_BACKEND=CC_AUD_BACKEND_NULL", "-DCC_NET_BACKEND=CC_NET_BACKEND_BUILTIN", "-DCC_SSL_BACKEND=CC_SSL_BACKEND_BEARSSL", "-I" + str(tree / "src"), "-I" + str(tree / "third_party/bearssl")]
+    flags = ["-O2", "-pipe", "-std=c99", "-static", "-no-pie", "-fno-pie", "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE", "-DCC_BUILD_MANUAL", "-DCC_BUILD_MAGENTA", "-DCC_BUILD_NOMUSIC", "-DCC_BUILD_NOSOUNDS", "-DCC_BUILD_POSIX", "-DCC_BUILD_LINUX", "-DCC_BUILD_COOPTHREADED", "-DCC_WIN_BACKEND=CC_WIN_BACKEND_TERMINAL", "-DCC_GFX_BACKEND=CC_GFX_BACKEND_SOFTGPU", "-DCC_AUD_BACKEND=CC_AUD_BACKEND_NULL", "-DCC_NET_BACKEND=CC_NET_BACKEND_BUILTIN", "-DCC_SSL_BACKEND=CC_SSL_BACKEND_BEARSSL", "-I" + str(tree / "src"), "-I" + str(tree / "third_party/bearssl")]
     run([os.environ.get("CC", "gcc"), *flags, "-o", output, *sources(tree), "-lm"], cwd=tree)
     run([os.environ.get("STRIP", "strip"), output])
     stage = cache / "stage"; shutil.rmtree(stage, ignore_errors=True); stage.mkdir()
     shutil.copy2(output, stage / "classicube.mgnta")
+    (stage / "texpacks").mkdir()
+    shutil.copy2(tree / "misc/cc_textures.zip", stage / "texpacks/classicube.zip")
     shutil.copy2(tree / "license.txt", stage / "CLASSICUBE-LICENSE.txt")
     shutil.copy2(tree / "credits.txt", stage / "CLASSICUBE-CREDITS.txt")
     (stage / "README.txt").write_text("ClassiCube 1.3.9 for Magenta\n\nOpen classicube.mgnta from Files or run classicube.mgnta in Terminal.\nUse the offline launcher to create and explore local Classic worlds.\n")

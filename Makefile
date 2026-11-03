@@ -11,6 +11,7 @@ classicube: all
 	python3 ports/classicube/build.py
 test-classicube: classicube
 	QEMU=$(QEMU) python3 ports/classicube/test.py
+	QEMU=$(QEMU) python3 ports/classicube/test.py --singleplayer
 test-netsurf:
 	QEMU=$(QEMU) python3 ports/netsurf/test.py
 	QEMU=$(QEMU) python3 ports/netsurf/test.py --tls-only --untrusted

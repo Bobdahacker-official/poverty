@@ -562,6 +562,7 @@ static int load(struct process *t, const void *image, uint32_t size,
   if ((compat && native) || h->entry > UINT32_MAX ||
       (!native && !compat && h->entry < 0x00400000u))
     return -8;
+  uint32_t stack_size = native ? 65536u : 1024u * 1024u;
   uint32_t total = 0, high = 0, phdr = 0;
   for (unsigned i = 0; i < h->phnum; i++) {
     const struct program_header *p = &ph[i];
@@ -576,9 +577,9 @@ static int load(struct process *t, const void *image, uint32_t size,
       continue;
     if (p->vaddr > UINT32_MAX || p->memsz > UINT32_MAX ||
         !process_address(p->vaddr, p->memsz) || p->vaddr >= 0xbfc00000u ||
-        p->memsz > PROCESS_PAGE_LIMIT * 4096u - 65536u ||
-        total > PROCESS_PAGE_LIMIT * 4096u - 65536u - p->memsz ||
-        (native && p->vaddr + p->memsz > AV_USER_END - 65536u))
+        p->memsz > PROCESS_PAGE_LIMIT * 4096u - stack_size ||
+        total > PROCESS_PAGE_LIMIT * 4096u - stack_size - p->memsz ||
+        (native && p->vaddr + p->memsz > AV_USER_END - stack_size))
       return -8;
     total += p->memsz;
     if (p->vaddr + p->memsz > high)
@@ -624,7 +625,7 @@ static int load(struct process *t, const void *image, uint32_t size,
     }
   }
   uint32_t stack_top = native ? AV_USER_END : 0xc0000000u;
-  for (uint32_t v = stack_top - 65536; v < stack_top; v += 4096)
+  for (uint32_t v = stack_top - stack_size; v < stack_top; v += 4096)
     if (!process_map(t, v, true))
       goto memory;
   t->frame = (void *)(uintptr_t)(t->kernel_stack + PROCESS_STACK -
