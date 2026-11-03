@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ClassiCube on Magenta</title><link rel="stylesheet" href="../assets/site.css"></head>
+<body><header><a class="brand" href="../">magenta / avalanche</a><nav><a href="./">Documentation</a><a href="sdk.html">Developer SDK</a></nav></header><main class="docs"><aside><a href="#download">Download</a><a href="#play">Play</a><a href="#source">Source</a></aside><article>
+<p class="eyebrow">CLASSIC WORLDS</p><h1>ClassiCube.<br>Built for Magenta.</h1>
+<p>ClassiCube 1.3.9 runs in a native Magenta window. The port uses the upstream C client, its software renderer, local world generator, launcher and input pipeline.</p>
+<h2 id="download">Get the ClassiCube disk</h2><p>Download the <a href="https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/Images/magenta.iso">Magenta ISO</a> and the <a href="https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/Images/classicube-data.img.gz">ClassiCube app disk</a>. Extract the app disk and attach it as the writable IDE disk.</p>
+<pre><code>gzip -dk classicube-data.img.gz
+qemu-system-x86_64 -m 512 -boot d -cdrom magenta.iso \
+  -drive file=classicube-data.img,format=raw,if=ide \
+  -nic user,model=e1000 -device virtio-rng-pci,disable-modern=on</code></pre>
+<h2 id="play">Open a local world</h2><p>Open <code>classicube.mgnta</code> from Files, or start it from Terminal. The launcher opens in its own desktop window. Create a local Classic world, then use the normal ClassiCube movement and block controls.</p><pre><code>classicube.mgnta</code></pre><p>The Magenta window handles mouse, keyboard, focus and close controls. Closing the app returns to Terminal.</p>
+<h2 id="source">Build from source</h2><pre><code>make classicube
+make test-classicube</code></pre><p>The <a href="https://github.com/Bobdahacker-official/poverty/tree/main/ports/classicube">port source</a> downloads the pinned upstream source archive, verifies its SHA-256, builds a static x86-64 application, creates an ext4 app disk and checks it with e2fsck. It also packages the upstream license and credits. Learn more at <a href="https://www.classicube.net/">classicube.net</a> and <a href="https://github.com/ClassiCube/ClassiCube">the ClassiCube source repository</a>.</p>
+</article></main><footer><a href="./">← Documentation</a></footer></body></html>

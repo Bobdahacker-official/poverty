@@ -4,9 +4,13 @@ MEMORY ?= 256
 EXT4_DISK ?= avalanche/build/ext4.img
 comma := ,
 EXT4_DRIVE = $(if $(EXT4_DISK),-drive file=$(EXT4_DISK)$(comma)format=raw$(comma)if=ide)
-.PHONY: all run ext4-image ext4-check test packages package sdk netsurf test-netsurf
+.PHONY: all run ext4-image ext4-check test packages package sdk netsurf test-netsurf classicube test-classicube
 netsurf: all
 	python3 ports/netsurf/build.py
+classicube: all
+	python3 ports/classicube/build.py
+test-classicube: classicube
+	QEMU=$(QEMU) python3 ports/classicube/test.py
 test-netsurf:
 	QEMU=$(QEMU) python3 ports/netsurf/test.py
 	QEMU=$(QEMU) python3 ports/netsurf/test.py --tls-only --untrusted
@@ -29,7 +33,8 @@ package:
 	$(MAKE) -C magenta package
 	$(MAKE) -C avalanche package
 	$(MAKE) -C sdk
-	sha256sum Images/avalanche.iso Images/magenta.iso Images/avalanche-data.img Images/magenta-data.img Images/magenta-sdk.tar.gz Images/netsurf-data.img.gz > Images/SHA256SUMS
+	$(MAKE) classicube
+	sha256sum Images/avalanche.iso Images/magenta.iso Images/avalanche-data.img Images/magenta-data.img Images/magenta-sdk.tar.gz Images/netsurf-data.img.gz Images/classicube-data.img.gz > Images/SHA256SUMS
 test:
 	$(MAKE) package
 	$(CC) -Iavalanche/include avalanche/src/sha256.c avalanche/tools/test-sha256.c -o avalanche/build/test-sha256
@@ -62,3 +67,4 @@ test:
 	QEMU=$(QEMU) python3 avalanche/tools/test-image-gui.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-image-gui.py --ext4
 	$(MAKE) test-netsurf
+	$(MAKE) test-classicube

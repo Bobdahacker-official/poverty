@@ -154,4 +154,6 @@ Avalanche source uses the [MIT license](avalanche/LICENSE). The linked Elk engin
 
 [NetSurf](https://bobdahacker-official.github.io/poverty/docs/browser.html) runs in a userspace window with HTML, CSS, JavaScript, TrueType text and HTTPS. Download its writable app disk from [Images/netsurf-data.img.gz](Images/netsurf-data.img.gz), or build it with `make netsurf`. The [port source](ports/netsurf) includes the build recipe and integration checks.
 
+[ClassiCube](https://www.classicube.net/) 1.3.9 runs as a native Magenta graphical application with its upstream C software renderer, local world generator, launcher and input handling. Download its writable app disk from [Images/classicube-data.img.gz](Images/classicube-data.img.gz), or build and boot-check it with `make classicube` and `make test-classicube`. The [port source](ports/classicube) pins the BSD-3-Clause upstream source and packages its license and credits with the app disk.
+
 The [graphical SDK example](sdk/examples/window) opens a native window, draws a pixel surface and responds to pointer input. See the [window API](https://bobdahacker-official.github.io/poverty/docs/windows.html) for the drawing and event interfaces.
