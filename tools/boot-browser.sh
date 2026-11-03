@@ -134,13 +134,7 @@ PYEXTRACT
     sudo -n apt-get update -qq
     sudo -n apt-get install -y -qq e2fsprogs
   fi
-  if ! debugfs -R 'stat /classicube.mgnta' "$runtime/ext4.img" 2>/dev/null | grep -q 'Inode:'; then
-    classicube_stage=$(mktemp -d "$runtime/classicube-files.XXXXXX")
-    gzip -dc "$repo_root/Images/classicube-data.img.gz" > "$classicube_stage/disk.img"
-    debugfs -R "dump /classicube.mgnta $classicube_stage/classicube.mgnta" "$classicube_stage/disk.img" >/dev/null 2>&1
-    debugfs -w -R "write $classicube_stage/classicube.mgnta /classicube.mgnta" "$runtime/ext4.img" >/dev/null
-    rm -rf "$classicube_stage"
-  fi
+  python3 "$repo_root/tools/install-browser-apps.py" "$repo_root/Images" "$runtime/ext4.img" "$runtime"
   acceleration=(-accel tcg,thread=multi -cpu max)
   if [[ -r /dev/kvm && -w /dev/kvm ]]; then
     acceleration=(-accel kvm -cpu host)

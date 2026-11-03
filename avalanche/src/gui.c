@@ -3340,6 +3340,8 @@ static void launcher_view(void) {
       if (nk_selectable_label(&ui, categories[i], NK_TEXT_CENTERED, &chosen))
         launcher_category = i;
     }
+    nk_layout_row_dynamic(&ui, h - 245, 1);
+    if (nk_group_begin(&ui, "Application grid", 0)) {
     nk_layout_row_dynamic(&ui, 112, 4);
     unsigned matches = 0;
     for (unsigned i = 0; i < APP_COUNT; i++)
@@ -3368,37 +3370,42 @@ static void launcher_view(void) {
             app_names[i], strlen(app_names[i]), &body_font, nk_rgba(0, 0, 0, 0),
             rgb(palette()->text));
       }
-    bool classicube_available = fs_size("/classicube.mgnta") > 0;
-    bool classicube_matches =
-        classicube_available &&
-        (launcher_category == 0 || launcher_category == 1 ||
-         launcher_category == 4) &&
-        (contains("ClassiCube", launcher_search) ||
-         contains("Creative multiplayer block game", launcher_search));
-    if (classicube_matches) {
+    static const struct {
+      const char *name, *path, *summary;
+      unsigned category, icon;
+    } external_apps[] = {
+        {"ClassiCube", "/classicube.mgnta", "Creative multiplayer block game", 1, GAMES},
+        {"NetSurf", "/netsurf.mgnta", "Browse the web with HTML CSS and JavaScript", 3, BROWSER}};
+    for (unsigned i = 0; i < sizeof(external_apps) / sizeof(external_apps[0]); i++) {
+      if (launcher_category != 0 && launcher_category != external_apps[i].category &&
+          launcher_category != 4)
+        continue;
+      if (!contains(external_apps[i].name, launcher_search) &&
+          !contains(external_apps[i].summary, launcher_search))
+        continue;
       matches++;
       struct nk_rect r = nk_widget_bounds(&ui);
       if (nk_button_label(&ui, "")) {
-        if (user_spawn("/classicube.mgnta", "", false) < 0)
-          notify("ClassiCube launch failed");
+        if (user_spawn(external_apps[i].path, "", false) < 0)
+          notify("Could not launch application from disk");
         else
           launcher = false;
       }
       struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
       app_badge(canvas, nk_rect(r.x + (r.w - 48) / 2, r.y + 12, 48, 48),
-                GAMES);
-      const char *name = "ClassiCube";
-      float label_width = gui_font_width(body_font.userdata, 16, name,
-                                         strlen(name));
-      nk_draw_text(canvas,
-                   nk_rect(r.x + (r.w - label_width) / 2, r.y + 76,
-                           label_width, 24),
+                external_apps[i].icon);
+      const char *name = external_apps[i].name;
+      float label_width = gui_font_width(body_font.userdata, 16, name, strlen(name));
+      nk_draw_text(canvas, nk_rect(r.x + (r.w - label_width) / 2, r.y + 76,
+                                  label_width, 24),
                    name, strlen(name), &body_font, nk_rgba(0, 0, 0, 0),
                    rgb(palette()->text));
     }
     if (!matches) {
       nk_layout_row_dynamic(&ui, 44, 1);
       caption("No applications match your search.");
+    }
+    nk_group_end(&ui);
     }
     nk_layout_row_dynamic(&ui, 32, 2);
     if (nk_button_label(&ui, "Text desktop")) {
