@@ -58,19 +58,19 @@ bool pcnet_init(uint8_t mac[6]) {
   init.rlen = 5 << 4;
   init.tlen = 3 << 4;
   init.filter = 0;
-  init.receive = (uintptr_t)rx;
-  init.transmit = (uintptr_t)tx;
+  init.receive = page_physical(rx);
+  init.transmit = page_physical(tx);
   memset(rx, 0, sizeof(rx));
   memset(tx, 0, sizeof(tx));
   for (unsigned i = 0; i < 32; i++) {
-    rx[i].address = (uintptr_t)rx_data[i];
+    rx[i].address = page_physical(rx_data[i]);
     rx[i].status = 0x80000000u | ((uint16_t)(-2048) & 0x0fff) | 0xf000;
   }
   for (unsigned i = 0; i < 8; i++)
-    tx[i].address = (uintptr_t)tx_data[i];
+    tx[i].address = page_physical(tx_data[i]);
   rx_next = tx_next = 0;
-  set_csr(1, (uintptr_t)&init);
-  set_csr(2, (uintptr_t)&init >> 16);
+  set_csr(1, page_physical(&init));
+  set_csr(2, page_physical(&init) >> 16);
   set_csr(3, 0xffff); /* Keep IRQs masked; network stack polls. */
   set_csr(0, 1);
   uint32_t start = clock_ticks();

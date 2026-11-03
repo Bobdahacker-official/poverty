@@ -116,6 +116,14 @@ int ext4_inode_read(struct ext4_volume *v, uint32_t ino,
   out->number = ino;
   out->flags = u32(inode + 32);
   out->size = u32(inode + 4) | (uint64_t)u32(inode + 108) << 32;
+  out->blocks = u32(inode + 28) | (uint64_t)u16(inode + 116) << 32;
+  if (out->flags & 0x40000) out->blocks *= 8;
+  out->uid = u16(inode + 2) | (uint32_t)u16(inode + 120) << 16;
+  out->gid = u16(inode + 24) | (uint32_t)u16(inode + 122) << 16;
+  out->links = u16(inode + 26);
+  out->atime = u32(inode + 8);
+  out->ctime = u32(inode + 12);
+  out->mtime = u32(inode + 16);
   memcpy(out->extent_root, inode + 40, 60);
   return 0;
 }

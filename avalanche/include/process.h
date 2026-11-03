@@ -34,7 +34,7 @@ struct process {
   struct trap_frame *frame;
   int pid, parent, status, signal;
   enum process_state state;
-  bool linux_abi, foreground, yield, read_linux;
+  bool linux_abi, linux64, foreground, yield, read_linux;
   uint32_t cpu_ticks, wake, read_address, read_capacity, read_count;
   uint32_t ready_since;
   unsigned priority, slice_left;
@@ -42,6 +42,7 @@ struct process {
   uint32_t wait_status;
   uint32_t heap_min, heap_break, mmap_next, clear_tid;
   uint64_t tls[3];
+  uint64_t fs_base;
   uint8_t fpu[512] __attribute__((aligned(16)));
   int fds[PROCESS_FDS];
   uint16_t cloexec;
@@ -59,7 +60,7 @@ bool process_string(struct process *, uint32_t, char *, unsigned);
 uint64_t *process_pte(struct process *, uint32_t);
 bool process_map(struct process *, uint32_t, bool);
 bool process_map_lazy(struct process *, uint32_t, bool);
-bool process_execute(struct process *,uint32_t,bool);
+bool process_execute(struct process *, uint32_t, bool);
 bool process_private(struct process *, uint32_t);
 bool process_page_fault(struct process *, uint32_t, bool);
 void process_unmap(struct process *, uint32_t);

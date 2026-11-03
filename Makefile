@@ -24,6 +24,8 @@ test:
 	$(MAKE) package
 	$(CC) -Iavalanche/include avalanche/src/sha256.c avalanche/tools/test-sha256.c -o avalanche/build/test-sha256
 	avalanche/build/test-sha256
+	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/src/games.c avalanche/tools/test-games.c -o avalanche/build/test-games
+	avalanche/build/test-games
 	$(CC) -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/src/devices.c avalanche/tools/test-pci-bars.c -o avalanche/build/test-pci-bars
 	avalanche/build/test-pci-bars
 	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-usb-storage.c -o avalanche/build/test-usb-storage
@@ -33,6 +35,7 @@ test:
 	python3 avalanche/tools/test-package-security.py
 	python3 avalanche/tools/test-images.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-memory-protection.py
+	QEMU=$(QEMU) python3 avalanche/tools/test-linux64.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-large-memory.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-modern-pc.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-entropy.py

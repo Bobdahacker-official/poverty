@@ -11,6 +11,8 @@ struct ext4_inode {
   uint16_t mode;
   uint32_t flags;
   uint64_t size;
+  uint64_t blocks;
+  uint32_t uid, gid, links, atime, mtime, ctime;
   uint8_t extent_root[60];
 };
 int ext4_mount(struct ext4_volume *, unsigned, uint32_t);

@@ -1,26 +1,29 @@
 CC = gcc
+.DEFAULT_GOAL := all
 LD = ld
 CFLAGS = -m64 -mno-red-zone -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -msoft-float -Iinclude
-SOURCES = audio usb_xhci partition usb_storage random image power usb_uhci pcnet pci_ecam http nvme web_runtime web tls kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
+KERNEL_FLAGS = $(CFLAGS) -mcmodel=large
+SOURCES = games gui_games audio usb_xhci partition usb_storage random image power usb_uhci pcnet pci_ecam http nvme web_runtime web tls kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
 BEAR_SOURCES = $(wildcard vendor/bearssl/*.c)
 BEAR_OBJECTS = $(patsubst vendor/bearssl/%.c,build/bearssl/%.o,$(BEAR_SOURCES))
 OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o build/elk.o build/printf.o
 APPS = magenta hello cat udp ush http worker linuxhello linuxfork aplay
 APP_ELFS = $(addprefix build/user/,$(addsuffix .elf,$(APPS)))
+$(OBJECTS) $(BEAR_OBJECTS): Makefile
 .PHONY: all iso disk magenta package clean
 all: build/avalanche.elf build/avalanche-data.img
 build build/user:
 	mkdir -p $@
 build/%.o: src/%.c include/avalanche.h include/system.h include/abi.h include/process.h include/magenta.h include/ext4.h include/usb.h | build
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -c $< -o $@
 build/gui.o: src/gui.c include/gui_canvas.h include/gui_style.h include/gui_toolkit.h include/font.h include/image.h vendor/nuklear/nuklear.h vendor/nuklear/style.h | build
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/image.o: src/image.c include/image.h vendor/stb/stb_image.h | build
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/gui_toolkit.o: src/gui_toolkit.c include/gui_toolkit.h vendor/nuklear/nuklear.h | build
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -Wno-unused-function -Wno-unused-parameter -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -Wno-unused-function -Wno-unused-parameter -c $< -o $@
 build/gui_canvas.o: src/gui_canvas.c include/gui_canvas.h include/gui_toolkit.h include/font.h vendor/nuklear/nuklear.h | build
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/boot.o: src/boot.S | build
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/platform_asm.o: src/platform.S | build
@@ -47,7 +50,7 @@ build/embed.o: user/embed.S $(APP_ELFS)
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/bearssl/%.o: vendor/bearssl/%.c vendor/bearssl/config.h
 	mkdir -p build/bearssl
-	$(CC) $(CFLAGS) -Wno-error -Ivendor/bearssl -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -Wno-error -Ivendor/bearssl -c $< -o $@
 build/bearssl.a: $(BEAR_OBJECTS)
 	ar rcs $@ $(BEAR_OBJECTS)
 build/tls.o: include/trust_anchors.h
@@ -75,10 +78,13 @@ clean:
 	rm -rf build
 
 build/elk.o: vendor/elk/elk.c vendor/elk/elk.h
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -DNDEBUG -Wno-error -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -DNDEBUG -Wno-error -c $< -o $@
 build/printf.o: vendor/printf/printf.c vendor/printf/printf.h
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/web_runtime.o: src/web_runtime.c
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/web.o: src/web.c include/web.h
-	$(CC) $(CFLAGS) -msse2 -mfpmath=sse -c $< -o $@
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
+
+build/gui_games.o: src/gui_games.c include/gui_games.h include/games.h
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@

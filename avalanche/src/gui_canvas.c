@@ -853,7 +853,13 @@ void gui_canvas_icon(struct nk_command_buffer *b, struct nk_rect r,
     return;
   }
   float x = r.x + (r.w - 24) / 2, y = r.y + (r.h - 24) / 2;
-  if(kind==10) {
+  if(kind==11) {
+    nk_stroke_rect(b,nk_rect(x,y+4,24,16),5,2,c);
+    nk_stroke_line(b,x+5,y+12,x+11,y+12,2,c);
+    nk_stroke_line(b,x+8,y+9,x+8,y+15,2,c);
+    nk_fill_circle(b,nk_rect(x+16,y+9,3,3),c);
+    nk_fill_circle(b,nk_rect(x+19,y+12,3,3),c);
+  } else if(kind==10) {
     nk_stroke_line(b,x+9,y+17,x+9,y+4,2,c);
     nk_stroke_line(b,x+21,y+15,x+21,y+2,2,c);
     nk_stroke_line(b,x+9,y+4,x+21,y+2,3,c);

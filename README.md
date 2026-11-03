@@ -29,7 +29,7 @@ Keep the VM's data disk when replacing the ISO. `./copy.sh /path/to/Magenta` cop
 
 ## Desktop
 
-The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings, Browser, Images, and Music. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
+The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings, Browser, Images, Music, and Games. The launcher has search and app categories. Windows move, resize, minimize, maximize, and close. Text, controls, and the dock scale with the boot framebuffer.
 
 Images opens PNG, JPEG, and BMP pictures from Files or a typed path. Ctrl-U opens the viewer. Images retain their aspect ratio and fit the available window space. The decoder uses runtime-sized memory buffers, accepts files up to 16 MiB, and keeps the current picture open if another file fails to decode. Ext4 reads can span larger files through the offset-based file API.
 
@@ -118,7 +118,11 @@ On CPUs with NX support, user stacks and data pages are non-executable. ELF exec
 
 Hardware randomness comes from CPU RDRAND or a transitional VirtIO RNG device. TLS uses that source for session entropy, and native programs can request random bytes through `av_random`. If neither source is available, the random API reports an error and TLS refuses the connection. Linux process startup supplies `AT_RANDOM` only when hardware entropy is available.
 
-The shell and native programs run in ring 3. The included `linuxhello` and `linuxfork` programs use the Linux i386 compatibility ABI.
+The shell and native programs run in ring 3. Avalanche also loads static Linux x86-64 executables at their standard addresses and retains the Linux i386 ABI used by `linuxhello` and `linuxfork`. The 64-bit path supports SYSCALL, TLS through FS, file operations, directory reads, memory mappings, clocks, entropy, fork, exec, and wait. A standard statically linked glibc program exercises these operations in QEMU. Dynamic linking, Linux threads, and the complete Linux syscall interface are separate work.
+
+Games includes Minesweeper with three difficulties, safe first clicks, flags and number chording, plus 2048 with keyboard and on-screen controls, scoring and undo. Best scores and completion times are saved on disk. Open Games from the launcher or press Ctrl+Y. In 2048, use arrow keys or W A S D, U to undo, and R for a new game.
+
+![Native Games](Images/games.png)
 
 See [kernel details](avalanche/images/NOTICE) and [distribution details](magenta/images/NOTICE) for more.
 

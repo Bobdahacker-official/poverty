@@ -52,6 +52,7 @@ try:
     assert any(device['current'] and device['absolute'] for device in mice),mice
     print('PASS absolute virtual pointer detection',flush=True)
     def memory(address,size):
+        if address>=0xffff800000000000: address-=0xffff800000000000
         path=folder/'memory.bin'
         result=monitor(f'pmemsave {address:#x} {size} "{path}"')
         assert path.exists(),result
@@ -179,6 +180,27 @@ try:
         key('spc' if character==' ' else 'minus' if character=='-' else character,.15)
     key('ret');machine.until(b'\r\nui-shell-ready\r\n')
     print('PASS graphical ring-3 terminal command execution',flush=True)
+    games=layout['app_count']-1
+    open_app('ctrl-y',games)
+    capture('minesweeper')
+    click_label('2048')
+    before=memory(symbols['tiles'][0]+8,64)
+    for direction in ['a','s','d','w']:
+        key(direction,.2)
+        if memory(symbols['tiles'][0]+8,64)!=before: break
+    assert memory(symbols['tiles'][0]+8,64)!=before
+    time.sleep(.7)
+    expected_undo=memory(symbols['tiles'][0]+80,64)
+    click_label('Undo')
+    wait(lambda:memory(symbols['tiles'][0]+8,64)==expected_undo,'2048 undo restores the previous board')
+    for direction in ['a','s','d','w']*6: key(direction,.12)
+    wait(lambda:value('tiles','I',4)>0,'2048 merges update the score')
+    path=folder/'games.ppm';qmp('screendump',{'filename':str(path)})
+    if os.environ.get('GAMES_SCREENSHOT'):
+        from PIL import Image
+        Image.open(path).save(os.environ['GAMES_SCREENSHOT'])
+    click_label('New game')
+    print('PASS native Games rendering, keyboard moves, merges, undo and score save',flush=True)
     open_app('ctrl-e',editor);key('x');key('esc')
     wait(lambda:bool(value('editor_discard','B')),'unsaved document exit protection')
     click_label('Discard',last=True);machine.until(b'Magenta> ')
@@ -186,6 +208,7 @@ try:
     machine.send('0',b'Power> ');machine.send('3',b'to confirm: ');machine.send('RESCUE',b'avalanche> ')
     storage.report('graphical editor persisted file',lambda:storage.contains(machine.command('cat notes'),b'guitest'))
     storage.report('graphical package removal persisted',lambda:storage.contains(machine.command('pkg search hello'),b'hello 1.0.0 available'))
+    storage.report('Games scores persisted to disk',lambda:storage.contains(machine.command('ls'),b'games.scores'))
 finally:
     if connection: connection.close()
     machine.stop()

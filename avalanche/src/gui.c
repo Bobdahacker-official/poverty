@@ -7,6 +7,7 @@
 #include "tls.h"
 #include "web.h"
 #include "image.h"
+#include "gui_games.h"
 
 enum {
   TERMINAL,
@@ -19,6 +20,7 @@ enum {
   BROWSER,
   IMAGES,
   MUSIC,
+  GAMES,
   APP_COUNT
 };
 static struct nk_context ui;
@@ -28,7 +30,7 @@ static unsigned width, height, display_width, display_height;
 static float native_scale = 1;
 static const char *app_names[APP_COUNT] = {"Terminal", "Files",   "Text editor",
                                            "System Monitor", "Network", "Packages",
-                                           "Settings", "Browser", "Images", "Music"};
+                                           "Settings", "Browser", "Images", "Music", "Games"};
 static const char *app_summaries[APP_COUNT] = {
     "Run programs and shell commands",
     "Browse your disks and documents",
@@ -38,7 +40,8 @@ static const char *app_summaries[APP_COUNT] = {
     "Install and update applications",
     "Make Magenta your own",
     "Read web pages and local documents",
-    "View PNG, JPEG and BMP pictures", "Listen to music and WAV recordings"};
+    "View PNG, JPEG and BMP pictures", "Listen to music and WAV recordings",
+    "Play Minesweeper and 2048"};
 static char music_path[256];
 static bool music_focus,music_play_requested;
 static int music_result;
@@ -1957,7 +1960,7 @@ static int window_controls(unsigned id) {
   gui_canvas_gloss(canvas,
                    nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
   gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28),
-                  id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : id,
+                  id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : id == GAMES ? 11 : id,
                   active ? rgb(accent()) : rgb(palette()->muted));
   nk_draw_text(canvas,
                nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
@@ -2405,6 +2408,8 @@ static void application(unsigned id) {
       packages_view();
     else if (id == BROWSER)
       browser_view();
+    else if (id == GAMES)
+      games_ui(&ui,rgb(palette()->text),rgb(palette()->muted),rgb(palette()->surface),rgb(accent()));
     else if (id == MUSIC) {
       struct av_audio_status status;audio_snapshot(&status);
       heading("Music");
@@ -2449,6 +2454,7 @@ static void application(unsigned id) {
   if (nk_window_is_closed(&ui, app_names[id]) ||
       nk_window_is_hidden(&ui, app_names[id])) {
     apps[id].visible = false;
+    if (id == GAMES) games_ui_save();
     if (id == EDITOR && editor_dirty) {
       open_app(EDITOR);
       editor_discard = true;
@@ -2505,7 +2511,7 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                       int id) {
   static const uint32_t colors[] = {0x263347, 0x279ce0, 0xb561df, 0x23ad95,
                                     0x297fda, 0xe09132, 0x64758e, 0xe6007e};
-  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : (unsigned)id;
+  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : id == GAMES ? 11 : (unsigned)id;
   struct nk_color base = rgb(kind>=9 ? (kind==10 ? 0xd64a8c : 0x7d59c7) : colors[kind]);
   nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
                nk_rgba(0, 0, 0, 65));
@@ -2936,6 +2942,7 @@ static void inputs(void) {
       open_file(selected_file);
       continue;
     }
+    if (active_app == GAMES && games_ui_key(c)) continue;
     if (c == 7) {
       settings_page = 5;
       open_app(SETTINGS);
@@ -2960,6 +2967,7 @@ static void inputs(void) {
                    : c == 15 ? SETTINGS
                    : c == 21 ? IMAGES
                    : c == 4 ? MUSIC
+                   : c == 25 ? GAMES
                              : -1;
     if (shortcut >= 0) {
       open_app(shortcut);
@@ -3202,6 +3210,7 @@ int gui_run(void) {
   graphics_console_capture(NULL);
   mouse_interrupt_poll(false);
   image_release(&picture);
+  games_ui_save();
   nk_free(&ui);
   console_clear();
   return 0;

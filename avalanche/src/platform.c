@@ -63,6 +63,14 @@ struct gate {
   uint32_t upper, reserved;
 } __attribute__((packed));
 static struct gate idt[256];
+uint64_t arch_syscall_kernel_rsp __attribute__((section(".data"))) = 0;
+uint64_t arch_syscall_user_rsp __attribute__((section(".data"))) = 0;
+uint64_t arch_syscall_user_fs __attribute__((section(".data"))) = 0;
+extern void syscall64_entry(void);
+static void msr_write(uint32_t index, uint64_t value) {
+  __asm__ volatile("wrmsr" ::"c"(index), "a"((uint32_t)value),
+                   "d"((uint32_t)(value >> 32)));
+}
 extern void *exception_table[32];
 extern void timer_entry(void), syscall_entry(void), irq7_entry(void),
     irq15_entry(void), schedule_entry(void), arch_load_gdt(void *);
@@ -81,15 +89,24 @@ void platform_init(void) {
   gdt[7] = 0x00cffa000000ffffULL;
   tss.esp0 = (uintptr_t)(interrupt_stack + sizeof(interrupt_stack));
   tss.iomap = sizeof(tss);
-  uint32_t b = (uintptr_t)&tss, l = sizeof(tss) - 1;
+  uint64_t b = (uintptr_t)&tss;
+  uint32_t l = sizeof(tss) - 1;
   gdt[5] = (l & 65535ULL) | ((uint64_t)(b & 0xffffff) << 16) | (0x89ULL << 40) |
-           ((uint64_t)(l & 0xf0000) << 32) | ((uint64_t)(b >> 24) << 56);
+           ((uint64_t)(l & 0xf0000) << 32) | (((b >> 24) & 255) << 56);
+  gdt[6] = b >> 32;
   struct {
     uint16_t limit;
     uint64_t base;
   } __attribute__((packed)) gdtr = {sizeof(gdt) - 1, (uintptr_t)gdt},
                             idtr = {sizeof(idt) - 1, (uintptr_t)idt};
   arch_load_gdt(&gdtr);
+  arch_syscall_kernel_rsp = tss.esp0;
+  uint32_t efer_low, efer_high;
+  __asm__ volatile("rdmsr" : "=a"(efer_low), "=d"(efer_high) : "c"(0xc0000080));
+  msr_write(0xc0000080, ((uint64_t)efer_high << 32) | efer_low | 1);
+  msr_write(0xc0000081, UINT64_C(8) << 32);
+  msr_write(0xc0000082, (uintptr_t)syscall64_entry);
+  msr_write(0xc0000084, 0x44700);
   for (unsigned i = 0; i < 32; i++)
     gate(i, exception_table[i], 0x8e);
   gate(32, timer_entry, 0x8e);
@@ -121,7 +138,11 @@ void sleep_ticks(uint32_t n) {
     __asm__ volatile("hlt");
   }
 }
-void platform_kernel_stack(uint32_t stack) { tss.esp0 = stack; }
+void platform_kernel_stack(uint64_t stack) {
+  tss.esp0 = stack;
+  arch_syscall_kernel_rsp = stack;
+}
+void platform_user_fs(uint64_t base) { arch_syscall_user_fs = base; }
 void platform_tls(const uint64_t *tls) {
   for (unsigned i = 0; i < 3; i++)
     gdt[8 + i] = tls ? tls[i] : 0;
@@ -148,7 +169,7 @@ struct trap_frame *trap_dispatch(struct trap_frame *f) {
   }
   if (f->vector == 129)
     return user_reschedule(f);
-  if (f->vector == 128) {
+  if (f->vector == 128 || f->vector == 130) {
     __asm__ volatile("sti");
     user_syscall(f);
     __asm__ volatile("cli");

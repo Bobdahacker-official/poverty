@@ -100,7 +100,7 @@ static bool ethernet_send(const void *frame, uint32_t n) {
     memset(tx_buffers[index], 0, size);
     memcpy(tx_buffers[index], frame, n);
     __asm__ volatile("" ::: "memory");
-    io_out32(rtl_port + 0x20 + index * 4, (uintptr_t)tx_buffers[index]);
+    io_out32(rtl_port + 0x20 + index * 4, page_physical(tx_buffers[index]));
     io_out32(rtl_port + 0x10 + index * 4, size);
   } else {
     unsigned index = tx_index % 8;
@@ -137,7 +137,7 @@ static bool rtl_init(const struct pci_device *d) {
   }
   for (unsigned i = 0; i < 6; i++)
     mac[i] = io_in8(rtl_port + i);
-  io_out32(rtl_port + 0x30, (uintptr_t)rtl_rx);
+  io_out32(rtl_port + 0x30, page_physical(rtl_rx));
   io_out16(rtl_port + 0x3c, 0);
   io_out16(
       rtl_port + 0x3e,
@@ -196,19 +196,19 @@ static bool e1000_init(const struct pci_device *d) {
   for (unsigned i = 0; i < 128; i++)
     wr(0x5200 + i * 4, 0);
   for (unsigned i = 0; i < 32; i++) {
-    rx_ring[i].address = (uintptr_t)rx_buffers[i];
+    rx_ring[i].address = page_physical(rx_buffers[i]);
     rx_ring[i].status = 0;
   }
   for (unsigned i = 0; i < 8; i++) {
-    tx_ring[i].address = (uintptr_t)e_tx[i];
+    tx_ring[i].address = page_physical(e_tx[i]);
     tx_ring[i].status = 1;
   }
-  wr(0x2800, (uintptr_t)rx_ring);
+  wr(0x2800, page_physical(rx_ring));
   wr(0x2804, 0);
   wr(0x2808, sizeof(rx_ring));
   wr(0x2810, 0);
   wr(0x2818, 31);
-  wr(0x3800, (uintptr_t)tx_ring);
+  wr(0x3800, page_physical(tx_ring));
   wr(0x3804, 0);
   wr(0x3808, sizeof(tx_ring));
   wr(0x3810, 0);

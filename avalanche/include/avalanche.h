@@ -14,7 +14,7 @@ void console_write(const char *);
 #define IDENTITY_ENTRIES (PHYSICAL_GIB * 512u)
 #define DIRECT_MAP_BASE UINT64_C(0xffff800000000000)
 #define DIRECT_MAP_LIMIT (UINT64_C(1) << 47)
-static inline uint64_t page_physical(const void *p) {
+static inline uint64_t page_physical(const volatile void *p) {
   uintptr_t address = (uintptr_t)p;
   return address >= DIRECT_MAP_BASE ? address - DIRECT_MAP_BASE : address;
 }

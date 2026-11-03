@@ -221,6 +221,33 @@ int fs_size(const char *name) {
   int i = find_ram(name);
   return i < 0 ? -1 : (int)ram[i].size;
 }
+int fs_metadata(const char *name, struct file_metadata *out) {
+  memset(out, 0, sizeof(*out));
+  if (mounted_ext4) {
+    struct ext4_inode inode;
+    int r = ext4_lookup(&root_ext4, name, &inode);
+    if (r) return r;
+    *out = (struct file_metadata){inode.size, inode.blocks, inode.number,
+      inode.mode, inode.uid, inode.gid, inode.links, inode.atime, inode.mtime,
+      inode.ctime};
+    return 0;
+  }
+  while (*name == '/') name++;
+  if (!*name || str_eq(name, ".")) {
+    out->inode = 1;
+    out->mode = 0040755;
+    out->links = 2;
+    return 0;
+  }
+  int i = mounted >= 0 ? find_record(name) : find_ram(name);
+  if (i < 0) return -2;
+  out->size = mounted >= 0 ? directory[i].size : ram[i].size;
+  out->blocks = (out->size + 511) / 512;
+  out->inode = i + 2;
+  out->mode = 0100644;
+  out->links = 1;
+  return 0;
+}
 int fs_read_at(const char *name,uint64_t offset,void *buffer,uint32_t capacity) {
   if (mounted_ext4) {
     struct ext4_inode inode;

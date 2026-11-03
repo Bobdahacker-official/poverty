@@ -43,10 +43,10 @@ static bool execute(unsigned unit, uint8_t opcode, uint32_t lba, void *data,
   h->flags = 5 | (write ? 1 << 6 : 0);
   h->prdt_count = data ? 1 : 0;
   h->transferred = 0;
-  h->table = (uintptr_t)t;
+  h->table = page_physical(t);
   h->table_high = 0;
   if (data) {
-    t->address = (uintptr_t)bounce[unit];
+    t->address = page_physical(bounce[unit]);
     if (write)
       memcpy(bounce[unit], data, 512);
     t->bytes = 511;
@@ -114,9 +114,9 @@ void ahci_init(void) {
     unsigned unit = count;
     memset(lists[unit], 0, sizeof(lists[unit]));
     memset(received_fis[unit], 0, 256);
-    p[0] = (uintptr_t)lists[unit];
+    p[0] = page_physical(lists[unit]);
     p[1] = 0;
-    p[2] = (uintptr_t)received_fis[unit];
+    p[2] = page_physical(received_fis[unit]);
     p[3] = 0;
     p[0x14 / 4] = 0;
     p[0x30 / 4] = 0xffffffffu;

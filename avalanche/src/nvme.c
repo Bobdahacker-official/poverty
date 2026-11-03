@@ -34,7 +34,7 @@ static void write_reg(unsigned offset, uint32_t v) {
   __asm__ volatile("" ::: "memory");
 }
 static void address_reg(unsigned offset, const void *p) {
-  uint64_t address = (uintptr_t)p;
+  uint64_t address = page_physical(p);
   write_reg(offset, address);
   write_reg(offset + 4, address >> 32);
 }
@@ -76,8 +76,8 @@ static bool submit(unsigned qid, struct nvme_command *command) {
   return ok;
 }
 static void buffer_command(struct nvme_command *c, void *p) {
-  c->word[6] = (uintptr_t)p;
-  c->word[7] = (uint64_t)(uintptr_t)p >> 32;
+  c->word[6] = page_physical(p);
+  c->word[7] = page_physical(p) >> 32;
 }
 static bool identify_object(uint32_t id, unsigned kind) {
   memset(identify, 0, sizeof(identify));

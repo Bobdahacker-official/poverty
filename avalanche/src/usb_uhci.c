@@ -29,7 +29,7 @@ static uint8_t setup[8] __attribute__((aligned(16)));
 static uint8_t control_data[512] __attribute__((aligned(16)));
 static uint16_t port;
 static bool running;
-static uint32_t pointer(const void *p) { return (uintptr_t)p; }
+static uint32_t pointer(const void *p) { return page_physical(p); }
 static uint32_t token(unsigned pid, unsigned address, unsigned endpoint,
                       unsigned toggle, unsigned count) {
   return pid | (address << 8) | (endpoint << 15) | (toggle << 19) |
@@ -78,7 +78,7 @@ bool usb_control(unsigned address, bool low, unsigned packet,
   while (!(control_queue.element & END)) {
     uint32_t element = control_queue.element;
     if (!(element & 1)) {
-      struct td *current = (void *)(uintptr_t)(element & ~15u);
+      struct td *current = page_pointer(element & ~15u);
       if (current >= transfers && current < transfers + count &&
           (current->status & ERROR_BITS) && !(current->status & ACTIVE)) {
         control_queue.element = END;

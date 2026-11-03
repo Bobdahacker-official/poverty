@@ -184,6 +184,20 @@ irq15_entry:
  pushq $47
  jmp trap_common
 .global syscall_entry
+.global syscall64_entry
+syscall64_entry:
+ mov %rsp,arch_syscall_user_rsp(%rip)
+ mov arch_syscall_kernel_rsp(%rip),%rsp
+ pushq $35
+ pushq arch_syscall_user_rsp(%rip)
+ and $0x250fd7,%r11
+ or $0x202,%r11
+ push %r11
+ pushq $27
+ push %rcx
+ pushq $0
+ pushq $130
+ jmp trap_common
 syscall_entry:
  pushq $0
  pushq $128
@@ -247,6 +261,14 @@ trap_common:
  mov %ax,%es
  pop %rax
  mov %ax,%ds
+ cmpq $27,88(%rsp)
+ jne 2f
+ mov arch_syscall_user_fs(%rip),%rax
+ mov %rax,%rdx
+ shr $32,%rdx
+ mov $0xc0000100,%ecx
+ wrmsr
+2:
  pop %rdi
  pop %rsi
  pop %rbp

@@ -1,7 +1,6 @@
 #include "abi.h"
 #include "process.h"
-/* Deliberate Linux i386 syscall subset for static, int-0x80 ELF programs.
- * Unimplemented operations return -ENOSYS; this is not a Linux kernel. */
+/* Linux i386 int-0x80 and x86-64 SYSCALL interfaces for static ELF programs. */
 #define HANDLES 64
 #define H_FILE 1
 #define H_DIR 2
@@ -10,7 +9,7 @@
 struct handle {
   unsigned refs, kind;
   uint32_t flags, position;
-  char name[32];
+  char name[256];
 };
 static struct handle handles[HANDLES];
 static uint8_t contents[FS_MAX_FILE];
@@ -20,7 +19,7 @@ static void put64(uint8_t *p, uint32_t n) {
   put32(p + 4, 0);
 }
 static bool filename(struct process *t, uint32_t address, char *out) {
-  char path[96];
+  char path[256];
   if (!process_string(t, address, path, sizeof(path)))
     return false;
   const char *s = path;
@@ -31,12 +30,13 @@ static bool filename(struct process *t, uint32_t address, char *out) {
     out[1] = 0;
     return true;
   }
-  if (strlen(s) > 31)
+  if (strlen(s) > 255)
     return false;
   for (unsigned i = 0; s[i]; i++) {
     char c = s[i];
     if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-          (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_'))
+          (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_' ||
+          c == '/'))
       return false;
     out[i] = c;
     out[i + 1] = 0;
@@ -87,7 +87,7 @@ static int new_fd(struct process *t, unsigned start) {
   return -24;
 }
 static int open_file(struct process *t, uint32_t p, uint32_t flags) {
-  char path[96], name[32];
+  char path[256], name[256];
   if (!process_string(t, p, path, sizeof(path)))
     return -14;
   int fd = new_fd(t, 0);
@@ -107,7 +107,7 @@ static int open_file(struct process *t, uint32_t p, uint32_t flags) {
   else {
     if (!filename(t, p, name))
       return -2;
-    if (str_eq(name, "/"))
+    if (fs_directory(name) == 0)
       kind = H_DIR;
   }
   if ((flags & 3) == 3)
@@ -136,7 +136,7 @@ static int open_file(struct process *t, uint32_t p, uint32_t flags) {
   h->refs = 1;
   h->kind = kind;
   h->flags = flags & ~(64u | 128u | 512u | 0x80000u);
-  if (kind == H_FILE)
+  if (kind == H_FILE || kind == H_DIR)
     memcpy(h->name, name, strlen(name) + 1);
   t->fds[fd] = (int)hi;
   if (flags & 0x80000)
@@ -179,17 +179,23 @@ static int read_fd(struct process *t, unsigned fd, uint32_t out, uint32_t n) {
     }
     return (int)n;
   }
-  int size = fs_read(h->name, contents, sizeof(contents));
-  if (size < 0)
-    return -5;
-  if (h->position >= (unsigned)size)
-    return 0;
-  uint32_t count = (unsigned)size - h->position;
-  if (count > n)
-    count = n;
-  process_copyout(t, out, contents + h->position, count);
-  h->position += count;
-  return (int)count;
+  uint32_t done = 0;
+  while (done < n) {
+    unsigned count = n - done;
+    if (count > sizeof(contents))
+      count = sizeof(contents);
+    int r = fs_read_at(h->name, h->position, contents, count);
+    if (r < 0)
+      return done ? (int)done : r;
+    if (!r)
+      break;
+    process_copyout(t, out + done, contents, r);
+    h->position += r;
+    done += r;
+    if ((unsigned)r < count)
+      break;
+  }
+  return (int)done;
 }
 static int write_fd(struct process *t, unsigned fd, uint32_t p, uint32_t n) {
   if (fd >= PROCESS_FDS || t->fds[fd] == FD_UNUSED)
@@ -325,7 +331,7 @@ static int stat_fd(struct process *t, unsigned fd, uint32_t out, bool wide) {
 }
 static int stat_path(struct process *t, uint32_t path, uint32_t out,
                      bool wide) {
-  char name[32];
+  char name[256];
   if (!filename(t, path, name))
     return -2;
   return stat_data(t, out, wide, str_eq(name, "/") ? H_DIR : H_FILE, name);
@@ -340,26 +346,27 @@ static int directory_read(struct process *t, unsigned fd, uint32_t out,
   if (!process_range(t, out, cap, true))
     return -14;
   uint32_t done = 0;
-  while (h->position < 34) {
-    char name[32];
-    uint32_t size, slot = h->position;
+  while (h->position < 0x7fffffffu) {
+    char name[256];
+    uint64_t size;
+    uint32_t slot = h->position;
+    bool directory = slot < 2;
     if (slot < 2) {
       name[0] = '.';
       name[1] = slot ? '.' : 0;
       name[slot ? 2 : 1] = 0;
-    } else if (!fs_entry(slot - 2, name, &size)) {
-      h->position++;
-      continue;
+    } else if (fs_browse(h->name, slot - 2, name, &size, &directory)) {
+      break;
     }
     unsigned len = strlen(name), record = (19 + len + 1 + 7) & ~7u;
     if (record > cap - done)
       return done ? (int)done : -22;
-    uint8_t b[64] = {0};
+    uint8_t b[280] = {0};
     put64(b, slot + 1);
     put64(b + 8, slot + 1);
     uint16_t r = (uint16_t)record;
     memcpy(b + 16, &r, 2);
-    b[18] = slot < 2 ? 4 : 8;
+    b[18] = directory ? 4 : 8;
     memcpy(b + 19, name, len + 1);
     process_copyout(t, out + done, b, record);
     done += record;
@@ -388,7 +395,7 @@ static int memory_map(struct process *t, uint32_t address, uint32_t length,
   for (; done < n; done += 4096) {
     if (!process_map_lazy(t, address + done, (prot & 2) != 0))
       break;
-    process_execute(t,address+done,(prot&4)!=0);
+    process_execute(t, address + done, (prot & 4) != 0);
     if (!prot)
       *process_pte(t, address + done) &= ~UINT64_C(4);
   }
@@ -470,7 +477,7 @@ void linux_syscall(struct trap_frame *f) {
       result = process_wait(t, (int)a, b, c & 1);
     break;
   case 10: {
-    char name[32];
+    char name[256];
     result = filename(t, a, name) ? (fs_remove(name) < 0 ? -2 : 0) : -14;
     break;
   }
@@ -669,7 +676,8 @@ void linux_syscall(struct trap_frame *f) {
     }
     for (uint32_t off = 0; off < b; off += 4096) {
       uint64_t *pte = process_pte(t, a + off);
-      if ((c & 2) && (*pte & PROCESS_PHYSICAL_MASK) && !process_private(t, a + off)) {
+      if ((c & 2) && (*pte & PROCESS_PHYSICAL_MASK) &&
+          !process_private(t, a + off)) {
         result = -12;
         ok = false;
         break;
@@ -677,7 +685,7 @@ void linux_syscall(struct trap_frame *f) {
       *pte = (*pte & ~UINT64_C(6)) | (c ? 4 : 0) | ((c & 2) ? 2 : 0);
       if (c & 2)
         *pte &= ~UINT64_C(512);
-      process_execute(t,a+off,(c&4)!=0);
+      process_execute(t, a + off, (c & 4) != 0);
       __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)(a + off)) : "memory");
     }
     if (ok)
@@ -769,4 +777,467 @@ void linux_syscall(struct trap_frame *f) {
     break;
   }
   f->eax = (uintptr_t)result;
+}
+
+struct linux64_stat {
+  uint64_t device, inode, links;
+  uint32_t mode, uid, gid, pad;
+  uint64_t rdev;
+  int64_t size, block_size, blocks;
+  int64_t atime, atime_ns, mtime, mtime_ns, ctime, ctime_ns, reserved[3];
+};
+_Static_assert(sizeof(struct linux64_stat) == 144, "Linux x86-64 stat ABI");
+static int stat64_data(struct process *t, uint32_t out, unsigned kind,
+                       const char *name) {
+  struct linux64_stat s = {0};
+  s.block_size = 4096;
+  if (kind == H_FILE || kind == H_DIR) {
+    struct file_metadata m;
+    int r = fs_metadata(name, &m);
+    if (r)
+      return r;
+    s.device = 1;
+    s.inode = m.inode;
+    s.links = m.links;
+    s.mode = m.mode;
+    s.uid = m.uid;
+    s.gid = m.gid;
+    s.size = m.size;
+    s.blocks = m.blocks;
+    s.atime = m.atime;
+    s.mtime = m.mtime;
+    s.ctime = m.ctime;
+  } else {
+    s.mode = 0020666;
+    s.links = 1;
+    s.rdev = kind == H_NULL ? 0x103 : kind == H_ZERO ? 0x105 : 0x501;
+    s.inode = s.rdev;
+  }
+  return process_copyout(t, out, &s, sizeof(s)) ? 0 : -14;
+}
+static int stat64_fd(struct process *t, unsigned fd, uint32_t out) {
+  if (fd >= PROCESS_FDS || t->fds[fd] == FD_UNUSED)
+    return -9;
+  if (t->fds[fd] < 0)
+    return stat64_data(t, out, 0, "");
+  struct handle *h = get_handle(t, fd);
+  return stat64_data(t, out, h->kind, h->name);
+}
+static int stat64_path(struct process *t, uint32_t path, uint32_t out) {
+  char name[256], raw[256];
+  if (!process_string(t, path, raw, sizeof(raw)))
+    return -14;
+  if (str_eq(raw, "/dev/null"))
+    return stat64_data(t, out, H_NULL, "");
+  if (str_eq(raw, "/dev/zero"))
+    return stat64_data(t, out, H_ZERO, "");
+  if (!filename(t, path, name))
+    return -2;
+  return stat64_data(t, out, H_FILE, name);
+}
+static int clock64(struct process *t, unsigned clock, uint32_t out,
+                   bool micro) {
+  uint64_t stamp[2] = {0};
+  uint32_t ticks = clock_ticks();
+  if (clock == 0) {
+    uint32_t days, seconds;
+    if (!rtc_time(&days, &seconds) || days < 719528)
+      return -5;
+    stamp[0] = (uint64_t)(days - 719528) * 86400 + seconds;
+  } else if (clock == 1 || clock == 4 || clock == 6) {
+    stamp[0] = ticks / 100;
+    stamp[1] = (ticks % 100) * (micro ? 10000u : 10000000u);
+  } else
+    return -22;
+  return process_copyout(t, out, stamp, sizeof(stamp)) ? 0 : -14;
+}
+static int limit64(struct process *t, unsigned resource, uint32_t out) {
+  uint64_t value;
+  switch (resource) {
+  case 3:
+    value = 65536;
+    break;
+  case 7:
+    value = PROCESS_FDS;
+    break;
+  case 9:
+    value = PROCESS_PAGE_LIMIT * UINT64_C(4096);
+    break;
+  case 6:
+    value = PROCESS_MAX;
+    break;
+  default:
+    return -22;
+  }
+  uint64_t pair[2] = {value, value};
+  return process_copyout(t, out, pair, sizeof(pair)) ? 0 : -14;
+}
+static int linux64_vector(struct process *t, unsigned fd, uint32_t address,
+                          uint32_t count, bool write) {
+  if (count > 1024 || !process_range(t, address, count * 16, false))
+    return -14;
+  int done = 0;
+  for (unsigned i = 0; i < count; i++) {
+    uint64_t v[2];
+    if (!process_copyin(t, v, address + i * 16, 16) || v[0] > UINT32_MAX ||
+        v[1] > INT32_MAX)
+      return done ? done : -14;
+    int r = write ? write_fd(t, fd, v[0], v[1]) : read_fd(t, fd, v[0], v[1]);
+    if (r < 0)
+      return done ? done : r;
+    done += r;
+    if ((uint64_t)r < v[1] || t->state != TASK_RUNNING)
+      break;
+  }
+  return done;
+}
+void linux_syscall64(struct trap_frame *f) {
+  struct process *t = process_current();
+  uint64_t a = f->edi, b = f->esi, c = f->edx, d = f->r10;
+  int64_t result = -38;
+  /* All user mappings currently fit in the lower 4 GiB. Reject high pointers
+     rather than truncating them into a different, valid user allocation. */
+  unsigned alias = 0;
+  switch (f->eax) {
+  case 0:
+    alias = 3;
+    break;
+  case 1:
+    alias = 4;
+    break;
+  case 2:
+    alias = 5;
+    break;
+  case 3:
+    alias = 6;
+    break;
+  case 4:
+  case 6:
+    result = a > UINT32_MAX || b > UINT32_MAX ? -14 : stat64_path(t, a, b);
+    break;
+  case 5:
+    result = b > UINT32_MAX ? -14 : stat64_fd(t, a, b);
+    break;
+  case 8:
+    result = (int64_t)b < INT32_MIN || (int64_t)b > INT32_MAX
+                 ? -75
+                 : seek_fd(t, a, b, c);
+    break;
+  case 9:
+    result = a > UINT32_MAX || b > UINT32_MAX || c > 7 || d > UINT32_MAX
+                 ? -22
+                 : memory_map(t, a, b, c, d);
+    break;
+  case 10:
+    alias = 125;
+    break;
+  case 11:
+    alias = 91;
+    break;
+  case 12:
+    alias = 45;
+    break;
+  case 16:
+    alias = 54;
+    break;
+  case 19:
+  case 20:
+    result = b > UINT32_MAX || c > 1024
+                 ? -14
+                 : linux64_vector(t, a, b, c, f->eax == 20);
+    break;
+  case 21: {
+    char name[256];
+    struct file_metadata meta;
+    if (a > UINT32_MAX || !filename(t, a, name))
+      result = -14;
+    else if (b & ~7u)
+      result = -22;
+    else {
+      result = fs_metadata(name, &meta);
+      if (!result && (b & 1) && !(meta.mode & 0111))
+        result = -13;
+    }
+    break;
+  }
+  case 24:
+    alias = 158;
+    break;
+  case 32:
+    alias = 41;
+    break;
+  case 33:
+    alias = 63;
+    break;
+  case 35: {
+    uint64_t ts[2];
+    if (a > UINT32_MAX || b > UINT32_MAX || !process_copyin(t, ts, a, 16))
+      result = -14;
+    else if (ts[0] > 3600 || ts[1] >= 1000000000)
+      result = -22;
+    else if (b && !process_range(t, b, 16, true))
+      result = -14;
+    else {
+      if (b) {
+        uint64_t zero[2] = {0};
+        process_copyout(t, b, zero, 16);
+      }
+      t->wake = clock_ticks() + ts[0] * 100 + (ts[1] + 9999999) / 10000000;
+      t->state = TASK_SLEEP;
+      result = 0;
+    }
+    break;
+  }
+  case 39:
+  case 186:
+    result = t->pid;
+    break;
+  case 56:
+    if ((a & ~UINT64_C(0x12000ff)) || (a & 255) != 17 || b)
+      result = -38;
+    else if ((a & 0x1200000) &&
+             (d > UINT32_MAX || !process_range(t,d,4,true)))
+      result = -14;
+    else
+      result = process_fork(f);
+    break;
+  case 57:
+    result = process_fork(f);
+    break;
+  case 59:
+    result = a > UINT32_MAX || b > UINT32_MAX || c > UINT32_MAX
+                 ? -14
+                 : process_execve(a, b, c);
+    break;
+  case 60:
+  case 231:
+    process_exit(t, a & 255, 0);
+    result = 0;
+    break;
+  case 61:
+    if ((int64_t)a != -1 && ((int64_t)a <= 0 || a > INT32_MAX))
+      result = -22;
+    else if (b > UINT32_MAX || (b && !process_range(t, b, 4, true)))
+      result = -14;
+    else if (c & ~UINT64_C(1))
+      result = -22;
+    else if (d)
+      result = -38;
+    else
+      result = process_wait(t, (int)a, b, c & 1);
+    break;
+  case 62:
+    alias = 37;
+    break;
+  case 63: {
+    char uts[6][65] = {{0}};
+    const char *v[] = {"Linux",           "magenta", "6.0.0-avalanche",
+                       "Avalanche 0.4.0", "x86_64",  "localdomain"};
+    for (unsigned i = 0; i < 6; i++)
+      memcpy(uts[i], v[i], strlen(v[i]));
+    result = a > UINT32_MAX                            ? -14
+             : process_copyout(t, a, uts, sizeof(uts)) ? 0
+                                                       : -14;
+    break;
+  }
+  case 72:
+    alias = 55;
+    break;
+  case 74:
+  case 75:
+    if (a >= PROCESS_FDS || t->fds[a] == FD_UNUSED)
+      result = -9;
+    else {
+      int disk = fs_mounted_disk();
+      result = disk < 0 || disk_flush(disk) ? 0 : -5;
+    }
+    break;
+  case 79:
+    if (a > UINT32_MAX || b > UINT32_MAX)
+      result = -14;
+    else {
+      const char root[] = "/";
+      result = b < 2 ? -34 : process_copyout(t, a, root, 2) ? 2 : -14;
+    }
+    break;
+  case 82:
+  case 83:
+  case 84: {
+    char one[256], two[256];
+    if (a > UINT32_MAX || !filename(t, a, one))
+      result = -14;
+    else if (f->eax == 82)
+      result =
+          b > UINT32_MAX || !filename(t, b, two) ? -14 : fs_rename(one, two);
+    else if (f->eax == 83)
+      result = fs_mkdir(one);
+    else
+      result = fs_directory(one) ? -20 : fs_remove(one);
+    break;
+  }
+  case 87:
+    alias = 10;
+    break;
+  case 89:
+    alias = 85;
+    break;
+  case 96:
+    if (b)
+      result = -22;
+    else
+      result = !a ? 0 : a > UINT32_MAX ? -14 : clock64(t, 0, a, true);
+    break;
+  case 97:
+    result = b > UINT32_MAX ? -14 : limit64(t, a, b);
+    break;
+  case 102:
+  case 104:
+  case 107:
+  case 108:
+    result = 0;
+    break;
+  case 110:
+    result = t->parent;
+    break;
+  case 158:
+    if (a == 0x1002) {
+      if (b > UINT32_MAX || (b && !process_address(b, 1)))
+        result = -1;
+      else {
+        t->fs_base = b;
+        platform_user_fs(b);
+        result = 0;
+      }
+    } else if (a == 0x1003)
+      result = b > UINT32_MAX                          ? -14
+               : process_copyout(t, b, &t->fs_base, 8) ? 0
+                                                       : -14;
+    else
+      result = -22;
+    break;
+  case 201: {
+    uint32_t days, seconds;
+    if (!rtc_time(&days, &seconds) || days < 719528)
+      result = -5;
+    else {
+      int64_t v = (uint64_t)(days - 719528) * 86400 + seconds;
+      result = a && (a > UINT32_MAX || !process_copyout(t, a, &v, 8)) ? -14 : v;
+    }
+    break;
+  }
+  case 217:
+    alias = 220;
+    break;
+  case 218:
+    alias = 258;
+    break;
+  case 228:
+    result = b > UINT32_MAX ? -14 : clock64(t, a, b, false);
+    break;
+  case 230: {
+    uint64_t ts[2];
+    if (c>UINT32_MAX || d>UINT32_MAX || !process_copyin(t,ts,c,16)) result=-14;
+    else if ((a!=0 && a!=1) || b>1 || ts[1]>=1000000000) result=-22;
+    else if (d && !process_range(t,d,16,true)) result=-14;
+    else {
+      uint64_t ticks=ts[0]*100+(ts[1]+9999999)/10000000;
+      if (b) {
+        uint64_t now=clock_ticks();
+        if(!a) {
+          uint32_t days,seconds;
+          if(!rtc_time(&days,&seconds) || days<719528) {result=-5;break;}
+          now=((uint64_t)(days-719528)*86400+seconds)*100;
+        }
+        ticks=ticks>now ? ticks-now : 0;
+      }
+      if(ticks>360000) result=-22;
+      else {
+        if(d) {uint64_t zero[2]={0};process_copyout(t,d,zero,16);}
+        t->wake=clock_ticks()+ticks;t->state=TASK_SLEEP;result=0;
+      }
+    }
+    break;
+  }
+  case 257:
+    alias = 295;
+    break;
+  case 262: {
+    if (b > UINT32_MAX || c > UINT32_MAX) {
+      result = -14;
+      break;
+    }
+    if (d & ~UINT64_C(0x1100)) {
+      result = -22;
+      break;
+    }
+    char path[256];
+    if (!process_string(t, b, path, sizeof(path)))
+      result = -14;
+    else if (!*path && (d & 0x1000))
+      result = stat64_fd(t, a, c);
+    else if ((int64_t)a != -100 && path[0] != '/')
+      result = -9;
+    else
+      result = stat64_path(t, b, c);
+    break;
+  }
+  case 302:
+    if (a && a != (unsigned)t->pid)
+      result = -3;
+    else if (c)
+      result = -1;
+    else
+      result = d > UINT32_MAX ? -14 : !d ? 0 : limit64(t, b, d);
+    break;
+  case 318: {
+    if (a > UINT32_MAX || b > INT32_MAX || !process_range(t, a, b, true))
+      result = -14;
+    else if (c & ~UINT64_C(3))
+      result = -22;
+    else {
+      uint8_t bytes[256];
+      unsigned done = 0;
+      while (done < b) {
+        unsigned n = b - done;
+        if (n > sizeof(bytes))
+          n = sizeof(bytes);
+        if (!secure_random(bytes, n))
+          break;
+        process_copyout(t, a + done, bytes, n);
+        done += n;
+      }
+      memset(bytes, 0, sizeof(bytes));
+      result = done || !b ? (int64_t)done : -11;
+    }
+    break;
+  }
+  default:
+    break;
+  }
+  if (alias) {
+    bool valid = true;
+    uint64_t args[] = {a, b, c};
+    for (unsigned i = 0; i < 3; i++)
+      if (args[i] > UINT32_MAX && args[i] < (UINT64_MAX - UINT32_MAX))
+        valid = false;
+    /* Signed descriptors and process IDs may be sign-extended. Pointers may
+       not: a high address must never alias a mapped lower address. */
+    if ((alias==3 || alias==4 || alias==85 || alias==220 || alias==295) && b>UINT32_MAX)
+      valid=false;
+    if ((alias==5 || alias==10 || alias==45 || alias==91 || alias==125 || alias==258) && a>UINT32_MAX)
+      valid=false;
+    if (alias==54 && c>UINT32_MAX) valid=false;
+    if (!valid)
+      result = -14;
+    else {
+      struct trap_frame compat = *f;
+      compat.eax = alias;
+      compat.ebx = (uint32_t)a;
+      compat.ecx = (uint32_t)b;
+      compat.edx = (uint32_t)c;
+      linux_syscall(&compat);
+      result = (int64_t)compat.eax;
+    }
+  }
+  f->eax = result;
 }

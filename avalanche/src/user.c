@@ -4,7 +4,8 @@
 #include "process.h"
 static uint64_t kernel_root[512] __attribute__((aligned(4096)));
 static uint64_t kernel_pdpt[512] __attribute__((aligned(4096)));
-static uint64_t kernel_directory[IDENTITY_ENTRIES] __attribute__((aligned(4096)));
+static uint64_t kernel_directory[IDENTITY_ENTRIES]
+    __attribute__((aligned(4096)));
 #define MMIO_REGIONS 64
 static uint64_t mmio_pdpt[255][512] __attribute__((aligned(4096)));
 static uint64_t mmio_directory[MMIO_REGIONS][512]
@@ -19,8 +20,8 @@ static bool nx_enabled;
 static uint64_t no_execute(void) { return nx_enabled ? PROCESS_NO_EXECUTE : 0; }
 static void drop_page(uint64_t entry) {
   uint64_t physical = entry & PROCESS_PHYSICAL_MASK;
-  if (physical && physical / 4096 < PHYSICAL_PAGES && page_references[physical / 4096] &&
-      !--page_references[physical / 4096])
+  if (physical && physical / 4096 < PHYSICAL_PAGES &&
+      page_references[physical / 4096] && !--page_references[physical / 4096])
     page_free((void *)(uintptr_t)physical);
 }
 static int current = -1, next_pid = 1;
@@ -91,7 +92,7 @@ static void activate(uint64_t *directory) {
         root = tasks[i].root;
         break;
       }
-  __asm__ volatile("mov %0,%%cr3" ::"r"((uintptr_t)root) : "memory");
+  __asm__ volatile("mov %0,%%cr3" ::"r"(page_physical(root)) : "memory");
 }
 struct process *process_current(void) {
   return current < 0 ? NULL : &tasks[current];
@@ -105,7 +106,7 @@ bool process_address(uint32_t p, uint32_t n) {
   if (n > 0xffffffffu - p)
     return false;
   uint32_t end = p + n;
-  return (p >= 0x08000000u && end <= 0x20000000u) ||
+  return (p >= 0x00400000u && end <= 0x20000000u) ||
          (p >= AV_USER_BASE && end <= AV_USER_END) ||
          (p >= 0xbfc00000u && end <= 0xc0000000u);
 }
@@ -185,7 +186,7 @@ static uint64_t *ensure_pte(struct process *t, uint32_t v) {
     unsigned slot = t->table_count++;
     t->indices[slot] = v >> 21;
     memset(t->tables[slot], 0, 4096);
-    t->directory[v >> 21] = (uintptr_t)t->tables[slot] | 7;
+    t->directory[v >> 21] = page_physical(t->tables[slot]) | 7;
     pte = &t->tables[slot][(v >> 12) & 511];
   }
   return pte;
@@ -210,13 +211,17 @@ bool process_private(struct process *t, uint32_t v) {
   }
   return true;
 }
-bool process_execute(struct process *t,uint32_t address,bool executable) {
-  uint64_t *pte=process_pte(t,address);
-  if (!pte || !*pte) return false;
+bool process_execute(struct process *t, uint32_t address, bool executable) {
+  uint64_t *pte = process_pte(t, address);
+  if (!pte || !*pte)
+    return false;
   if (nx_enabled) {
-    if (executable) *pte &= ~PROCESS_NO_EXECUTE;
-    else *pte |= PROCESS_NO_EXECUTE;
-    if (t==process_current()) __asm__ volatile("invlpg (%0)" :: "r"((uintptr_t)address) : "memory");
+    if (executable)
+      *pte &= ~PROCESS_NO_EXECUTE;
+    else
+      *pte |= PROCESS_NO_EXECUTE;
+    if (t == process_current())
+      __asm__ volatile("invlpg (%0)" ::"r"((uintptr_t)address) : "memory");
   }
   return true;
 }
@@ -308,18 +313,18 @@ void user_init(void) {
       physical_address_limit = UINT64_C(1) << (bits > 47 ? 47 : bits);
   }
   a = 0x80000001;
-  __asm__ volatile("cpuid" : "+a"(a),"=b"(b),"=c"(c),"=d"(d));
-  nx_enabled=(d&(1u<<20))!=0;
+  __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+  nx_enabled = (d & (1u << 20)) != 0;
   if (nx_enabled) {
-    uint32_t low,high;
-    __asm__ volatile("rdmsr" : "=a"(low),"=d"(high) : "c"(0xc0000080));
-    low|=1u<<11;
-    __asm__ volatile("wrmsr" :: "a"(low),"d"(high),"c"(0xc0000080));
+    uint32_t low, high;
+    __asm__ volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(0xc0000080));
+    low |= 1u << 11;
+    __asm__ volatile("wrmsr" ::"a"(low), "d"(high), "c"(0xc0000080));
   }
-  kernel_root[0] = (uintptr_t)kernel_pdpt | 7;
-  kernel_root[256] = (uintptr_t)kernel_pdpt | 3;
+  kernel_root[0] = page_physical(kernel_pdpt) | 7;
+  kernel_root[256] = page_physical(kernel_pdpt) | 3;
   for (unsigned i = 0; i < PHYSICAL_GIB; i++)
-    kernel_pdpt[i] = (uintptr_t)&kernel_directory[i * 512] | 7;
+    kernel_pdpt[i] = page_physical(&kernel_directory[i * 512]) | 7;
   for (unsigned i = 0; i < IDENTITY_ENTRIES; i++)
     kernel_directory[i] = ((uint64_t)i << 21) | 0x83;
   activate(kernel_directory);
@@ -340,9 +345,9 @@ bool platform_mmio(uint64_t address, uint32_t size) {
         mmio_region[mmio_count++] = region;
         unsigned root = region >> 9;
         uint64_t *pdpt = root ? mmio_pdpt[root - 1] : kernel_pdpt;
-        pdpt[region & 511] = (uintptr_t)mmio_directory[slot] | 3;
+        pdpt[region & 511] = page_physical(mmio_directory[slot]) | 3;
         if (root) {
-          kernel_root[256 + root] = (uintptr_t)pdpt | 3;
+          kernel_root[256 + root] = page_physical(pdpt) | 3;
           for (unsigned j = 0; j < PROCESS_MAX; j++)
             if (tasks[j].state != TASK_EMPTY)
               tasks[j].root[256 + root] = kernel_root[256 + root];
@@ -375,12 +380,12 @@ static struct process *empty(void) {
 static void initialize(struct process *t) {
   memset(t, 0, sizeof(*t));
   memcpy(t->directory, kernel_directory, sizeof(t->directory));
-  t->root[0] = (uintptr_t)t->pdpt | 7;
+  t->root[0] = page_physical(t->pdpt) | 7;
   memcpy(t->root + 256, kernel_root + 256, 256 * sizeof(uint64_t));
   for (unsigned i = 0; i < PHYSICAL_GIB; i++)
     t->pdpt[i] = i < PROCESS_DIRECTORY_ENTRIES / 512
-                     ? (uintptr_t)&t->directory[i * 512] | 7
-                     : (uintptr_t)&kernel_directory[i * 512] | 3;
+                     ? page_physical(&t->directory[i * 512]) | 7
+                     : page_physical(&kernel_directory[i * 512]) | 3;
   t->pid = next_pid++;
   t->parent = current < 0 ? 0 : tasks[current].pid;
   t->state = TASK_EMPTY;
@@ -438,8 +443,10 @@ static uint32_t linux_stack(struct process *t, const struct elf_header *h,
     env[envc++] = stack_string(t, &sp, e2, sizeof(e2));
   }
   uint8_t random[16];
-  uint32_t rnd=secure_random(random,sizeof(random)) ? stack_string(t,&sp,random,sizeof(random)) : 0;
-  memset(random,0,sizeof(random));
+  uint32_t rnd = secure_random(random, sizeof(random))
+                     ? stack_string(t, &sp, random, sizeof(random))
+                     : 0;
+  memset(random, 0, sizeof(random));
   uint32_t words[64], n = 0;
   words[n++] = argc;
   for (unsigned i = 0; i < argc; i++)
@@ -448,18 +455,47 @@ static uint32_t linux_stack(struct process *t, const struct elf_header *h,
   for (unsigned i = 0; i < envc; i++)
     words[n++] = env[i];
   words[n++] = 0;
-  uint32_t aux[] = {3,  phdr,     4,  sizeof(struct program32_header),
-                    5,  h->phnum, 6,  4096,
-                    9,  h->entry, 11, 0,
-                    12, 0,        13, 0,
-                    14, 0,        23, 0};
+  uint32_t aux[] = {3,
+                    phdr,
+                    4,
+                    t->linux64 ? sizeof(struct program_header)
+                               : sizeof(struct program32_header),
+                    5,
+                    h->phnum,
+                    6,
+                    4096,
+                    9,
+                    h->entry,
+                    11,
+                    0,
+                    12,
+                    0,
+                    13,
+                    0,
+                    14,
+                    0,
+                    23,
+                    0};
   for (unsigned i = 0; i < sizeof(aux) / 4; i++)
     words[n++] = aux[i];
-  if (rnd) { words[n++]=25; words[n++]=rnd; }
-  words[n++]=0; words[n++]=0;
-  sp = (sp - n * 4) & ~15u;
-  if (!process_copyout(t, sp, words, n * 4))
-    return 0;
+  if (rnd) {
+    words[n++] = 25;
+    words[n++] = rnd;
+  }
+  words[n++] = 0;
+  words[n++] = 0;
+  if (t->linux64) {
+    uint64_t wide[64];
+    for (unsigned i = 0; i < n; i++)
+      wide[i] = words[i];
+    sp = (sp - n * 8) & ~15u;
+    if (!process_copyout(t, sp, wide, n * 8))
+      return 0;
+  } else {
+    sp = (sp - n * 4) & ~15u;
+    if (!process_copyout(t, sp, words, n * 4))
+      return 0;
+  }
   return sp;
 }
 static int load(struct process *t, const void *image, uint32_t size,
@@ -510,7 +546,8 @@ static int load(struct process *t, const void *image, uint32_t size,
              : (const void *)((const uint8_t *)image + h->phoff);
   bool entry = false,
        native = h->entry >= AV_USER_BASE && h->entry < AV_USER_END;
-  if (compat == native || h->entry > UINT32_MAX)
+  if ((compat && native) || h->entry > UINT32_MAX ||
+      (!native && !compat && h->entry < 0x00400000u))
     return -8;
   uint32_t total = 0, high = 0, phdr = 0;
   for (unsigned i = 0; i < h->phnum; i++) {
@@ -547,6 +584,7 @@ static int load(struct process *t, const void *image, uint32_t size,
   if (!entry)
     return -8;
   t->linux_abi = !native;
+  t->linux64 = !native && !compat;
   set_name(t->name, name, sizeof(t->name));
   set_name(t->arguments, args ? args : "", sizeof(t->arguments));
   for (unsigned i = 0; i < h->phnum; i++) {
@@ -557,7 +595,8 @@ static int load(struct process *t, const void *image, uint32_t size,
     for (uint32_t v = p->vaddr & ~UINT64_C(4095);; v += 4096) {
       if (!process_map(t, v, (p->flags & 2) != 0))
         goto memory;
-      if (!process_execute(t,v,(p->flags&1)!=0)) goto memory;
+      if (!process_execute(t, v, (p->flags & 1) != 0))
+        goto memory;
       if (v == last)
         break;
     }
@@ -805,7 +844,7 @@ static unsigned effective_priority(struct process *t) {
 }
 struct trap_frame *user_reschedule(struct trap_frame *f) {
   wake_sleepers();
-  if (f->vector == 128 && current >= 0 &&
+  if ((f->vector == 128 || f->vector == 130) && current >= 0 &&
       tasks[current].state == TASK_RUNNING && !tasks[current].yield)
     return f;
   if (current >= 0) {
@@ -836,6 +875,7 @@ struct trap_frame *user_reschedule(struct trap_frame *f) {
       current = -1;
       activate(kernel_directory);
       platform_tls(NULL);
+      platform_user_fs(0);
       uint8_t fpu[512] __attribute__((aligned(16)));
       platform_fpu_initial(fpu);
       platform_fpu_restore(fpu);
@@ -849,6 +889,7 @@ struct trap_frame *user_reschedule(struct trap_frame *f) {
     t->slice_left = 2 + (31 - t->priority) / 8;
     platform_kernel_stack((uintptr_t)(t->kernel_stack + PROCESS_STACK));
     platform_tls(t->tls);
+    platform_user_fs(t->fs_base);
     platform_fpu_restore(t->fpu);
     activate(t->directory);
     return t->frame;
@@ -1019,6 +1060,8 @@ int process_fork(struct trap_frame *f) {
     return -11;
   initialize(c);
   c->linux_abi = p->linux_abi;
+  c->linux64 = p->linux64;
+  c->fs_base = p->fs_base;
   c->foreground = p->foreground;
   c->heap_min = p->heap_min;
   c->heap_break = p->heap_break;
@@ -1057,6 +1100,15 @@ int process_fork(struct trap_frame *f) {
   c->frame = (void *)(uintptr_t)(c->kernel_stack + PROCESS_STACK - sizeof(*f));
   *c->frame = *f;
   c->frame->eax = 0;
+  if (p->linux64 && f->vector == 130 && f->eax == 56) {
+    if ((f->edi & 0x1000000) &&
+        !process_copyout(c, f->r10, &c->pid, sizeof(c->pid))) {
+      release(c);
+      activate(p->directory);
+      return -14;
+    }
+    if (f->edi & 0x200000) c->clear_tid = f->r10;
+  }
   linux_clone_fds(c, p);
   c->state = TASK_READY;
   return c->pid;
@@ -1068,9 +1120,12 @@ static int copy_vector(struct process *old, uint32_t vector, char *data,
     return 0;
   unsigned used = 0;
   for (unsigned i = 0; i <= max; i++) {
-    uint32_t p;
-    if (!process_copyin(old, &p, vector + i * 4, 4))
+    uint64_t wide = 0;
+    unsigned width = old->linux64 ? 8 : 4;
+    if (!process_copyin(old, &wide, vector + i * width, width) ||
+        wide > UINT32_MAX)
       return -14;
+    uint32_t p = wide;
     if (!p)
       return 0;
     if (i == max)
@@ -1138,7 +1193,14 @@ void user_syscall(struct trap_frame *f) {
   }
   t->frame = f;
   if (t->linux_abi) {
-    linux_syscall(f);
+    if (t->linux64 && f->vector == 130)
+      linux_syscall64(f);
+    else
+      linux_syscall(f);
+    return;
+  }
+  if (f->vector == 130) {
+    f->eax = (uint64_t)-38;
     return;
   }
   /* Native code is ELF64; the current service ABI uses low-4-GiB addresses. */
@@ -1390,26 +1452,42 @@ void user_syscall(struct trap_frame *f) {
     break;
   case AV_AUDIO_PLAY: {
     char path[256];
-    if(user_string(f->ebx,path,sizeof(path))) result=audio_play(path);
-    else result=-14;
+    if (user_string(f->ebx, path, sizeof(path)))
+      result = audio_play(path);
+    else
+      result = -14;
     break;
   }
   case AV_AUDIO_STATUS:
-    result=audio_status();
-    if(f->ebx) {
-      struct av_audio_status status;audio_snapshot(&status);
-      if(!process_copyout(t,f->ebx,&status,sizeof(status))) result=-14;
+    result = audio_status();
+    if (f->ebx) {
+      struct av_audio_status status;
+      audio_snapshot(&status);
+      if (!process_copyout(t, f->ebx, &status, sizeof(status)))
+        result = -14;
     }
     break;
-  case AV_AUDIO_STOP: audio_stop(); result=0; break;
+  case AV_AUDIO_STOP:
+    audio_stop();
+    result = 0;
+    break;
   case AV_RANDOM: {
     uint8_t entropy[256];
-    unsigned size=f->ecx;
-    if (f->ecx>sizeof(entropy)) { result=-22; break; }
-    if (!process_range(t,f->ebx,size,true)) { result=-14; break; }
-    if (!secure_random(entropy,size)) { result=-11; break; }
-    result=process_copyout(t,f->ebx,entropy,size) ? (int)size : -14;
-    memset(entropy,0,sizeof(entropy));
+    unsigned size = f->ecx;
+    if (f->ecx > sizeof(entropy)) {
+      result = -22;
+      break;
+    }
+    if (!process_range(t, f->ebx, size, true)) {
+      result = -14;
+      break;
+    }
+    if (!secure_random(entropy, size)) {
+      result = -11;
+      break;
+    }
+    result = process_copyout(t, f->ebx, entropy, size) ? (int)size : -14;
+    memset(entropy, 0, sizeof(entropy));
     break;
   }
   default:

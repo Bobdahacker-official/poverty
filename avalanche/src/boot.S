@@ -13,7 +13,7 @@ header:
 .long 8
 header_end:
 
-.section .bss
+.section .boot.bss,"aw",@nobits
 .balign 4096
 boot_pml4: .skip 4096
 boot_pdpt: .skip 4096

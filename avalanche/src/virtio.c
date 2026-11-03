@@ -57,7 +57,7 @@ static bool queue(struct virtq *q, uint16_t port, uint16_t index,
   uint32_t offset = (16 * n + 4 + 2 * n + 4095) & ~4095u;
   q->used = (void *)(uintptr_t)(memory + offset);
   q->avail[0] = 1;
-  io_out32(port + 8, (uintptr_t)memory >> 12);
+  io_out32(port + 8, page_physical(memory) >> 12);
   return true;
 }
 static void submit(struct virtq *q, uint16_t descriptor) {
@@ -92,10 +92,10 @@ static bool block_request(uint32_t type, uint32_t lba, void *buffer) {
   if (type == 1)
     memcpy(block_buffer, buffer, 512);
   blockq.desc[0] = (struct virtq_desc){
-      (uintptr_t)&block_header, sizeof(block_header), 1, type == 4 ? 2 : 1};
-  blockq.desc[1] = (struct virtq_desc){(uintptr_t)block_buffer, 512,
+      page_physical(&block_header), sizeof(block_header), 1, type == 4 ? 2 : 1};
+  blockq.desc[1] = (struct virtq_desc){page_physical(block_buffer), 512,
                                        (uint16_t)(type == 0 ? 3 : 1), 2};
-  blockq.desc[2] = (struct virtq_desc){(uintptr_t)&block_status, 1, 2, 0};
+  blockq.desc[2] = (struct virtq_desc){page_physical((const void *)&block_status), 1, 2, 0};
   submit(&blockq, 0);
   if (!wait_used(&blockq)) {
     io_out8(block_port + 18, 0);
@@ -119,7 +119,7 @@ bool virtio_random(void *out,unsigned size) {
   uint8_t *destination=out;
   while (size) {
     unsigned count=size>sizeof(rng_buffer) ? sizeof(rng_buffer) : size;
-    rngq.desc[0]=(struct virtq_desc){(uintptr_t)rng_buffer,count,2,0};
+    rngq.desc[0]=(struct virtq_desc){page_physical(rng_buffer),count,2,0};
     submit(&rngq,0);
     if (!wait_used(&rngq)) {
       io_out8(rng_port+18,0); rng_ready=false; return false;
@@ -180,7 +180,7 @@ bool virtio_net_init(uint8_t *mac) {
   for (unsigned i = 0; i < 6; i++)
     mac[i] = io_in8(net_port + 20 + i);
   for (unsigned i = 0; i < 32; i++) {
-    rxq.desc[i] = (struct virtq_desc){(uintptr_t)rx_buffers[i],
+    rxq.desc[i] = (struct virtq_desc){page_physical(rx_buffers[i]),
                                       sizeof(rx_buffers[i]), 2, 0};
     rxq.avail[2 + i] = i;
   }
@@ -196,7 +196,7 @@ bool virtio_net_send(const void *frame, uint32_t n) {
   unsigned padded = n < 60 ? 60 : n;
   memset(tx_buffer, 0, 10 + padded);
   memcpy(tx_buffer + 10, frame, n);
-  txq.desc[0] = (struct virtq_desc){(uintptr_t)tx_buffer, 10 + padded, 0, 0};
+  txq.desc[0] = (struct virtq_desc){page_physical(tx_buffer), 10 + padded, 0, 0};
   submit(&txq, 0);
   if (!wait_used(&txq)) {
     io_out8(net_port + 18, 0);
