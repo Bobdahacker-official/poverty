@@ -18,7 +18,7 @@ folder = pathlib.Path(tempfile.mkdtemp(prefix="classicube-test-"))
 image = folder / "classicube-data.img"
 with gzip.open(ROOT / "Images/classicube-data.img.gz", "rb") as source, image.open("wb") as destination:
     destination.write(source.read())
-command = [os.environ.get("QEMU", "qemu-system-x86_64"), "-accel", "tcg", "-cpu", "qemu64", "-m", "512", "-machine", "pc,vmport=on", "-vga", "std", "-display", "none", "-monitor", "none", "-serial", "stdio", "-no-reboot", "-cdrom", str(ROOT / "Images/avalanche.iso"), "-boot", "d", "-drive", "file=" + str(image) + ",format=raw,if=ide", "-device", "virtio-rng-pci,disable-modern=on", "-qmp", "unix:" + str(folder / "qmp.sock") + ",server=on,wait=off"]
+command = [os.environ.get("QEMU", "qemu-system-x86_64"), "-accel", "tcg", "-cpu", "qemu64", "-m", "512", "-machine", "pc,vmport=on", "-vga", "std", "-display", "none", "-vnc", "unix:" + str(folder / "vnc.sock"), "-monitor", "none", "-serial", "stdio", "-no-reboot", "-cdrom", str(ROOT / "Images/avalanche.iso"), "-boot", "d", "-drive", "file=" + str(image) + ",format=raw,if=ide", "-device", "virtio-rng-pci,disable-modern=on", "-qmp", "unix:" + str(folder / "qmp.sock") + ",server=on,wait=off"]
 if os.environ.get("QEMU_BIOS"): command += ["-bios", os.environ["QEMU_BIOS"]]
 if os.environ.get("QEMU_DATA"): command += ["-L", os.environ["QEMU_DATA"]]
 if os.environ.get("QEMU_VGA_ROM"): command += ["-global", "VGA.romfile=" + os.environ["QEMU_VGA_ROM"]]
@@ -53,13 +53,17 @@ try:
     qmp("input-send-event", {"events": [{"type": "key", "data": {"key": {"type": "qcode", "data": "w"}, "down": True}}, {"type": "key", "data": {"key": {"type": "qcode", "data": "w"}, "down": False}}]})
     time.sleep(1); print("PASS ClassiCube accepts keyboard input through the Magenta window", flush=True)
     symbols = {line.split()[2]: int(line.split()[0], 16) for line in subprocess.check_output(["nm", str(ROOT / "avalanche/build/avalanche.elf")], text=True).splitlines() if len(line.split()) == 3}
+    client = folder / "client.bin"
+    qmp("human-monitor-command", {"command-line": f'pmemsave {symbols["gui_clients"] - 0xFFFF800000000000:#x} 100 "{client}"'})
+    state = client.read_bytes()
+    assert struct.unpack_from("Q", state, 24)[0] != 0 and b"ClassiCube" in state, "ClassiCube has no live window"
     address = symbols["client_bounds"] - 0xFFFF800000000000
     data = folder / "bounds.bin"; qmp("human-monitor-command", {"command-line": f'pmemsave {address:#x} 16 "{data}"'})
     x, y, width, height = struct.unpack("ffff", data.read_bytes())
     scale_address = symbols["native_scale"] - 0xFFFF800000000000
     scale_file = folder / "scale.bin"; qmp("human-monitor-command", {"command-line": f'pmemsave {scale_address:#x} 4 "{scale_file}"'})
     scale = struct.unpack("f", scale_file.read_bytes())[0]
-    qmp("input-send-event", {"events": [{"type": "abs", "data": {"axis": "x", "value": round((x + width - 36) * scale * 32767 / 1919)}}, {"type": "abs", "data": {"axis": "y", "value": round((y + 28) * scale * 32767 / 1079)}}, {"type": "btn", "data": {"button": "left", "down": True}}, {"type": "btn", "data": {"button": "left", "down": False}}]})
+    qmp("human-monitor-command", {"command-line": "sendkey ctrl-q 50"})
     until(b"user> ", 30); print("PASS ClassiCube window close returns to Magenta Terminal", flush=True)
 finally:
     (folder / "serial.log").write_bytes(log)

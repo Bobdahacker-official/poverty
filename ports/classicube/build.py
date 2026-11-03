@@ -34,8 +34,19 @@ def main():
     shutil.copyfile(ROOT / "ports/classicube/Window_Magenta.c", tree / "src/Window_Magenta.c")
     core = tree / "src/Core.h"; text = core.read_text()
     core.write_text(text.replace("#ifndef CC_MAGENTA_OFFLINE\n#define CC_BUILD_NETWORKING\n#endif\n", "#define CC_BUILD_NETWORKING\n", 1))
+    worker = tree / "src/Http_Worker.c"
+    worker_text = worker.read_text()
+    if "defined CC_BUILD_MAGENTA" not in worker_text:
+        worker_text = worker_text.replace(
+            "#if defined CC_BUILD_PSP || defined CC_BUILD_NDS",
+            "#if defined CC_BUILD_PSP || defined CC_BUILD_NDS || defined CC_BUILD_MAGENTA")
+    if "#ifndef CC_BUILD_MAGENTA" not in worker_text:
+        worker_text = worker_text.replace(
+        'Thread_Run(&workerThread, WorkerLoop, 128 * 1024, "HTTP");',
+        '#ifndef CC_BUILD_MAGENTA\nThread_Run(&workerThread, WorkerLoop, 128 * 1024, "HTTP");\n#endif')
+    worker.write_text(worker_text)
     output = cache / "classicube.mgnta"
-    flags = ["-O2", "-pipe", "-std=c99", "-static", "-no-pie", "-fno-pie", "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE", "-DCC_BUILD_MANUAL", "-DCC_BUILD_POSIX", "-DCC_BUILD_LINUX", "-DCC_BUILD_COOPTHREADED", "-DCC_WIN_BACKEND=CC_WIN_BACKEND_TERMINAL", "-DCC_GFX_BACKEND=CC_GFX_BACKEND_SOFTGPU", "-DCC_AUD_BACKEND=CC_AUD_BACKEND_NULL", "-DCC_NET_BACKEND=CC_NET_BACKEND_BUILTIN", "-DCC_SSL_BACKEND=CC_SSL_BACKEND_BEARSSL", "-I" + str(tree / "src"), "-I" + str(tree / "third_party/bearssl")]
+    flags = ["-O2", "-pipe", "-std=c99", "-static", "-no-pie", "-fno-pie", "-D_POSIX_C_SOURCE=200809L", "-D_DEFAULT_SOURCE", "-DCC_BUILD_MANUAL", "-DCC_BUILD_MAGENTA", "-DCC_BUILD_POSIX", "-DCC_BUILD_LINUX", "-DCC_BUILD_COOPTHREADED", "-DCC_WIN_BACKEND=CC_WIN_BACKEND_TERMINAL", "-DCC_GFX_BACKEND=CC_GFX_BACKEND_SOFTGPU", "-DCC_AUD_BACKEND=CC_AUD_BACKEND_NULL", "-DCC_NET_BACKEND=CC_NET_BACKEND_BUILTIN", "-DCC_SSL_BACKEND=CC_SSL_BACKEND_BEARSSL", "-I" + str(tree / "src"), "-I" + str(tree / "third_party/bearssl")]
     run([os.environ.get("CC", "gcc"), *flags, "-o", output, *sources(tree), "-lm"], cwd=tree)
     run([os.environ.get("STRIP", "strip"), output])
     stage = cache / "stage"; shutil.rmtree(stage, ignore_errors=True); stage.mkdir()

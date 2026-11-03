@@ -3552,6 +3552,11 @@ static void inputs(void) {
     char c = console_getchar();
     if (!c)
       break;
+    if (focused_client >= 0 && c == 17) {
+      client_event(focused_client, AV_GUI_QUIT, 0, 0, 0);
+      focused_client = -1;
+      continue;
+    }
     if (focused_client >= 0 &&
         (c >= 32 || c == '\n' || c == '\b' || c == '\t' || c == 27)) {
       client_event(focused_client, AV_GUI_TEXT, (unsigned char)c, 0, 0);
