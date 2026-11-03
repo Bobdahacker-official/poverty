@@ -6,6 +6,10 @@ runtime="$repo_root/avalanche/build/browser-session"
 novnc_web=${NOVNC_WEB:-/usr/share/novnc}
 qemu=${QEMU:-qemu-system-x86_64}
 proxy=${WEBSOCKIFY:-websockify}
+memory=${MAGENTA_MEMORY:-1024}
+cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 2)
+cpus=${MAGENTA_CPUS:-$cpu_count}
+if (( cpus > 4 )); then cpus=4; fi
 
 command -v "$qemu" >/dev/null
 command -v "$proxy" >/dev/null
@@ -71,11 +75,17 @@ case ${1:-} in
     stop_service "$runtime/websockify.pid"
     stop_service "$runtime/qemu.pid"
     ;;
+  --fresh)
+    stop_service "$runtime/upload.pid"
+    stop_service "$runtime/websockify.pid"
+    stop_service "$runtime/qemu.pid"
+    rm -f "$runtime/data.img" "$runtime/ext4.img" "$runtime/classicube-data.img"
+    ;;
   --restart-vnc)
     stop_service "$runtime/websockify.pid"
     ;;
   '') ;;
-  *) printf 'Usage: %s [--restart | --restart-vnc]\n' "$0" >&2; exit 2 ;;
+  *) printf 'Usage: %s [--restart | --restart-vnc | --fresh]\n' "$0" >&2; exit 2 ;;
 esac
 
 if ! running "$runtime/upload.pid"; then
@@ -120,14 +130,18 @@ PYEXTRACT
       -E lazy_itable_init=0,lazy_journal_init=0 -d "$stage" "$runtime/ext4.img"
     rm -rf "$stage"
   fi
+  if ! test -f "$runtime/classicube-data.img"; then
+    gzip -dc "$repo_root/Images/classicube-data.img.gz" > "$runtime/classicube-data.img"
+  fi
   acceleration=(-accel tcg,thread=multi -cpu max)
   if [[ -r /dev/kvm && -w /dev/kvm ]]; then
     acceleration=(-accel kvm -cpu host)
   fi
-  "$qemu" "${acceleration[@]}" -machine pc,vmport=on -m 256 -boot d \
+  "$qemu" "${acceleration[@]}" -machine pc,vmport=on -m "$memory" -smp "$cpus" -boot d \
     -cdrom "$repo_root/Images/magenta.iso" \
     -drive "file=$runtime/data.img,format=raw,if=ide" \
     -drive "file=$runtime/ext4.img,format=raw,if=ide" \
+    -drive "file=$runtime/classicube-data.img,format=raw,if=ide" \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-modern=on,romfile= \
     -device virtio-rng-pci,disable-modern=on \
     -vga std -display none -vnc 127.0.0.1:1,lossy=off \
