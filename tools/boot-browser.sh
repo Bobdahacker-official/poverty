@@ -130,6 +130,10 @@ PYEXTRACT
       -E lazy_itable_init=0,lazy_journal_init=0 -d "$stage" "$runtime/ext4.img"
     rm -rf "$stage"
   fi
+  if ! command -v debugfs >/dev/null; then
+    sudo -n apt-get update -qq
+    sudo -n apt-get install -y -qq e2fsprogs
+  fi
   if ! debugfs -R 'stat /classicube.mgnta' "$runtime/ext4.img" 2>/dev/null | grep -q 'Inode:'; then
     classicube_stage=$(mktemp -d "$runtime/classicube-files.XXXXXX")
     gzip -dc "$repo_root/Images/classicube-data.img.gz" > "$classicube_stage/disk.img"

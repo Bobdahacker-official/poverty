@@ -775,6 +775,16 @@ static void open_file(unsigned index) {
     open_app(EDITOR);
     return;
   }
+  /* Read the ELF ident first.  Programs can be much larger than an editor
+   * document, while the executable loader reads them directly from ext4. */
+  char ident[4];
+  int ident_size = fs_read(path, ident, sizeof(ident));
+  if (ident_size == 4 && ident[0] == 0x7f && ident[1] == 'E' &&
+      ident[2] == 'L' && ident[3] == 'F') {
+    if (user_spawn(path, "", false) < 0)
+      notify("Program launch failed");
+    return;
+  }
   if (file_items[index].size > FS_MAX_FILE) {
     notify("This editor accepts documents up to 64 KiB");
     return;
@@ -783,12 +793,6 @@ static void open_file(unsigned index) {
   int n = fs_read(path, contents, FS_MAX_FILE);
   if (n < 0) {
     notify("Could not open this file");
-    return;
-  }
-  if (n >= 4 && contents[0] == 0x7f && contents[1] == 'E' &&
-      contents[2] == 'L' && contents[3] == 'F') {
-    int pid = user_spawn(path, "", false);
-    notify(pid < 0 ? "Program launch failed" : "Program started");
     return;
   }
   for (int i = 0; i < n; i++)
