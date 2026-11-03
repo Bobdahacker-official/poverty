@@ -39,7 +39,7 @@ jobs:
         run: |
           test -s "releases/$TAG.md"
           mkdir -p release-assets
-          cp Images/magenta.iso Images/avalanche.iso Images/magenta-data.img Images/avalanche-data.img release-assets/
+          cp Images/magenta.iso Images/avalanche.iso Images/magenta-data.img Images/avalanche-data.img Images/classicube-data.img.gz release-assets/
           cp avalanche/images/avalanche.elf release-assets/
           git archive --format=zip --prefix=magenta/ --output=release-assets/magenta-source.zip "$TAG"
           cd release-assets
@@ -62,8 +62,8 @@ jobs:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "Magenta ${TAG#magenta-v} — Mountains" --notes-file "releases/$TAG.md" --latest
+            gh release edit "$TAG" --title "Magenta Plus ${TAG#magenta-v}" --notes-file "releases/$TAG.md" --latest
           else
-            gh release create "$TAG" --verify-tag --title "Magenta ${TAG#magenta-v} — Mountains" --notes-file "releases/$TAG.md" --latest
+            gh release create "$TAG" --verify-tag --title "Magenta Plus ${TAG#magenta-v}" --notes-file "releases/$TAG.md" --latest
           fi
           gh release upload "$TAG" release-assets/* --clobber
