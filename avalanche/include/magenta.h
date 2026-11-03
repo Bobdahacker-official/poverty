@@ -15,6 +15,11 @@ struct av_file_entry {
   char name[32];
   uint32_t size;
 };
+struct av_task_info {
+  int32_t pid,parent;
+  uint32_t state,priority,pages,cpu;
+  char name[32];
+};
 enum av_report {
   AV_REPORT_FILESYSTEM,
   AV_REPORT_PROCESSES,

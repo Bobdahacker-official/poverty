@@ -91,6 +91,11 @@ bool games_ui_key(char c) {
   }
   return false;
 }
+void games_ui_direction(unsigned direction) {
+  initialize();
+  if (selected && direction <= TILE_DOWN)
+    tiles_move(&tiles, direction);
+}
 static void centered(struct nk_context *ui, struct nk_command_buffer *canvas,
                      struct nk_rect rect, const char *text,
                      struct nk_color color) {

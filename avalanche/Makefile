@@ -36,6 +36,7 @@ build/user/lib.o: user/lib.c user/lib.h include/abi.h include/magenta.h | build/
 	$(CC) $(CFLAGS) -Iuser -c $< -o $@
 build/user/%.o: user/%.c user/lib.h include/abi.h include/magenta.h | build/user
 	$(CC) $(CFLAGS) -Iuser -c $< -o $@
+build/user/ush.o: user/unix.h
 build/user/%.elf: build/user/%.o build/user/crt.o build/user/lib.o user/linker.ld
 	$(LD) -m elf_x86_64 -T user/linker.ld -nostdlib -o $@ build/user/crt.o $< build/user/lib.o
 build/user/linuxhello.o: user/linuxhello.S | build/user

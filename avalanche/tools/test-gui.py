@@ -77,6 +77,10 @@ try:
     assert len(set(desktop))>64 and desktop.count(b'\xe6\x00\x7e')>20
     assert not any(state(app)['visible'] for app in range(layout['app_count']))
     print('PASS desktop pixels and clean startup without Settings',flush=True)
+    before_pixels=value('presented_pixel_count','Q')
+    time.sleep(1.2)
+    assert value('presented_pixel_count','Q')-before_pixels<width*height
+    print('PASS desktop clock updates avoid full framebuffer copies',flush=True)
     def key(text,delay=.25): monitor('sendkey '+text);time.sleep(delay)
     def move(x,y):
         px=max(0,min(width-1,x*scale));py=max(0,min(height-1,y*scale))
@@ -201,6 +205,15 @@ try:
         Image.open(path).save(os.environ['GAMES_SCREENSHOT'])
     click_label('New game')
     print('PASS native Games rendering, keyboard moves, merges, undo and score save',flush=True)
+    open_app('ctrl-k',3)
+    wait(lambda:any(item[0]=='Applications' for item in labels()),'System Monitor application view')
+    monitor_labels=[item for item in labels() if item[0]=='Games']
+    assert monitor_labels
+    buttons=[button for row in monitor_labels for button in labels() if button[0]=='Close' and abs(button[2]-row[2])<row[4]]
+    capture('system-monitor')
+    assert buttons
+    _,x,y,w,h=buttons[-1];click(x+w/2,y+h/2)
+    wait(lambda:not state(games)['visible'],'System Monitor closes a running desktop application')
     open_app('ctrl-b',7)
     click_label('Notes')
     wait(lambda:any(item[0]=='Save note' for item in labels()),'bundled browser Notes page')

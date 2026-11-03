@@ -1107,7 +1107,8 @@ int process_fork(struct trap_frame *f) {
       activate(p->directory);
       return -14;
     }
-    if (f->edi & 0x200000) c->clear_tid = f->r10;
+    if (f->edi & 0x200000)
+      c->clear_tid = f->r10;
   }
   linux_clone_fds(c, p);
   c->state = TASK_READY;
@@ -1209,9 +1210,34 @@ void user_syscall(struct trap_frame *f) {
     return;
   }
   uint32_t n = f->ecx;
-  char name[32];
+  char name[256];
   int result = -1;
   switch (f->eax) {
+  case AV_FILE_MKDIR:
+    if (user_string(f->ebx, name, sizeof(name)))
+      result = fs_mkdir(name);
+    break;
+  case AV_FILE_RENAME:
+  case AV_FILE_COPY: {
+    char destination[256];
+    if (user_string(f->ebx, name, sizeof(name)) &&
+        user_string(f->ecx, destination, sizeof(destination)))
+      result = f->eax == AV_FILE_RENAME ? fs_rename(name, destination)
+                                        : fs_copy(name, destination);
+    break;
+  }
+  case AV_TASK_INFO: {
+    struct task_info info;
+    _Static_assert(sizeof(info) == sizeof(struct av_task_info),
+                   "task ABI layout");
+    if (f->ebx >= PROCESS_MAX)
+      result = -22;
+    else if (!user_task_info(f->ebx, &info))
+      result = 0;
+    else
+      result = process_copyout(t, f->ecx, &info, sizeof(info)) ? 1 : -14;
+    break;
+  }
   case AV_PACKAGE: {
     char arguments[512];
     if (user_string(f->ebx, arguments, sizeof(arguments))) {

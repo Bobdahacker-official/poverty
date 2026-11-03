@@ -1,4 +1,14 @@
 # Magenta
+
+[Website](https://bobdahacker-official.github.io/poverty/) · [Documentation](https://bobdahacker-official.github.io/poverty/docs/) · [Developer SDK](https://bobdahacker-official.github.io/poverty/docs/sdk.html)
+
+The SDK builds native `.mgnta` executables and signs their manifests with RSA/SHA-256. Download [magenta-sdk.tar.gz](Images/magenta-sdk.tar.gz), add its `bin` directory to PATH, then use `mgnta init`, `mgnta build`, `mgnta keygen`, and `sign`. The [SDK documentation](docs/sdk.html) covers the API, signing keys, verification, and package installation.
+
+In the browser desktop, Upload app opens the signed-bundle uploader. It verifies the executable hash and signature. Packages can trust the uploaded developer certificate and install the app, repeating verification inside Avalanche. The upload bridge address is editable in Packages. The private signing key stays on the development machine.
+
+System Monitor has an Applications view for built-in desktop windows and a Processes view for ring-3 programs. Applications can be focused or closed from the live window list. The compositor copies changed framebuffer regions, and extended keyboard events use a queue so fast game input is retained.
+
+Terminal includes `ps`, `uname`, `pwd`, `clear`, `date`, `free`, `uptime`, `mkdir`, `cp`, `mv`, `wc`, `head`, and `grep`, alongside the existing shell commands. These run on Avalanche's native API.
 *This OS and kernel is not made for experimenting, learning, educational purpouses, and is not a hobby project. It is an indie OS designed to be run in both VMs and real hardware, though advanced hardware support is in the works!*
 Magenta is an x86-64 operating system written in C and assembly, built on [Avalanche Kernel](avalanche/). It has a desktop, a shell, files and folders, networking, and a package manager.
 

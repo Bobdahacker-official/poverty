@@ -67,6 +67,7 @@ stop_service() {
 
 case ${1:-} in
   --restart)
+    stop_service "$runtime/upload.pid"
     stop_service "$runtime/websockify.pid"
     stop_service "$runtime/qemu.pid"
     ;;
@@ -76,6 +77,12 @@ case ${1:-} in
   '') ;;
   *) printf 'Usage: %s [--restart | --restart-vnc]\n' "$0" >&2; exit 2 ;;
 esac
+
+if ! running "$runtime/upload.pid"; then
+  nohup setsid python3 "$repo_root/tools/package-upload.py" --root "$runtime/uploads" --port 6082 \
+    > "$runtime/upload.log" 2>&1 < /dev/null &
+  echo "$!" > "$runtime/upload.pid"
+fi
 
 if ! running "$runtime/qemu.pid"; then
   if command -v ss >/dev/null && ss -ltn '( sport = :5901 )' | rg -q 'LISTEN'; then

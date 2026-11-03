@@ -1,4 +1,5 @@
 #include "lib.h"
+#include "unix.h"
 static char data[65537];
 int main(void) {
   char line[512];
@@ -12,16 +13,19 @@ int main(void) {
       continue;
     if (ueq(cmd, "exit"))
       return 0;
+    if (unix_command(cmd, rest, data))
+      continue;
     if (ueq(cmd, "help"))
       puts_u("help echo ls cat write rm ticks sleep udp recv spawn wait kill "
              "pid aplay exit\nwrite NAME "
              "TEXT; udp IP PORT TEXT; recv LOCALPORT\n");
-    else if(ueq(cmd,"aplay")) {
-      int result=av_call(AV_AUDIO_PLAY,(uintptr_t)rest,0,0,0);
-      if(!result) while((result=av_call(AV_AUDIO_STATUS,0,0,0,0))>0) av_call(AV_SLEEP,1,0,0,0);
-      puts_u(result<0 ? "Playback failed.\n" : "Playback complete.\n");
-    }
-    else if (ueq(cmd, "spawn")) {
+    else if (ueq(cmd, "aplay")) {
+      int result = av_call(AV_AUDIO_PLAY, (uintptr_t)rest, 0, 0, 0);
+      if (!result)
+        while ((result = av_call(AV_AUDIO_STATUS, 0, 0, 0, 0)) > 0)
+          av_call(AV_SLEEP, 1, 0, 0, 0);
+      puts_u(result < 0 ? "Playback failed.\n" : "Playback complete.\n");
+    } else if (ueq(cmd, "spawn")) {
       char *name = word_u(&rest);
       int pid = av_call(AV_SPAWN, (uintptr_t)name, (uintptr_t)rest, 0, 0);
       if (pid < 0)

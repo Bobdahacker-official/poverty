@@ -3,7 +3,7 @@
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
   "postCreateCommand": "sudo apt-get update && sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-system-data seabios ovmf ipxe-qemu novnc websockify curl e2fsprogs",
   "postStartCommand": "bash tools/boot-browser.sh",
-  "forwardPorts": [6080],
+  "forwardPorts": [6080,6082],
   "portsAttributes": {
     "5901": {
       "label": "Internal QEMU display",
@@ -13,6 +13,11 @@
       "label": "Magenta desktop",
       "protocol": "http",
       "onAutoForward": "openBrowser"
+    },
+    "6082": {
+      "label": "Signed application uploads",
+      "protocol": "http",
+      "onAutoForward": "notify"
     }
   }
 }

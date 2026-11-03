@@ -1,13 +1,13 @@
 #include "font.h"
 #include "gui_canvas.h"
+#include "gui_games.h"
 #include "gui_style.h"
 #include "http.h"
+#include "image.h"
 #include "process.h"
 #include "system.h"
 #include "tls.h"
 #include "web.h"
-#include "image.h"
-#include "gui_games.h"
 
 enum {
   TERMINAL,
@@ -28,9 +28,10 @@ static uint8_t ui_memory[4 * 1024 * 1024];
 static struct nk_user_font body_font, heading_font;
 static unsigned width, height, display_width, display_height;
 static float native_scale = 1;
-static const char *app_names[APP_COUNT] = {"Terminal", "Files",   "Text editor",
-                                           "System Monitor", "Network", "Packages",
-                                           "Settings", "Browser", "Images", "Music", "Games"};
+static const char *app_names[APP_COUNT] = {
+    "Terminal", "Files",    "Text editor", "System Monitor",
+    "Network",  "Packages", "Settings",    "Browser",
+    "Images",   "Music",    "Games"};
 static const char *app_summaries[APP_COUNT] = {
     "Run programs and shell commands",
     "Browse your disks and documents",
@@ -40,10 +41,11 @@ static const char *app_summaries[APP_COUNT] = {
     "Install and update applications",
     "Make Magenta your own",
     "Read web pages and local documents",
-    "View PNG, JPEG and BMP pictures", "Listen to music and WAV recordings",
+    "View PNG, JPEG and BMP pictures",
+    "Listen to music and WAV recordings",
     "Play Minesweeper and 2048"};
 static char music_path[256];
-static bool music_focus,music_play_requested;
+static bool music_focus, music_play_requested;
 static int music_result;
 static struct image_document picture;
 static char picture_path[256];
@@ -116,6 +118,7 @@ static char package_filter[64], package_details[2048], package_result[4096];
 static nk_bool installed_only;
 static bool removing_package;
 static char download_host[128], download_path[128];
+static char upload_host[128] = "http://10.0.2.2:6082";
 static char launcher_search[64];
 struct desktop_registry {
   uint32_t magic, version, shortcuts, top_bar, dock_bar, desktop_icons;
@@ -199,7 +202,8 @@ static bool contains(const char *text, const char *needle) {
 }
 static bool starts_with(const char *text, const char *prefix) {
   while (*prefix)
-    if (*text++ != *prefix++) return false;
+    if (*text++ != *prefix++)
+      return false;
   return true;
 }
 static struct nk_color rgb(uint32_t value) {
@@ -397,7 +401,8 @@ static void style(void) {
   ui.style.contextual_button.normal = nk_style_item_color(rgb(p->mantle));
   ui.style.contextual_button.hover = nk_style_item_color(rgb(p->surface));
   ui.style.contextual_button.active = nk_style_item_color(color);
-  ui.style.contextual_button.text_normal = ui.style.contextual_button.text_hover = text;
+  ui.style.contextual_button.text_normal =
+      ui.style.contextual_button.text_hover = text;
   ui.style.contextual_button.text_active = nk_rgb(255, 255, 255);
   ui.style.edit.rounding = 8;
   ui.style.edit.border = 1;
@@ -478,8 +483,10 @@ static void clipboard_paste(nk_handle handle, struct nk_text_edit *edit) {
 static void open_app(unsigned id) {
   if (id >= APP_COUNT)
     return;
-  if (id==IMAGES) picture_focus=true;
-  if (id==MUSIC) music_focus=true;
+  if (id == IMAGES)
+    picture_focus = true;
+  if (id == MUSIC)
+    music_focus = true;
   bool was_visible =
       apps[id].visible && !nk_window_is_collapsed(&ui, app_names[id]);
   apps[id].visible = true;
@@ -516,8 +523,10 @@ static void update_status(void) {
       if (user_task_info(i, &info) && info.state != TASK_ZOMBIE) {
         unsigned usage = task_cpu[i];
         if (sample) {
-          usage = task_sample_valid && elapsed && task_cpu_pid[i] == (unsigned)info.pid
-                      ? (unsigned)((uint64_t)(info.cpu - task_previous_cpu[i]) * 100 / elapsed)
+          usage = task_sample_valid && elapsed &&
+                          task_cpu_pid[i] == (unsigned)info.pid
+                      ? (unsigned)((uint64_t)(info.cpu - task_previous_cpu[i]) *
+                                   100 / elapsed)
                       : 0;
           if (usage > 100)
             usage = 100;
@@ -534,13 +543,18 @@ static void update_status(void) {
       }
     }
     if (sample) {
-      uint64_t percentage = task_sample_valid && elapsed
-          ? (cpu_total - previous_user_ticks) * 100 / elapsed : 0;
+      uint64_t percentage =
+          task_sample_valid && elapsed
+              ? (cpu_total - previous_user_ticks) * 100 / elapsed
+              : 0;
       userspace_cpu = percentage > 100 ? 100 : (unsigned)percentage;
       previous_user_ticks = cpu_total;
       cpu_samples[sample_at] = userspace_cpu;
-      memory_samples[sample_at] = system_status.managed_kib
-          ? (unsigned)((uint64_t)system_status.allocated_kib * 100 / system_status.managed_kib) : 0;
+      memory_samples[sample_at] =
+          system_status.managed_kib
+              ? (unsigned)((uint64_t)system_status.allocated_kib * 100 /
+                           system_status.managed_kib)
+              : 0;
       sample_at = (sample_at + 1) % 60;
       if (sample_count < 60)
         sample_count++;
@@ -620,8 +634,10 @@ static int file_compare(const struct file_item *a, const struct file_item *b) {
     return a->directory ? -1 : 1;
   for (unsigned i = 0;; i++) {
     unsigned char x = a->name[i], y = b->name[i];
-    if (x >= 'A' && x <= 'Z') x += 32;
-    if (y >= 'A' && y <= 'Z') y += 32;
+    if (x >= 'A' && x <= 'Z')
+      x += 32;
+    if (y >= 'A' && y <= 'Z')
+      y += 32;
     if (x != y || !x || !y)
       return (int)x - y;
   }
@@ -651,23 +667,32 @@ static bool canonical_path(char out[256], const char *path) {
   if (strlen(path) >= 256)
     return false;
   unsigned used = 1;
-  out[0] = '/'; out[1] = 0;
+  out[0] = '/';
+  out[1] = 0;
   for (unsigned at = 0; full[at];) {
-    while (full[at] == '/') at++;
+    while (full[at] == '/')
+      at++;
     unsigned start = at;
-    while (full[at] && full[at] != '/') at++;
+    while (full[at] && full[at] != '/')
+      at++;
     unsigned n = at - start;
-    if (!n || (n == 1 && full[start] == '.')) continue;
+    if (!n || (n == 1 && full[start] == '.'))
+      continue;
     if (n == 2 && full[start] == '.' && full[start + 1] == '.') {
-      while (used > 1 && out[used - 1] != '/') used--;
-      if (used > 1) used--;
+      while (used > 1 && out[used - 1] != '/')
+        used--;
+      if (used > 1)
+        used--;
       out[used] = 0;
       continue;
     }
-    if (used > 1) out[used++] = '/';
-    if (used + n >= 256) return false;
+    if (used > 1)
+      out[used++] = '/';
+    if (used + n >= 256)
+      return false;
     memcpy(out + used, full + start, n);
-    used += n; out[used] = 0;
+    used += n;
+    out[used] = 0;
   }
   return true;
 }
@@ -682,7 +707,8 @@ static void browse(const char *path) {
     notify("That folder is unavailable");
     return;
   }
-  if (!file_history_count || !str_eq(file_history[file_history_at], normalized)) {
+  if (!file_history_count ||
+      !str_eq(file_history[file_history_at], normalized)) {
     file_history_count = file_history_count ? file_history_at + 1 : 0;
     if (file_history_count == 32) {
       memmove(file_history, file_history + 1, sizeof(file_history[0]) * 31);
@@ -706,21 +732,28 @@ static void open_file(unsigned index) {
     browse(path);
     return;
   }
-  const char *extension=NULL;
-  for (const char *p=path;*p;p++) if (*p=='.') extension=p+1;
+  const char *extension = NULL;
+  for (const char *p = path; *p; p++)
+    if (*p == '.')
+      extension = p + 1;
   if (extension) {
-    char suffix[8]; unsigned i=0;
-    while (extension[i] && i+1<sizeof(suffix)) {
-      char c=extension[i]; suffix[i++]=(c>='A' && c<='Z') ? c+32 : c;
+    char suffix[8];
+    unsigned i = 0;
+    while (extension[i] && i + 1 < sizeof(suffix)) {
+      char c = extension[i];
+      suffix[i++] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
     }
-    suffix[i]=0;
-    if(str_eq(suffix,"wav")) {
-      copy(music_path,path,sizeof(music_path));
-      music_result=audio_play(music_path);open_app(MUSIC);return;
+    suffix[i] = 0;
+    if (str_eq(suffix, "wav")) {
+      copy(music_path, path, sizeof(music_path));
+      music_result = audio_play(music_path);
+      open_app(MUSIC);
+      return;
     }
-    if (str_eq(suffix,"png") || str_eq(suffix,"jpg") || str_eq(suffix,"jpeg") || str_eq(suffix,"bmp")) {
-      copy(picture_path,path,sizeof(picture_path));
-      image_load(&picture,picture_path);
+    if (str_eq(suffix, "png") || str_eq(suffix, "jpg") ||
+        str_eq(suffix, "jpeg") || str_eq(suffix, "bmp")) {
+      copy(picture_path, path, sizeof(picture_path));
+      image_load(&picture, picture_path);
       open_app(IMAGES);
       return;
     }
@@ -928,9 +961,16 @@ static void format_size(char out[64], uint64_t bytes) {
   char digits[32];
   const char *unit = " B";
   uint64_t divisor = 1;
-  if (bytes >= 1024ull * 1024 * 1024) { divisor = 1024ull * 1024 * 1024; unit = " GiB"; }
-  else if (bytes >= 1024 * 1024) { divisor = 1024 * 1024; unit = " MiB"; }
-  else if (bytes >= 1024) { divisor = 1024; unit = " KiB"; }
+  if (bytes >= 1024ull * 1024 * 1024) {
+    divisor = 1024ull * 1024 * 1024;
+    unit = " GiB";
+  } else if (bytes >= 1024 * 1024) {
+    divisor = 1024 * 1024;
+    unit = " MiB";
+  } else if (bytes >= 1024) {
+    divisor = 1024;
+    unit = " KiB";
+  }
   number(digits, bytes / divisor);
   copy(out, digits, 64);
   if (divisor > 1) {
@@ -951,15 +991,16 @@ static bool valid_item_name(const char *name) {
 static void file_error(const char *action, int error) {
   char message[256];
   copy(message, action, sizeof(message));
-  append(message, error == -17 ? ": an item with that name already exists"
-                  : error == -28 ? ": the disk or directory is full"
-                  : error == -30 ? ": this storage does not support folders"
-                  : error == -27 ? ": the filesystem's size limit was reached"
-                  : error == -39 ? ": the folder is not empty"
-                  : error == -95 ? ": unsupported file type or filesystem feature"
-                  : error == -22 ? ": the destination is inside the source"
-                  : error == -40 ? ": the folder nesting limit was reached"
-                  : ": the filesystem could not complete the operation",
+  append(message,
+         error == -17   ? ": an item with that name already exists"
+         : error == -28 ? ": the disk or directory is full"
+         : error == -30 ? ": this storage does not support folders"
+         : error == -27 ? ": the filesystem's size limit was reached"
+         : error == -39 ? ": the folder is not empty"
+         : error == -95 ? ": unsupported file type or filesystem feature"
+         : error == -22 ? ": the destination is inside the source"
+         : error == -40 ? ": the folder nesting limit was reached"
+                        : ": the filesystem could not complete the operation",
          sizeof(message));
   notify(message);
 }
@@ -986,43 +1027,60 @@ static void file_copy_selection(bool cut) {
   if (selected_file < 0 || (unsigned)selected_file >= file_count)
     return;
   copy(file_clipboard, file_items[selected_file].path, sizeof(file_clipboard));
-  copy(file_clipboard_name, file_items[selected_file].name, sizeof(file_clipboard_name));
+  copy(file_clipboard_name, file_items[selected_file].name,
+       sizeof(file_clipboard_name));
   file_cut = cut;
   notify(cut ? "Ready to move. Open a destination folder and Paste."
              : "Copied. Open a destination folder and Paste.");
 }
 static int remove_copy_tree(const char *path, unsigned depth) {
-  if (depth > 16) return -40;
+  if (depth > 16)
+    return -40;
   if (fs_directory(path) == 0) {
     for (;;) {
-      char name[256], child[256]; uint64_t size; bool directory;
+      char name[256], child[256];
+      uint64_t size;
+      bool directory;
       int r = fs_browse(path, 0, name, &size, &directory);
-      if (r == -2) break;
-      if (r) return r;
-      if (!join_path(child, path, name)) return -36;
+      if (r == -2)
+        break;
+      if (r)
+        return r;
+      if (!join_path(child, path, name))
+        return -36;
       r = remove_copy_tree(child, depth + 1);
-      if (r) return r;
+      if (r)
+        return r;
     }
   }
   return fs_remove(path);
 }
 static int copy_tree(const char *source, const char *target, unsigned depth) {
-  if (depth > 16) return -40;
-  if (fs_size(target) >= 0) return -17;
+  if (depth > 16)
+    return -40;
+  if (fs_size(target) >= 0)
+    return -17;
   if (fs_directory(source) != 0)
     return fs_copy(source, target);
   int r = fs_mkdir(target);
-  if (r) return r;
+  if (r)
+    return r;
   for (unsigned index = 0;; index++) {
-    char name[256], from[256], to[256]; uint64_t size; bool directory;
+    char name[256], from[256], to[256];
+    uint64_t size;
+    bool directory;
     r = fs_browse(source, index, name, &size, &directory);
-    if (r == -2) return 0;
-    if (r) break;
+    if (r == -2)
+      return 0;
+    if (r)
+      break;
     if (!join_path(from, source, name) || !join_path(to, target, name)) {
-      r = -36; break;
+      r = -36;
+      break;
     }
     r = copy_tree(from, to, depth + 1);
-    if (r) break;
+    if (r)
+      break;
     devices_poll();
     net_poll();
   }
@@ -1032,19 +1090,24 @@ static int copy_tree(const char *source, const char *target, unsigned depth) {
   return r;
 }
 static void file_paste(void) {
-  if (!*file_clipboard) return;
+  if (!*file_clipboard)
+    return;
   char destination[256];
   if (!join_path(destination, browser_path, file_clipboard_name)) {
-    notify("The destination path is too long"); return;
+    notify("The destination path is too long");
+    return;
   }
   unsigned n = strlen(file_clipboard);
-  if (strlen(destination) > n && !__builtin_memcmp(destination, file_clipboard, n) &&
+  if (strlen(destination) > n &&
+      !__builtin_memcmp(destination, file_clipboard, n) &&
       destination[n] == '/') {
-    notify("Choose a destination outside the original item."); return;
+    notify("Choose a destination outside the original item.");
+    return;
   }
   if (fs_size(destination) >= 0) {
     if (file_cut) {
-      notify("An item with that name already exists. Rename it before moving."); return;
+      notify("An item with that name already exists. Rename it before moving.");
+      return;
     }
     bool available = false;
     for (unsigned suffix = 1; suffix <= 999; suffix++) {
@@ -1054,16 +1117,25 @@ static void file_paste(void) {
       copy(name, file_clipboard_name, sizeof(name) - reserve);
       append(name, "-copy-", sizeof(name));
       append(name, digits, sizeof(name));
-      if (!join_path(destination, browser_path, name)) break;
-      if (fs_size(destination) < 0) { available = true; break; }
+      if (!join_path(destination, browser_path, name))
+        break;
+      if (fs_size(destination) < 0) {
+        available = true;
+        break;
+      }
     }
-    if (!available) { notify("No available name for the copy in this folder."); return; }
+    if (!available) {
+      notify("No available name for the copy in this folder.");
+      return;
+    }
   }
   int r = file_cut ? fs_rename(file_clipboard, destination)
                    : copy_tree(file_clipboard, destination, 0);
-  if (r < 0) file_error(file_cut ? "Move failed" : "Copy failed", r);
+  if (r < 0)
+    file_error(file_cut ? "Move failed" : "Copy failed", r);
   else {
-    if (file_cut) file_clipboard[0] = file_clipboard_name[0] = 0;
+    if (file_cut)
+      file_clipboard[0] = file_clipboard_name[0] = 0;
     refresh_files();
     notify(file_cut ? "Item moved" : "Item copied");
   }
@@ -1074,7 +1146,8 @@ static void file_history_go(int direction) {
     return;
   unsigned next = direction < 0 ? file_history_at - 1 : file_history_at + 1;
   if (fs_directory(file_history[next]) < 0) {
-    notify("That location is no longer available"); return;
+    notify("That location is no longer available");
+    return;
   }
   file_history_at = next;
   copy(browser_path, file_history[next], sizeof(browser_path));
@@ -1084,12 +1157,14 @@ static void file_history_go(int direction) {
   refresh_files();
 }
 static bool quiet_button(const char *label, const char *tip, bool enabled) {
-  if (!enabled) nk_widget_disable_begin(&ui);
+  if (!enabled)
+    nk_widget_disable_begin(&ui);
   bool hovered = nk_widget_is_hovered(&ui);
   bool clicked = nk_button_label(&ui, label);
   if (hovered && tip)
     nk_tooltip(&ui, tip);
-  if (!enabled) nk_widget_disable_end(&ui);
+  if (!enabled)
+    nk_widget_disable_end(&ui);
   return clicked && enabled;
 }
 static void file_context_menu(struct nk_rect bounds) {
@@ -1139,8 +1214,8 @@ static void file_contents_view(void) {
     files_address_focus = 0;
   }
   nk_flags entered = nk_edit_string_zero_terminated(
-      &ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER | NK_EDIT_AUTO_SELECT, browser_address,
-      sizeof(browser_address), nk_filter_default);
+      &ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER | NK_EDIT_AUTO_SELECT,
+      browser_address, sizeof(browser_address), nk_filter_default);
   files_editing |= (entered & NK_EDIT_ACTIVE) != 0;
   if (quiet_button("Go", "Open location (Ctrl+L)", true) ||
       (entered & NK_EDIT_COMMITTED))
@@ -1149,43 +1224,59 @@ static void file_contents_view(void) {
   const float search[] = {0.12f, 0.54f, 0.34f};
   nk_layout_row(&ui, NK_DYNAMIC, 34, 3, search);
   caption("Search");
-  char previous[64]; copy(previous, file_filter, sizeof(previous));
+  char previous[64];
+  copy(previous, file_filter, sizeof(previous));
   if (files_search_focus) {
     nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
     files_search_focus = 0;
   }
-  nk_flags search_flags = nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD | NK_EDIT_AUTO_SELECT, file_filter,
-                                 sizeof(file_filter), nk_filter_default);
+  nk_flags search_flags = nk_edit_string_zero_terminated(
+      &ui, NK_EDIT_FIELD | NK_EDIT_AUTO_SELECT, file_filter,
+      sizeof(file_filter), nk_filter_default);
   files_editing |= (search_flags & NK_EDIT_ACTIVE) != 0;
   nk_bool recursive_before = search_subfolders;
   nk_checkbox_label(&ui, "Subfolders", &search_subfolders);
   if (!str_eq(previous, file_filter) || recursive_before != search_subfolders) {
-    file_page = 0; refresh_files();
+    file_page = 0;
+    refresh_files();
   }
 
   nk_layout_row_dynamic(&ui, 32, 4);
-  if (quiet_button("New File", "Create an empty document", true)) file_begin_create(false);
-  if (quiet_button("New Folder", "Create a folder", true)) file_begin_create(true);
-  if (quiet_button("Paste", "Paste the copied or cut item", *file_clipboard != 0)) file_paste();
-  if (quiet_button("Refresh", "Read this folder again", true)) refresh_files();
+  if (quiet_button("New File", "Create an empty document", true))
+    file_begin_create(false);
+  if (quiet_button("New Folder", "Create a folder", true))
+    file_begin_create(true);
+  if (quiet_button("Paste", "Paste the copied or cut item",
+                   *file_clipboard != 0))
+    file_paste();
+  if (quiet_button("Refresh", "Read this folder again", true))
+    refresh_files();
 
   bool selected = selected_file >= 0 && (unsigned)selected_file < file_count;
   nk_layout_row_dynamic(&ui, 32, 5);
-  if (quiet_button("Open", "Open the selected item", selected)) open_file(selected_file);
-  if (quiet_button("Copy", "Copy the selected item", selected)) file_copy_selection(false);
-  if (quiet_button("Cut", "Move the selected item on Paste", selected)) file_copy_selection(true);
-  if (quiet_button("Rename", "Rename the selected item", selected)) file_begin_rename();
-  if (quiet_button("Delete", "Delete the selected item", selected)) file_begin_delete();
+  if (quiet_button("Open", "Open the selected item", selected))
+    open_file(selected_file);
+  if (quiet_button("Copy", "Copy the selected item", selected))
+    file_copy_selection(false);
+  if (quiet_button("Cut", "Move the selected item on Paste", selected))
+    file_copy_selection(true);
+  if (quiet_button("Rename", "Rename the selected item", selected))
+    file_begin_rename();
+  if (quiet_button("Delete", "Delete the selected item", selected))
+    file_begin_delete();
 
   if (creating_file || (renaming_file && selected_file >= 0)) {
     nk_layout_row_dynamic(&ui, 24, 1);
-    caption(renaming_file ? "Rename selected item" : creating_folder ? "New folder name" : "New file name");
+    caption(renaming_file     ? "Rename selected item"
+            : creating_folder ? "New folder name"
+                              : "New file name");
     const float fields[] = {0.56f, 0.25f, 0.19f};
     nk_layout_row(&ui, NK_DYNAMIC, 34, 3, fields);
     char *name = renaming_file ? rename_name : new_name;
     unsigned capacity = renaming_file ? sizeof(rename_name) : sizeof(new_name);
-    nk_flags result = nk_edit_string_zero_terminated(
-        &ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER, name, capacity, nk_filter_default);
+    nk_flags result =
+        nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER,
+                                       name, capacity, nk_filter_default);
     files_editing |= (result & NK_EDIT_ACTIVE) != 0;
     bool apply = accent_button(renaming_file ? "Rename" : "Create");
     bool cancel = nk_button_label(&ui, "Cancel");
@@ -1195,8 +1286,10 @@ static void file_contents_view(void) {
       if (renaming_file) {
         copy(parent, file_items[selected_file].path, sizeof(parent));
         unsigned end = strlen(parent);
-        while (end > 1 && parent[end - 1] != '/') end--;
-        if (end > 1) end--;
+        while (end > 1 && parent[end - 1] != '/')
+          end--;
+        if (end > 1)
+          end--;
         parent[end] = 0;
       }
       if (!valid_item_name(name) || !join_path(target, parent, name))
@@ -1205,116 +1298,167 @@ static void file_contents_view(void) {
         notify("An item with that name already exists");
       else {
         bool was_folder = creating_folder, was_rename = renaming_file;
-        int r = was_rename ? fs_rename(file_items[selected_file].path, target)
-                          : was_folder ? fs_mkdir(target) : fs_write(target, "", 0);
-        if (r < 0) file_error(was_rename ? "Rename failed" : "Creation failed", r);
+        int r = was_rename   ? fs_rename(file_items[selected_file].path, target)
+                : was_folder ? fs_mkdir(target)
+                             : fs_write(target, "", 0);
+        if (r < 0)
+          file_error(was_rename ? "Rename failed" : "Creation failed", r);
         else {
           creating_file = renaming_file = false;
           refresh_files();
-          notify(was_rename ? "Item renamed" : was_folder ? "Folder created" : "File created");
+          notify(was_rename   ? "Item renamed"
+                 : was_folder ? "Folder created"
+                              : "File created");
         }
       }
     }
-    if (cancel) creating_file = renaming_file = false;
+    if (cancel)
+      creating_file = renaming_file = false;
   }
 
   float area = nk_window_get_content_region(&ui).h -
                (creating_file || renaming_file ? 330 : 254);
-  if (area < 80) area = 80;
+  if (area < 80)
+    area = 80;
   nk_layout_row_dynamic(&ui, area, 1);
   struct nk_rect list_bounds = nk_widget_bounds(&ui);
   if (nk_group_begin(&ui, "Folder contents", 0)) {
     const float columns[] = {0.09f, 0.65f, 0.26f};
     nk_layout_row(&ui, NK_DYNAMIC, 24, 3, columns);
-    caption(""); caption("NAME"); caption("SIZE / TYPE");
+    caption("");
+    caption("NAME");
+    caption("SIZE / TYPE");
     int open_index = -1;
     bool right_on_item = false;
     for (unsigned i = 0; i < file_count; i++) {
       nk_layout_row(&ui, NK_DYNAMIC, 38, 3, columns);
       struct nk_rect icon = nk_widget_bounds(&ui);
       nk_spacing(&ui, 1);
-      gui_canvas_icon(nk_window_get_canvas(&ui),
-                      nk_rect(icon.x + 2, icon.y + 7, 24, 24),
-                      file_items[i].directory ? FILES : EDITOR,
-                      rgb(file_items[i].directory ? accent() : palette()->muted));
+      gui_canvas_icon(
+          nk_window_get_canvas(&ui), nk_rect(icon.x + 2, icon.y + 7, 24, 24),
+          file_items[i].directory ? FILES : EDITOR,
+          rgb(file_items[i].directory ? accent() : palette()->muted));
       struct nk_rect row_bounds = nk_widget_bounds(&ui);
       row_bounds.x = icon.x;
       row_bounds.w = nk_window_get_content_region(&ui).w;
       nk_bool row_selected = selected_file == (int)i;
-      if (nk_selectable_label(&ui, file_items[i].name, NK_TEXT_LEFT, &row_selected)) {
+      if (nk_selectable_label(&ui, file_items[i].name, NK_TEXT_LEFT,
+                              &row_selected)) {
         selected_file = i;
         uint32_t now = clock_ticks();
-        if (file_last_click == (int)i && (uint32_t)(now - file_last_click_time) < 40)
+        if (file_last_click == (int)i &&
+            (uint32_t)(now - file_last_click_time) < 40)
           open_index = i;
-        file_last_click = i; file_last_click_time = now;
+        file_last_click = i;
+        file_last_click_time = now;
       }
       if (nk_input_is_mouse_hovering_rect(&ui.input, row_bounds) &&
           nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_RIGHT)) {
         selected_file = i;
         right_on_item = true;
       }
-      if (file_items[i].directory) caption("Folder");
-      else { char size[64]; format_size(size, file_items[i].size); caption(size); }
+      if (file_items[i].directory)
+        caption("Folder");
+      else {
+        char size[64];
+        format_size(size, file_items[i].size);
+        caption(size);
+      }
     }
     if (!file_count) {
       nk_layout_row_dynamic(&ui, 44, 1);
-      nk_label(&ui, *file_filter ? "No files match your search" : "This folder is empty", NK_TEXT_CENTERED);
+      nk_label(&ui,
+               *file_filter ? "No files match your search"
+                            : "This folder is empty",
+               NK_TEXT_CENTERED);
       nk_layout_row_dynamic(&ui, 50, 1);
-      nk_label_wrap(&ui, *file_filter ? "Try a shorter name or enable Subfolders to search deeper."
-                                    : "Create a file or folder, or paste an item here.");
+      nk_label_wrap(
+          &ui, *file_filter
+                   ? "Try a shorter name or enable Subfolders to search deeper."
+                   : "Create a file or folder, or paste an item here.");
     }
-    if (!right_on_item && nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_RIGHT) &&
+    if (!right_on_item &&
+        nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_RIGHT) &&
         nk_input_is_mouse_hovering_rect(&ui.input, list_bounds))
       selected_file = -1;
     nk_group_end(&ui);
     file_context_menu(list_bounds);
-    if (open_index >= 0) open_file(open_index);
+    if (open_index >= 0)
+      open_file(open_index);
   }
   const float footer[] = {0.20f, 0.60f, 0.20f};
   nk_layout_row(&ui, NK_DYNAMIC, 30, 3, footer);
   if (quiet_button("< Previous", "Previous page", file_page >= 64)) {
-    file_page -= 64; refresh_files();
+    file_page -= 64;
+    refresh_files();
   }
   char digits[32], summary[128];
-  number(digits, file_matches); copy(summary, digits, sizeof(summary));
+  number(digits, file_matches);
+  copy(summary, digits, sizeof(summary));
   append(summary, *file_filter ? " matches" : " items", sizeof(summary));
-  if (search_limited) append(summary, " (search limit reached)", sizeof(summary));
+  if (search_limited)
+    append(summary, " (search limit reached)", sizeof(summary));
   caption(summary);
   if (quiet_button("Next >", "Next page", file_more)) {
-    file_page += 64; refresh_files();
+    file_page += 64;
+    refresh_files();
   }
 }
 static void files_view(void) {
   bool sidebar = nk_window_get_content_region(&ui).w >= 650;
   const float columns[] = {0.23f, 0.77f};
   if (sidebar)
-    nk_layout_row(&ui, NK_DYNAMIC, nk_window_get_content_region(&ui).h - 8, 2, columns);
+    nk_layout_row(&ui, NK_DYNAMIC, nk_window_get_content_region(&ui).h - 8, 2,
+                  columns);
   else
     nk_layout_row_dynamic(&ui, nk_window_get_content_region(&ui).h - 8, 1);
-  if (sidebar && nk_group_begin(&ui, "File locations", NK_WINDOW_NO_SCROLLBAR)) {
+  if (sidebar &&
+      nk_group_begin(&ui, "File locations", NK_WINDOW_NO_SCROLLBAR)) {
     heading("Files");
-    nk_layout_row_dynamic(&ui, 24, 1); caption("PLACES");
+    nk_layout_row_dynamic(&ui, 24, 1);
+    caption("PLACES");
     nk_layout_row_dynamic(&ui, 38, 1);
-    if (nk_button_label(&ui, "Home")) { file_filter[0] = 0; browse("/"); }
+    if (nk_button_label(&ui, "Home")) {
+      file_filter[0] = 0;
+      browse("/");
+    }
     nk_layout_row_dynamic(&ui, 38, 1);
-    if (nk_button_label(&ui, "Applications")) launcher = true;
+    if (nk_button_label(&ui, "Applications"))
+      launcher = true;
     nk_layout_row_dynamic(&ui, 38, 1);
-    if (nk_button_label(&ui, "Storage")) { settings_page = 2; open_app(SETTINGS); }
-    nk_layout_row_dynamic(&ui, 24, 1); caption("CLIPBOARD");
+    if (nk_button_label(&ui, "Storage")) {
+      settings_page = 2;
+      open_app(SETTINGS);
+    }
+    nk_layout_row_dynamic(&ui, 24, 1);
+    caption("CLIPBOARD");
     nk_layout_row_dynamic(&ui, 56, 1);
-    nk_label_wrap(&ui, *file_clipboard ? file_clipboard_name : "Copy or cut an item to paste it into another folder.");
+    nk_label_wrap(&ui,
+                  *file_clipboard
+                      ? file_clipboard_name
+                      : "Copy or cut an item to paste it into another folder.");
     if (*file_clipboard) {
-      nk_layout_row_dynamic(&ui, 24, 1); caption(file_cut ? "Ready to move" : "Ready to copy");
+      nk_layout_row_dynamic(&ui, 24, 1);
+      caption(file_cut ? "Ready to move" : "Ready to copy");
       nk_layout_row_dynamic(&ui, 32, 1);
-      if (nk_button_label(&ui, "Clear Clipboard")) file_clipboard[0] = 0;
+      if (nk_button_label(&ui, "Clear Clipboard"))
+        file_clipboard[0] = 0;
     }
     if (selected_file >= 0 && (unsigned)selected_file < file_count) {
-      nk_layout_row_dynamic(&ui, 24, 1); caption("SELECTED ITEM");
-      nk_layout_row_dynamic(&ui, 56, 1); nk_label_wrap(&ui, file_items[selected_file].name);
       nk_layout_row_dynamic(&ui, 24, 1);
-      if (file_items[selected_file].directory) caption("Folder");
-      else { char size[64]; format_size(size, file_items[selected_file].size); caption(size); }
-      nk_layout_row_dynamic(&ui, 80, 1); nk_label_wrap(&ui, file_items[selected_file].path);
+      caption("SELECTED ITEM");
+      nk_layout_row_dynamic(&ui, 56, 1);
+      nk_label_wrap(&ui, file_items[selected_file].name);
+      nk_layout_row_dynamic(&ui, 24, 1);
+      if (file_items[selected_file].directory)
+        caption("Folder");
+      else {
+        char size[64];
+        format_size(size, file_items[selected_file].size);
+        caption(size);
+      }
+      nk_layout_row_dynamic(&ui, 80, 1);
+      nk_label_wrap(&ui, file_items[selected_file].path);
     }
     nk_layout_row_dynamic(&ui, 40, 1);
     caption(fs_mounted_disk() < 0 ? "Session storage" : "Persistent disk");
@@ -1365,41 +1509,55 @@ static void editor_view(void) {
 static void metric_card(const char *title, uint64_t value, const char *unit,
                         const char *detail, uint32_t color) {
   struct nk_rect bounds;
-  if (!nk_widget(&bounds, &ui)) return;
+  if (!nk_widget(&bounds, &ui))
+    return;
   struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
   struct nk_color background = rgb(palette()->mantle);
   nk_fill_rect(canvas, bounds, 10, background);
-  nk_fill_rect(canvas, nk_rect(bounds.x, bounds.y + 12, 3, bounds.h - 24), 1, rgb(color));
+  nk_fill_rect(canvas, nk_rect(bounds.x, bounds.y + 12, 3, bounds.h - 24), 1,
+               rgb(color));
   char text[128], digits[32];
-  number(digits, value); copy(text, digits, sizeof(text)); append(text, unit, sizeof(text));
+  number(digits, value);
+  copy(text, digits, sizeof(text));
+  append(text, unit, sizeof(text));
   struct nk_rect line = nk_rect(bounds.x + 16, bounds.y + 8, bounds.w - 24, 20);
-  nk_draw_text(canvas, line, title, strlen(title), &body_font, background, rgb(palette()->muted));
-  line.y += 25; line.h = 28;
-  nk_draw_text(canvas, line, text, strlen(text), &heading_font, background, rgb(palette()->text));
-  line.y += 31; line.h = 20;
-  nk_draw_text(canvas, line, detail, strlen(detail), &body_font, background, rgb(palette()->muted));
+  nk_draw_text(canvas, line, title, strlen(title), &body_font, background,
+               rgb(palette()->muted));
+  line.y += 25;
+  line.h = 28;
+  nk_draw_text(canvas, line, text, strlen(text), &heading_font, background,
+               rgb(palette()->text));
+  line.y += 31;
+  line.h = 20;
+  nk_draw_text(canvas, line, detail, strlen(detail), &body_font, background,
+               rgb(palette()->muted));
 }
-static void history_graph(const char *title, const unsigned samples[60], uint32_t color) {
-  nk_layout_row_dynamic(&ui, 24, 1); caption(title);
+static void history_graph(const char *title, const unsigned samples[60],
+                          uint32_t color) {
+  nk_layout_row_dynamic(&ui, 24, 1);
+  caption(title);
   nk_layout_row_dynamic(&ui, 100, 1);
   struct nk_rect bounds;
-  if (!nk_widget(&bounds, &ui)) return;
+  if (!nk_widget(&bounds, &ui))
+    return;
   struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
   nk_fill_rect(canvas, bounds, 8, rgb(palette()->mantle));
   for (unsigned i = 1; i < 4; i++)
     nk_stroke_line(canvas, bounds.x + 8, bounds.y + bounds.h * i / 4,
-                   bounds.x + bounds.w - 8, bounds.y + bounds.h * i / 4,
-                   1, alpha_color(palette()->surface, 130));
+                   bounds.x + bounds.w - 8, bounds.y + bounds.h * i / 4, 1,
+                   alpha_color(palette()->surface, 130));
   for (unsigned i = 1; i < sample_count; i++) {
     unsigned start = (sample_at + 60 - sample_count) % 60;
     unsigned a = samples[(start + i - 1) % 60], b = samples[(start + i) % 60];
-    if (a > 100) a = 100;
-    if (b > 100) b = 100;
+    if (a > 100)
+      a = 100;
+    if (b > 100)
+      b = 100;
     float x = bounds.x + 8 + (bounds.w - 16) * (60 - sample_count + i - 1) / 59;
     float next = bounds.x + 8 + (bounds.w - 16) * (60 - sample_count + i) / 59;
-    nk_stroke_line(canvas, x, bounds.y + bounds.h - 8 - (bounds.h - 16) * a / 100,
-                   next, bounds.y + bounds.h - 8 - (bounds.h - 16) * b / 100,
-                   2, rgb(color));
+    nk_stroke_line(
+        canvas, x, bounds.y + bounds.h - 8 - (bounds.h - 16) * a / 100, next,
+        bounds.y + bounds.h - 8 - (bounds.h - 16) * b / 100, 2, rgb(color));
   }
 }
 static unsigned task_usage(int pid) {
@@ -1411,30 +1569,65 @@ static unsigned task_usage(int pid) {
 static void tasks_view(void) {
   heading("System Monitor");
   nk_layout_row_dynamic(&ui, 24, 1);
-  caption(tasks_paused ? "Snapshot paused" : "Live activity - updates every second");
+  caption(tasks_paused ? "Snapshot paused"
+                       : "Live activity - updates every second");
   nk_layout_row_dynamic(&ui, 94, 3);
-  metric_card("USERSPACE CPU", userspace_cpu, "%", "Single CPU / 100 Hz sampling", accent());
-  metric_card("MEMORY", system_status.allocated_kib / 1024, " MiB", "Kernel + applications", 0x23ad95);
-  metric_card("PROCESSES", task_count + 1, "", "Includes the desktop kernel", 0x7287fd);
+  metric_card("USERSPACE CPU", userspace_cpu, "%",
+              "Single CPU / 100 Hz sampling", accent());
+  metric_card("MEMORY", system_status.allocated_kib / 1024, " MiB",
+              "Kernel + applications", 0x23ad95);
+  metric_card("PROCESSES", task_count + 1, "", "Includes the desktop kernel",
+              0x7287fd);
 
-  const float tools[] = {0.19f, 0.23f, 0.38f, 0.20f};
-  nk_layout_row(&ui, NK_DYNAMIC, 34, 4, tools);
-  if (task_page == 0 ? accent_button("Processes") : nk_button_label(&ui, "Processes"))
+  const float tools[] = {0.22f, 0.18f, 0.20f, 0.25f, 0.15f};
+  nk_layout_row(&ui, NK_DYNAMIC, 34, 5, tools);
+  if (task_page == 2 ? accent_button("Applications")
+                     : nk_button_label(&ui, "Applications"))
+    task_page = 2;
+  if (task_page == 0 ? accent_button("Processes")
+                     : nk_button_label(&ui, "Processes"))
     task_page = 0;
-  if (task_page == 1 ? accent_button("Performance") : nk_button_label(&ui, "Performance"))
+  if (task_page == 1 ? accent_button("Performance")
+                     : nk_button_label(&ui, "Performance"))
     task_page = 1;
   nk_checkbox_label(&ui, "Pause updates", &tasks_paused);
   if (nk_button_label(&ui, "Refresh")) {
     tasks_paused = false;
     update_status();
   }
+  if (task_page == 2) {
+    nk_layout_row_dynamic(&ui, 28, 1);
+    caption("Open desktop windows, including minimized applications");
+    float available = nk_window_get_content_region(&ui).h - 235;
+    if (available < 100)
+      available = 100;
+    nk_layout_row_dynamic(&ui, available, 1);
+    if (nk_group_begin(&ui, "Running applications", 0)) {
+      for (unsigned i = 0; i < APP_COUNT; i++)
+        if (apps[i].visible) {
+          nk_layout_row_dynamic(&ui, 36, 4);
+          nk_label(&ui, app_names[i], NK_TEXT_LEFT);
+          caption(nk_window_is_collapsed(&ui, app_names[i]) ? "Minimized"
+                                                            : "Open");
+          if (nk_button_label(&ui, "Focus"))
+            open_app(i);
+          if (nk_button_label(&ui, "Close"))
+            nk_window_show(&ui, app_names[i], NK_HIDDEN);
+        }
+      nk_group_end(&ui);
+    }
+    return;
+  }
   if (task_page == 1) {
     float available = nk_window_get_content_region(&ui).h - 230;
-    if (available < 100) available = 100;
+    if (available < 100)
+      available = 100;
     nk_layout_row_dynamic(&ui, available, 1);
     if (nk_group_begin(&ui, "Performance history", 0)) {
-      history_graph("USERSPACE CPU - LAST 60 SAMPLES (0-100%)", cpu_samples, accent());
-      history_graph("PHYSICAL MEMORY - LAST 60 SAMPLES (0-100%)", memory_samples, 0x23ad95);
+      history_graph("USERSPACE CPU - LAST 60 SAMPLES (0-100%)", cpu_samples,
+                    accent());
+      history_graph("PHYSICAL MEMORY - LAST 60 SAMPLES (0-100%)",
+                    memory_samples, 0x23ad95);
       nk_layout_row_dynamic(&ui, 28, 2);
       label_value("Allocated: ", system_status.allocated_kib, " KiB");
       label_value("Managed: ", system_status.managed_kib, " KiB");
@@ -1442,7 +1635,10 @@ static void tasks_view(void) {
       label_value("Uptime: ", system_status.ticks / 100, " seconds");
       label_value("Storage devices: ", system_status.disks, "");
       nk_layout_row_dynamic(&ui, 56, 1);
-      nk_label_wrap(&ui, "CPU shows time spent running userspace programs. The remaining time includes kernel work and idle time. Built-in desktop apps share the kernel and are not separate processes.");
+      nk_label_wrap(
+          &ui, "CPU shows time spent running userspace programs. The remaining "
+               "time includes kernel work and idle time. Built-in desktop apps "
+               "share the kernel and are not separate processes.");
       nk_group_end(&ui);
     }
     return;
@@ -1453,26 +1649,38 @@ static void tasks_view(void) {
   nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, task_filter,
                                  sizeof(task_filter), nk_filter_default);
   float area = nk_window_get_content_region(&ui).h - 354;
-  if (area < 80) area = 80;
+  if (area < 80)
+    area = 80;
   nk_layout_row_dynamic(&ui, area, 1);
   if (nk_group_begin(&ui, "Process list", 0)) {
     const float columns[] = {0.34f, 0.09f, 0.18f, 0.11f, 0.17f, 0.11f};
     nk_layout_row(&ui, NK_DYNAMIC, 24, 6, columns);
-    caption("APPLICATION"); caption("PID"); caption("STATE");
-    caption("CPU"); caption("MEMORY"); caption("PRIO");
+    caption("APPLICATION");
+    caption("PID");
+    caption("STATE");
+    caption("CPU");
+    caption("MEMORY");
+    caption("PRIO");
     unsigned shown = 0;
     if (contains("Magenta desktop / Avalanche kernel", task_filter)) {
       nk_layout_row(&ui, NK_DYNAMIC, 36, 6, columns);
       nk_bool selected = selected_pid == 0;
-      if (nk_selectable_label(&ui, "Magenta desktop / kernel", NK_TEXT_LEFT, &selected))
+      if (nk_selectable_label(&ui, "Magenta desktop / kernel", NK_TEXT_LEFT,
+                              &selected))
         selected_pid = 0;
-      caption("0"); caption("Kernel"); caption("--"); caption("Shared"); caption("--");
+      caption("0");
+      caption("Kernel");
+      caption("--");
+      caption("Shared");
+      caption("--");
       shown++;
     }
-    const char *states[] = {"Empty", "Ready", "Running", "Sleeping", "Input", "Waiting", "Exited"};
+    const char *states[] = {"Empty", "Ready",   "Running", "Sleeping",
+                            "Input", "Waiting", "Exited"};
     for (unsigned i = 0; i < task_slots; i++) {
       struct task_info *t = &task_items[i];
-      char pid[32]; number(pid, t->pid);
+      char pid[32];
+      number(pid, t->pid);
       if (!contains(t->name, task_filter) && !contains(pid, task_filter))
         continue;
       shown++;
@@ -1485,7 +1693,9 @@ static void tasks_view(void) {
       label_value("", t->pid, "");
       caption(t->state < 7 ? states[t->state] : "Unknown");
       label_value("", task_usage(t->pid), "%");
-      char memory[64]; format_size(memory, (uint64_t)t->pages * 4096); caption(memory);
+      char memory[64];
+      format_size(memory, (uint64_t)t->pages * 4096);
+      caption(memory);
       label_value("", t->priority, "");
     }
     if (!shown) {
@@ -1495,7 +1705,8 @@ static void tasks_view(void) {
     nk_group_end(&ui);
   }
   nk_layout_row_dynamic(&ui, 34, 3);
-  if (selected_pid <= 0) nk_widget_disable_begin(&ui);
+  if (selected_pid <= 0)
+    nk_widget_disable_begin(&ui);
   nk_property_int(&ui, "Priority", 0, &task_priority, 31, 1, 0.3f);
   if (nk_button_label(&ui, "Apply Priority") && selected_pid > 0) {
     int r = user_priority(selected_pid, task_priority);
@@ -1506,10 +1717,12 @@ static void tasks_view(void) {
     ending_pid = selected_pid;
     ending_task = true;
   }
-  if (selected_pid <= 0) nk_widget_disable_end(&ui);
+  if (selected_pid <= 0)
+    nk_widget_disable_end(&ui);
   nk_layout_row_dynamic(&ui, 30, 1);
-  caption(selected_pid <= 0 ? "The desktop kernel cannot be terminated here."
-                             : "Lower priority numbers receive earlier CPU service.");
+  caption(selected_pid <= 0
+              ? "The desktop kernel cannot be terminated here."
+              : "Lower priority numbers receive earlier CPU service.");
 }
 static void ip_string(char out[32], uint32_t address) {
   out[0] = 0;
@@ -1620,9 +1833,32 @@ static const char *package_summary(const char *name) {
 }
 static void packages_view(void) {
   heading("Packages");
+  nk_layout_row_dynamic(&ui, 30, 4);
+  caption("UPLOADED APPLICATIONS");
+  nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, upload_host,
+                                 sizeof(upload_host), nk_filter_default);
+  if (nk_button_label(&ui, "Trust uploaded signer")) {
+    if (!network_status.ip)
+      net_dhcp();
+    char command[256] = "pkg trust-url ";
+    append(command, upload_host, sizeof(command));
+    append(command, " /latest/trust.der", sizeof(command));
+    capture(command, package_result, sizeof(package_result));
+  }
+  if (nk_button_label(&ui, "Install uploaded app")) {
+    if (!network_status.ip)
+      net_dhcp();
+    char command[256] = "pkg fetch ";
+    append(command, upload_host, sizeof(command));
+    append(command, " /latest/app.manifest", sizeof(command));
+    capture(command, package_result, sizeof(package_result));
+    refresh_packages();
+    refresh_files();
+  }
   unsigned installed_count = 0;
   for (unsigned i = 0; i < package_count; i++)
-    if (package_items[i].installed) installed_count++;
+    if (package_items[i].installed)
+      installed_count++;
   nk_layout_row_dynamic(&ui, 26, 2);
   label_value("In catalog: ", package_count, " packages");
   label_value("Installed: ", installed_count, "");
@@ -1632,16 +1868,21 @@ static void packages_view(void) {
   nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, package_filter,
                                  sizeof(package_filter), nk_filter_default);
   nk_checkbox_label(&ui, "Installed only", &installed_only);
-  if (nk_button_label(&ui, "Refresh")) refresh_packages();
-  float area = nk_window_get_content_region(&ui).h - (*package_result ? 300 : 258);
-  if (area < 120) area = 120;
+  if (nk_button_label(&ui, "Refresh"))
+    refresh_packages();
+  float area =
+      nk_window_get_content_region(&ui).h - (*package_result ? 300 : 258);
+  if (area < 120)
+    area = 120;
   const float panels[] = {0.44f, 0.56f};
   nk_layout_row(&ui, NK_DYNAMIC, area, 2, panels);
   if (nk_group_begin(&ui, "Package catalog", 0)) {
     unsigned shown = 0;
     for (unsigned i = 0; i < package_count; i++) {
       struct package_item *p = &package_items[i];
-      if (!contains(p->name, package_filter) || (installed_only && !p->installed)) continue;
+      if (!contains(p->name, package_filter) ||
+          (installed_only && !p->installed))
+        continue;
       shown++;
       const float row[] = {0.72f, 0.28f};
       nk_layout_row(&ui, NK_DYNAMIC, 38, 2, row);
@@ -1652,66 +1893,83 @@ static void packages_view(void) {
         append(command, p->name, sizeof(command));
         capture(command, package_details, sizeof(package_details));
       }
-      nk_label_colored(&ui, p->installed ? "Installed" : "Available", NK_TEXT_RIGHT,
+      nk_label_colored(&ui, p->installed ? "Installed" : "Available",
+                       NK_TEXT_RIGHT,
                        rgb(p->installed ? 0x23ad95 : palette()->muted));
-      nk_layout_row_dynamic(&ui, 22, 1); caption(p->version);
+      nk_layout_row_dynamic(&ui, 22, 1);
+      caption(p->version);
     }
     if (!shown) {
       nk_layout_row_dynamic(&ui, 52, 1);
-      nk_label_wrap(&ui, package_count ? "No packages match your search."
-                                     : "The catalog is empty. Fetch a package manifest below.");
+      nk_label_wrap(
+          &ui, package_count
+                   ? "No packages match your search."
+                   : "The catalog is empty. Fetch a package manifest below.");
     }
     nk_group_end(&ui);
   }
   if (nk_group_begin(&ui, "Package information", 0)) {
-    if (package_count && selected_package >= 0 && selected_package < (int)package_count) {
+    if (package_count && selected_package >= 0 &&
+        selected_package < (int)package_count) {
       struct package_item *p = &package_items[selected_package];
       bool installed = p->installed;
       heading(p->name);
       nk_layout_row_dynamic(&ui, 24, 2);
       caption(p->version);
-      nk_label_colored(&ui, installed ? "INSTALLED" : "AVAILABLE", NK_TEXT_RIGHT,
-                       rgb(installed ? 0x23ad95 : accent()));
-      nk_layout_row_dynamic(&ui, 64, 1); nk_label_wrap(&ui, package_summary(p->name));
+      nk_label_colored(&ui, installed ? "INSTALLED" : "AVAILABLE",
+                       NK_TEXT_RIGHT, rgb(installed ? 0x23ad95 : accent()));
+      nk_layout_row_dynamic(&ui, 64, 1);
+      nk_label_wrap(&ui, package_summary(p->name));
       nk_layout_row_dynamic(&ui, 36, installed ? 2 : 1);
       if (accent_button(installed ? "Upgrade" : "Install"))
         package_action(installed ? "upgrade" : "install");
       if (installed && nk_button_label(&ui, "Remove"))
         removing_package = true;
-      nk_layout_row_dynamic(&ui, 24, 1); caption("PACKAGE DETAILS");
+      nk_layout_row_dynamic(&ui, 24, 1);
+      caption("PACKAGE DETAILS");
       nk_layout_row_dynamic(&ui, 150, 1);
       nk_edit_string_zero_terminated(&ui, NK_EDIT_BOX | NK_EDIT_READ_ONLY,
-                                     package_details, sizeof(package_details), nk_filter_default);
+                                     package_details, sizeof(package_details),
+                                     nk_filter_default);
     } else {
       heading("Your software, in one place.");
       nk_layout_row_dynamic(&ui, 88, 1);
-      nk_label_wrap(&ui, "Fetch a manifest from an HTTP repository to add packages to the catalog. Select a package to install it or manage an existing installation.");
+      nk_label_wrap(&ui, "Fetch a manifest from an HTTP repository to add "
+                         "packages to the catalog. Select a package to install "
+                         "it or manage an existing installation.");
     }
     nk_group_end(&ui);
   }
-  nk_layout_row_dynamic(&ui, 24, 1); caption("ADD FROM AN HTTP REPOSITORY");
+  nk_layout_row_dynamic(&ui, 24, 1);
+  caption("ADD FROM AN HTTP REPOSITORY");
   const float fields[] = {0.36f, 0.44f, 0.20f};
   nk_layout_row(&ui, NK_DYNAMIC, 22, 3, fields);
-  caption("Host"); caption("Manifest path"); caption("");
+  caption("Host");
+  caption("Manifest path");
+  caption("");
   nk_layout_row(&ui, NK_DYNAMIC, 34, 3, fields);
   nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, download_host,
                                  sizeof(download_host), nk_filter_default);
   nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, download_path,
                                  sizeof(download_path), nk_filter_default);
-  if (quiet_button("Fetch", "Fetch a package manifest from this repository", true)) {
+  if (quiet_button("Fetch", "Fetch a package manifest from this repository",
+                   true)) {
     if (!*download_host || *download_path != '/')
       notify("Enter a host and a manifest path beginning with /");
     else {
       char command[384] = "pkg fetch ";
-      append(command, download_host, sizeof(command)); append(command, " ", sizeof(command));
+      append(command, download_host, sizeof(command));
+      append(command, " ", sizeof(command));
       append(command, download_path, sizeof(command));
       capture(command, package_result, sizeof(package_result));
-      refresh_packages(); refresh_files();
+      refresh_packages();
+      refresh_files();
       notify(*package_result ? package_result : "Repository fetch completed");
     }
   }
   if (*package_result) {
-    nk_layout_row_dynamic(&ui, 40, 1); nk_label_wrap(&ui, package_result);
+    nk_layout_row_dynamic(&ui, 40, 1);
+    nk_label_wrap(&ui, package_result);
   }
 }
 static void theme_card(unsigned index) {
@@ -1960,7 +2218,11 @@ static int window_controls(unsigned id) {
   gui_canvas_gloss(canvas,
                    nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
   gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28),
-                  id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : id == GAMES ? 11 : id,
+                  id == BROWSER  ? 4
+                  : id == IMAGES ? 9
+                  : id == MUSIC  ? 10
+                  : id == GAMES  ? 11
+                                 : id,
                   active ? rgb(accent()) : rgb(palette()->muted));
   nk_draw_text(canvas,
                nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
@@ -2042,7 +2304,8 @@ static void browser_new_tab(const char *address) {
     return;
   }
   unsigned slot = 0;
-  while (slot < WEB_TABS && browser_tabs[slot].used) slot++;
+  while (slot < WEB_TABS && browser_tabs[slot].used)
+    slot++;
   memset(&browser_tabs[slot], 0, sizeof(browser_tabs[slot]));
   web_reset(slot);
   browser_tabs[slot].used = true;
@@ -2057,8 +2320,10 @@ static void browser_new_tab(const char *address) {
 }
 static void browser_close_tab(unsigned tab) {
   unsigned at = 0;
-  while (at < browser_tab_count && browser_order[at] != tab) at++;
-  if (at == browser_tab_count) return;
+  while (at < browser_tab_count && browser_order[at] != tab)
+    at++;
+  if (at == browser_tab_count)
+    return;
   bool was_active = browser_active == tab;
   web_reset(tab);
   memset(&browser_tabs[tab], 0, sizeof(browser_tabs[tab]));
@@ -2075,10 +2340,14 @@ static void browser_close_tab(unsigned tab) {
 static void browser_title(void) {
   struct browser_tab *tab = &browser_tabs[browser_active];
   const char *label = tab->loaded_url;
-  if (starts_with(label, "https://")) label += 8;
-  else if (starts_with(label, "http://")) label += 7;
-  else if (starts_with(label, "file:")) label += 5;
-  copy(tab->title, str_eq(tab->loaded_url, "about:home") ? "New tab" : label, sizeof(tab->title));
+  if (starts_with(label, "https://"))
+    label += 8;
+  else if (starts_with(label, "http://"))
+    label += 7;
+  else if (starts_with(label, "file:"))
+    label += 5;
+  copy(tab->title, str_eq(tab->loaded_url, "about:home") ? "New tab" : label,
+       sizeof(tab->title));
   const char *p = tab->source;
   while (*p) {
     if (starts_with(p, "<title>")) {
@@ -2123,7 +2392,8 @@ static void browser_load(void) {
   }
   copy(tab->loaded_url, browser_url, sizeof(tab->loaded_url));
   if (!tab->history_navigation &&
-      (!tab->history_count || !str_eq(tab->history[tab->history_at], browser_url))) {
+      (!tab->history_count ||
+       !str_eq(tab->history[tab->history_at], browser_url))) {
     tab->history_count = tab->history_count ? tab->history_at + 1 : 0;
     if (tab->history_count == 16) {
       memmove(tab->history, tab->history + 1, 15 * sizeof(tab->history[0]));
@@ -2141,14 +2411,19 @@ static void browser_load(void) {
     return;
   }
   if (starts_with(browser_url, "file:")) {
-    int n = fs_read(browser_url + 5, browser_source, sizeof(browser_source) - 1);
-    if(n<0 && str_eq(browser_url,"file:/webnotes")) {
-      extern const char webnotes_start[],webnotes_end[];
-      size_t size=webnotes_end-webnotes_start;
-      if(size<sizeof(browser_source)) {memcpy(browser_source,webnotes_start,size);n=size;}
+    int n =
+        fs_read(browser_url + 5, browser_source, sizeof(browser_source) - 1);
+    if (n < 0 && str_eq(browser_url, "file:/webnotes")) {
+      extern const char webnotes_start[], webnotes_end[];
+      size_t size = webnotes_end - webnotes_start;
+      if (size < sizeof(browser_source)) {
+        memcpy(browser_source, webnotes_start, size);
+        n = size;
+      }
     }
     if (n < 0) {
-      copy(browser_status, "Could not open the local document", sizeof(browser_status));
+      copy(browser_status, "Could not open the local document",
+           sizeof(browser_status));
       browser_title();
       return;
     }
@@ -2157,9 +2432,11 @@ static void browser_load(void) {
     int result = http_get(browser_url, browser_source, sizeof(browser_source));
     if (result < 0) {
       copy(browser_status,
-           result == -3 ? "TLS verification failed: check the address, clock and certificates"
-           : result == -4 ? "Page exceeds the document limit or the connection ended early"
-                          : "Could not connect to this address",
+           result == -3 ? "TLS verification failed: check the address, clock "
+                          "and certificates"
+           : result == -4
+               ? "Page exceeds the document limit or the connection ended early"
+               : "Could not connect to this address",
            sizeof(browser_status));
       browser_source[0] = 0;
       browser_title();
@@ -2169,17 +2446,19 @@ static void browser_load(void) {
   web_set_url(tab->loaded_url);
   web_parse(browser_source);
   browser_title();
-  copy(browser_status, starts_with(tab->loaded_url, "https://")
-                           ? "HTTPS - certificate verified"
-                           : starts_with(tab->loaded_url, "file:")
-                                 ? "Local document" : "HTTP - unencrypted connection",
+  copy(browser_status,
+       starts_with(tab->loaded_url, "https://") ? "HTTPS - certificate verified"
+       : starts_with(tab->loaded_url, "file:")
+           ? "Local document"
+           : "HTTP - unencrypted connection",
        sizeof(browser_status));
 }
 static void browser_view(void) {
   if (!browser_tab_count)
     browser_new_tab("about:home");
   web_select(browser_active);
-  /* Leave the tab strip in one row; labels shrink before navigation controls. */
+  /* Leave the tab strip in one row; labels shrink before navigation controls.
+   */
   nk_layout_row_begin(&ui, NK_DYNAMIC, 34, browser_tab_count * 2 + 1);
   int switch_to = -1, close_tab = -1;
   bool add_tab = false;
@@ -2192,18 +2471,23 @@ static void browser_view(void) {
     if (chosen ? accent_button(browser_tabs[slot].title)
                : nk_button_label(&ui, browser_tabs[slot].title))
       switch_to = slot;
-    if (hovered) nk_tooltip(&ui, browser_tabs[slot].loaded_url);
+    if (hovered)
+      nk_tooltip(&ui, browser_tabs[slot].loaded_url);
     nk_layout_row_push(&ui, tab_share * 0.22f);
     nk_style_push_vec2(&ui, &ui.style.button.padding, nk_vec2(2, 6));
-    if (nk_button_label(&ui, "x")) close_tab = slot;
+    if (nk_button_label(&ui, "x"))
+      close_tab = slot;
     nk_style_pop_vec2(&ui);
   }
   nk_layout_row_push(&ui, 0.10f);
   add_tab = quiet_button("+", "New tab (Ctrl+T)", browser_tab_count < WEB_TABS);
   nk_layout_row_end(&ui);
-  if (switch_to >= 0) browser_switch(switch_to);
-  if (close_tab >= 0) browser_close_tab(close_tab);
-  if (add_tab) browser_new_tab("about:home");
+  if (switch_to >= 0)
+    browser_switch(switch_to);
+  if (close_tab >= 0)
+    browser_close_tab(close_tab);
+  if (add_tab)
+    browser_new_tab("about:home");
 
   const float navigation[] = {0.08f, 0.08f, 0.13f, 0.12f, 0.39f, 0.20f};
   nk_layout_row(&ui, NK_DYNAMIC, 34, 6, navigation);
@@ -2221,90 +2505,115 @@ static void browser_view(void) {
     browser_load_requested = true;
   }
   caption(browser_status);
-  if (quiet_button("Save Page", "Save this tab's HTML to /download.html", *browser_source != 0))
-    copy(browser_status, fs_write("/download.html", browser_source, strlen(browser_source)) >= 0
-                             ? "Saved /download.html" : "Could not save the page",
+  if (quiet_button("Save Page", "Save this tab's HTML to /download.html",
+                   *browser_source != 0))
+    copy(browser_status,
+         fs_write("/download.html", browser_source, strlen(browser_source)) >= 0
+             ? "Saved /download.html"
+             : "Could not save the page",
          sizeof(browser_status));
 
   const float address[] = {0.85f, 0.15f};
   nk_layout_row(&ui, NK_DYNAMIC, 38, 2, address);
-  if (browser_focus) { nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE); browser_focus = 0; }
+  if (browser_focus) {
+    nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
+    browser_focus = 0;
+  }
   nk_flags entered = nk_edit_string_zero_terminated(
-      &ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER | NK_EDIT_AUTO_SELECT, browser_url, sizeof(browser_url), nk_filter_default);
+      &ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER | NK_EDIT_AUTO_SELECT, browser_url,
+      sizeof(browser_url), nk_filter_default);
   if (accent_button("Go") || (entered & NK_EDIT_COMMITTED))
     browser_load_requested = true;
   float area = nk_window_get_content_region(&ui).h - 140;
-  if (area < 80) area = 80;
+  if (area < 80)
+    area = 80;
   nk_layout_row_dynamic(&ui, area, 1);
-  char group[32]; browser_group_name(group, browser_active);
+  char group[32];
+  browser_group_name(group, browser_active);
   if (tab->reset_scroll) {
     nk_group_set_scroll(&ui, group, 0, 0);
     tab->reset_scroll = false;
   }
   if (nk_group_begin(&ui, group, 0)) {
     if (str_eq(tab->loaded_url, "about:home")) {
-      nk_layout_row_dynamic(&ui, 24, 1); nk_spacing(&ui, 1);
+      nk_layout_row_dynamic(&ui, 24, 1);
+      nk_spacing(&ui, 1);
       heading("Start browsing");
       nk_layout_row_dynamic(&ui, 54, 1);
-      nk_label_wrap(&ui, "Keep pages together in tabs. Enter a web address above, or open a saved document with file:/path.");
+      nk_label_wrap(&ui, "Keep pages together in tabs. Enter a web address "
+                         "above, or open a saved document with file:/path.");
       nk_layout_row_dynamic(&ui, 42, 2);
       if (accent_button("Notes")) {
-        copy(browser_url,"file:/webnotes",sizeof(browser_url));
-        browser_load_requested=true;
+        copy(browser_url, "file:/webnotes", sizeof(browser_url));
+        browser_load_requested = true;
       }
-      if (nk_button_label(&ui,"Text editor")) open_app(EDITOR);
-      if (accent_button("Open Local Files")) open_app(FILES);
-      if (nk_button_label(&ui, "Network Settings")) open_app(NETWORK);
-      nk_layout_row_dynamic(&ui, 34, 1); caption("Ctrl+T   New tab     Ctrl+W   Close tab     Ctrl+L   Address");
-      nk_layout_row_dynamic(&ui, 34, 1); caption("Each tab keeps its own page, scripts and history.");
+      if (nk_button_label(&ui, "Text editor"))
+        open_app(EDITOR);
+      if (accent_button("Open Local Files"))
+        open_app(FILES);
+      if (nk_button_label(&ui, "Network Settings"))
+        open_app(NETWORK);
+      nk_layout_row_dynamic(&ui, 34, 1);
+      caption("Ctrl+T   New tab     Ctrl+W   Close tab     Ctrl+L   Address");
+      nk_layout_row_dynamic(&ui, 34, 1);
+      caption("Each tab keeps its own page, scripts and history.");
     } else if (!web_count) {
       heading("This page could not be displayed");
-      nk_layout_row_dynamic(&ui, 80, 1); nk_label_wrap(&ui, browser_status);
+      nk_layout_row_dynamic(&ui, 80, 1);
+      nk_label_wrap(&ui, browser_status);
       nk_layout_row_dynamic(&ui, 38, 2);
-      if (accent_button("Try Again")) browser_load_requested = true;
-      if (nk_button_label(&ui, "New Tab")) browser_new_tab("about:home");
+      if (accent_button("Try Again"))
+        browser_load_requested = true;
+      if (nk_button_label(&ui, "New Tab"))
+        browser_new_tab("about:home");
     }
     for (unsigned i = 0; i < web_count; i++) {
       struct web_node *node = &web_nodes[i];
-      if (node->style.hidden || str_eq(node->input_type,"hidden") ||
-          (!*node->text && !str_eq(node->tag,"input") && !str_eq(node->tag,"textarea")))
+      if (node->style.hidden || str_eq(node->input_type, "hidden") ||
+          (!*node->text && !str_eq(node->tag, "input") &&
+           !str_eq(node->tag, "textarea")))
         continue;
       web_fonts[i] = body_font;
       web_fonts[i].height = node->style.size;
       nk_style_push_font(&ui, &web_fonts[i]);
-      struct nk_color fg = nk_rgb((node->style.color >> 16)&255,
-                                  (node->style.color >> 8)&255, node->style.color&255);
+      struct nk_color fg =
+          nk_rgb((node->style.color >> 16) & 255,
+                 (node->style.color >> 8) & 255, node->style.color & 255);
       struct nk_color bg = nk_rgb(255, 255, 255);
       int parent = i;
       while (parent >= 0) {
         uint32_t c = web_nodes[parent].style.background;
         if (c != 0xffffffffu) {
-          bg = nk_rgb((c >> 16)&255, (c >> 8)&255, c&255);
+          bg = nk_rgb((c >> 16) & 255, (c >> 8) & 255, c & 255);
           break;
         }
         parent = web_nodes[parent].parent;
       }
-      if (str_eq(node->tag,"input") || str_eq(node->tag,"textarea")) {
-        bool multiline=str_eq(node->tag,"textarea");
-        nk_layout_row_dynamic(&ui,multiline ? 130 : 36,1);
-        char previous[2048];copy(previous,node->value,sizeof(previous));
-        nk_flags edited=nk_edit_string_zero_terminated(&ui,
-          multiline ? NK_EDIT_BOX : NK_EDIT_FIELD|NK_EDIT_SIG_ENTER,
-          node->value,sizeof(node->value),nk_filter_default);
-        if(!str_eq(previous,node->value)) web_input(i,false);
-        if(edited&(NK_EDIT_COMMITTED|NK_EDIT_DEACTIVATED)) web_input(i,true);
+      if (str_eq(node->tag, "input") || str_eq(node->tag, "textarea")) {
+        bool multiline = str_eq(node->tag, "textarea");
+        nk_layout_row_dynamic(&ui, multiline ? 130 : 36, 1);
+        char previous[2048];
+        copy(previous, node->value, sizeof(previous));
+        nk_flags edited = nk_edit_string_zero_terminated(
+            &ui, multiline ? NK_EDIT_BOX : NK_EDIT_FIELD | NK_EDIT_SIG_ENTER,
+            node->value, sizeof(node->value), nk_filter_default);
+        if (!str_eq(previous, node->value))
+          web_input(i, false);
+        if (edited & (NK_EDIT_COMMITTED | NK_EDIT_DEACTIVATED))
+          web_input(i, true);
       } else if (*node->href || *node->onclick || str_eq(node->tag, "button")) {
         nk_layout_row_dynamic(&ui, node->style.size + 16, 1);
         if (nk_button_label(&ui, node->text)) {
           web_click(i);
           if (*node->href) {
             char resolved[512];
-            if (http_resolve(browser_tabs[browser_active].loaded_url, node->href,
-                             resolved, sizeof(resolved))) {
+            if (http_resolve(browser_tabs[browser_active].loaded_url,
+                             node->href, resolved, sizeof(resolved))) {
               copy(browser_url, resolved, sizeof(browser_url));
               browser_load_requested = true;
             } else
-              copy(browser_status, "That link cannot be opened", sizeof(browser_status));
+              copy(browser_status, "That link cannot be opened",
+                   sizeof(browser_status));
           }
         }
       } else {
@@ -2363,32 +2672,45 @@ static void browser_view(void) {
   }
 }
 static void images_view(void) {
-  nk_layout_row_begin(&ui,NK_DYNAMIC,32,2);
-  nk_layout_row_push(&ui,0.80f);
-  if (picture_focus) { nk_edit_focus(&ui,NK_EDIT_ALWAYS_INSERT_MODE); picture_focus=false; }
-  nk_flags result=nk_edit_string_zero_terminated(&ui,NK_EDIT_FIELD|NK_EDIT_SIG_ENTER,
-                                                picture_path,sizeof(picture_path),nk_filter_default);
-  nk_layout_row_push(&ui,0.20f);
-  if (nk_button_label(&ui,"Open") || (result&NK_EDIT_COMMITTED)) picture_load_requested=true;
+  nk_layout_row_begin(&ui, NK_DYNAMIC, 32, 2);
+  nk_layout_row_push(&ui, 0.80f);
+  if (picture_focus) {
+    nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
+    picture_focus = false;
+  }
+  nk_flags result = nk_edit_string_zero_terminated(
+      &ui, NK_EDIT_FIELD | NK_EDIT_SIG_ENTER, picture_path,
+      sizeof(picture_path), nk_filter_default);
+  nk_layout_row_push(&ui, 0.20f);
+  if (nk_button_label(&ui, "Open") || (result & NK_EDIT_COMMITTED))
+    picture_load_requested = true;
   nk_layout_row_end(&ui);
-  nk_layout_row_dynamic(&ui,24,1);
-  nk_label(&ui,image_error(),NK_TEXT_LEFT);
-  if (!picture.pixels) return;
-  float w=nk_window_get_content_region(&ui).w-24;
-  float h=nk_window_get_content_region(&ui).h-90;
-  if (w<1 || h<1) return;
-  float factor=w/picture.width;
-  if (factor>h/picture.height) factor=h/picture.height;
-  if (factor>1) factor=1;
-  nk_layout_row_dynamic(&ui,h,1);
+  nk_layout_row_dynamic(&ui, 24, 1);
+  nk_label(&ui, image_error(), NK_TEXT_LEFT);
+  if (!picture.pixels)
+    return;
+  float w = nk_window_get_content_region(&ui).w - 24;
+  float h = nk_window_get_content_region(&ui).h - 90;
+  if (w < 1 || h < 1)
+    return;
+  float factor = w / picture.width;
+  if (factor > h / picture.height)
+    factor = h / picture.height;
+  if (factor > 1)
+    factor = 1;
+  nk_layout_row_dynamic(&ui, h, 1);
   struct nk_rect bounds;
-  if (nk_widget(&bounds,&ui)) {
-    struct nk_image img=nk_image_ptr(picture.pixels);
-    img.w=picture.width; img.h=picture.height;
-    float iw=picture.width*factor,ih=picture.height*factor;
-    bounds.x+=(bounds.w-iw)/2; bounds.y+=(bounds.h-ih)/2;
-    bounds.w=iw; bounds.h=ih;
-    nk_draw_image(nk_window_get_canvas(&ui),bounds,&img,nk_rgb(255,255,255));
+  if (nk_widget(&bounds, &ui)) {
+    struct nk_image img = nk_image_ptr(picture.pixels);
+    img.w = picture.width;
+    img.h = picture.height;
+    float iw = picture.width * factor, ih = picture.height * factor;
+    bounds.x += (bounds.w - iw) / 2;
+    bounds.y += (bounds.h - ih) / 2;
+    bounds.w = iw;
+    bounds.h = ih;
+    nk_draw_image(nk_window_get_canvas(&ui), bounds, &img,
+                  nk_rgb(255, 255, 255));
   }
 }
 static void application(unsigned id) {
@@ -2429,33 +2751,56 @@ static void application(unsigned id) {
     else if (id == BROWSER)
       browser_view();
     else if (id == GAMES)
-      games_ui(&ui,rgb(palette()->text),rgb(palette()->muted),rgb(palette()->surface),rgb(accent()));
+      games_ui(&ui, rgb(palette()->text), rgb(palette()->muted),
+               rgb(palette()->surface), rgb(accent()));
     else if (id == MUSIC) {
-      struct av_audio_status status;audio_snapshot(&status);
+      struct av_audio_status status;
+      audio_snapshot(&status);
       heading("Music");
-      nk_layout_row_dynamic(&ui,34,1);
-      if(music_focus) {nk_edit_focus(&ui,NK_EDIT_ALWAYS_INSERT_MODE);music_focus=false;}
-      nk_edit_string_zero_terminated(&ui,NK_EDIT_FIELD,music_path,sizeof(music_path),nk_filter_default);
-      nk_layout_row_dynamic(&ui,38,2);
-      if(accent_button("Play")) music_result=audio_play(music_path);
-      if(nk_button_label(&ui,"Stop")) {audio_stop();music_result=0;}
-      nk_layout_row_dynamic(&ui,36,1);
-      nk_label_wrap(&ui,!status.available ? "No compatible audio output detected." :
-                        status.playing ? "Playing" : status.frames_total && status.frames_played>=status.frames_total ?
-                        "Playback finished" : "Choose a WAV file, or open one from Files.");
-      if(*status.path) {nk_layout_row_dynamic(&ui,42,1);nk_label_wrap(&ui,status.path);}
-      nk_size progress=status.frames_total ? (uint64_t)status.frames_played*1000/status.frames_total : 0;
-      nk_layout_row_dynamic(&ui,18,1);nk_progress(&ui,&progress,1000,NK_FIXED);
-      nk_layout_row_dynamic(&ui,26,2);
-      label_value("Sample rate: ",status.rate," Hz");label_value("Channels: ",status.channels,"");
-      label_value("Played: ",status.rate ? status.frames_played/status.rate : 0," s");
-      label_value("Duration: ",status.rate ? status.frames_total/status.rate : 0," s");
-      if(music_result<0 || status.error<0) {
-        nk_layout_row_dynamic(&ui,32,1);
-        label_value("Playback error: ",-(music_result<0 ? music_result : status.error),"");
+      nk_layout_row_dynamic(&ui, 34, 1);
+      if (music_focus) {
+        nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
+        music_focus = false;
       }
-    }
-    else if (id == IMAGES)
+      nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, music_path,
+                                     sizeof(music_path), nk_filter_default);
+      nk_layout_row_dynamic(&ui, 38, 2);
+      if (accent_button("Play"))
+        music_result = audio_play(music_path);
+      if (nk_button_label(&ui, "Stop")) {
+        audio_stop();
+        music_result = 0;
+      }
+      nk_layout_row_dynamic(&ui, 36, 1);
+      nk_label_wrap(&ui, !status.available
+                             ? "No compatible audio output detected."
+                         : status.playing ? "Playing"
+                         : status.frames_total &&
+                                 status.frames_played >= status.frames_total
+                             ? "Playback finished"
+                             : "Choose a WAV file, or open one from Files.");
+      if (*status.path) {
+        nk_layout_row_dynamic(&ui, 42, 1);
+        nk_label_wrap(&ui, status.path);
+      }
+      nk_size progress = status.frames_total ? (uint64_t)status.frames_played *
+                                                   1000 / status.frames_total
+                                             : 0;
+      nk_layout_row_dynamic(&ui, 18, 1);
+      nk_progress(&ui, &progress, 1000, NK_FIXED);
+      nk_layout_row_dynamic(&ui, 26, 2);
+      label_value("Sample rate: ", status.rate, " Hz");
+      label_value("Channels: ", status.channels, "");
+      label_value("Played: ",
+                  status.rate ? status.frames_played / status.rate : 0, " s");
+      label_value("Duration: ",
+                  status.rate ? status.frames_total / status.rate : 0, " s");
+      if (music_result < 0 || status.error < 0) {
+        nk_layout_row_dynamic(&ui, 32, 1);
+        label_value("Playback error: ",
+                    -(music_result < 0 ? music_result : status.error), "");
+      }
+    } else if (id == IMAGES)
       images_view();
     else
       settings_view();
@@ -2474,7 +2819,8 @@ static void application(unsigned id) {
   if (nk_window_is_closed(&ui, app_names[id]) ||
       nk_window_is_hidden(&ui, app_names[id])) {
     apps[id].visible = false;
-    if (id == GAMES) games_ui_save();
+    if (id == GAMES)
+      games_ui_save();
     if (id == EDITOR && editor_dirty) {
       open_app(EDITOR);
       editor_discard = true;
@@ -2531,8 +2877,14 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                       int id) {
   static const uint32_t colors[] = {0x263347, 0x279ce0, 0xb561df, 0x23ad95,
                                     0x297fda, 0xe09132, 0x64758e, 0xe6007e};
-  unsigned kind = id < 0 ? 7 : id == BROWSER ? 4 : id == IMAGES ? 9 : id == MUSIC ? 10 : id == GAMES ? 11 : (unsigned)id;
-  struct nk_color base = rgb(kind>=9 ? (kind==10 ? 0xd64a8c : 0x7d59c7) : colors[kind]);
+  unsigned kind = id < 0          ? 7
+                  : id == BROWSER ? 4
+                  : id == IMAGES  ? 9
+                  : id == MUSIC   ? 10
+                  : id == GAMES   ? 11
+                                  : (unsigned)id;
+  struct nk_color base =
+      rgb(kind >= 9 ? (kind == 10 ? 0xd64a8c : 0x7d59c7) : colors[kind]);
   nk_fill_rect(canvas, nk_rect(r.x, r.y + 3, r.w, r.h), 10,
                nk_rgba(0, 0, 0, 65));
   nk_fill_rect(canvas, r, 10, base);
@@ -2549,35 +2901,45 @@ static void context_for(int app, struct nk_rect r) {
     float x = ui.input.mouse.pos.x, y = ui.input.mouse.pos.y;
     float menu_width = app < 0 ? 316 : 250;
     float menu_height = app < 0 ? (*file_clipboard ? 426 : 388) : 116;
-    context_bounds = nk_rect(x + menu_width > width ? width - menu_width - 6 : x,
-                             y + menu_height > height ? height - menu_height - 6 : y,
-                             menu_width, menu_height);
+    context_bounds =
+        nk_rect(x + menu_width > width ? width - menu_width - 6 : x,
+                y + menu_height > height ? height - menu_height - 6 : y,
+                menu_width, menu_height);
   }
 }
 static bool desktop_pointer_free(void) {
-  if (launcher || power_dialog || editor_discard || deleting_file || ending_task || removing_package)
+  if (launcher || power_dialog || editor_discard || deleting_file ||
+      ending_task || removing_package)
     return false;
-  if (context_open && nk_input_is_mouse_hovering_rect(&ui.input, context_bounds))
+  if (context_open &&
+      nk_input_is_mouse_hovering_rect(&ui.input, context_bounds))
     return false;
   for (unsigned i = 0; i < APP_COUNT; i++) {
-    if (!apps[i].visible) continue;
+    if (!apps[i].visible)
+      continue;
     struct nk_rect bounds = apps[i].bounds;
-    if (nk_window_is_collapsed(&ui, app_names[i])) bounds.h = 44;
-    if (nk_input_is_mouse_hovering_rect(&ui.input, bounds)) return false;
+    if (nk_window_is_collapsed(&ui, app_names[i]))
+      bounds.h = 44;
+    if (nk_input_is_mouse_hovering_rect(&ui.input, bounds))
+      return false;
   }
   if (desktop.top_bar && ui.input.mouse.pos.y < 48)
     return false;
   if (desktop.dock_bar) {
     float dock_width = APP_COUNT * 58 + 58;
-    if (dock_width > width - 28) dock_width = width - 28;
-    if (nk_input_is_mouse_hovering_rect(&ui.input,
-        nk_rect((width - dock_width) / 2, height - 66 - desktop.dock_bottom, dock_width, 66)))
+    if (dock_width > width - 28)
+      dock_width = width - 28;
+    if (nk_input_is_mouse_hovering_rect(
+            &ui.input,
+            nk_rect((width - dock_width) / 2, height - 66 - desktop.dock_bottom,
+                    dock_width, 66)))
       return false;
   }
   return true;
 }
 static void desktop_context_input(void) {
-  if (!nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_RIGHT) || !desktop_pointer_free())
+  if (!nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_RIGHT) ||
+      !desktop_pointer_free())
     return;
   context_for(-2, nk_rect(0, 0, width, height));
 }
@@ -2610,7 +2972,8 @@ static void desktop_shortcuts(void) {
       }
       struct nk_rect shortcut = r;
       shortcut.h += 31;
-      if (desktop_pointer_free()) context_for(i, shortcut);
+      if (desktop_pointer_free())
+        context_for(i, shortcut);
       app_badge(nk_window_get_canvas(&ui),
                 nk_rect(r.x + (r.w - 44) / 2, r.y + 4, 44, 44), i);
       nk_layout_row_dynamic(&ui, 24, 1);
@@ -2639,41 +3002,64 @@ static void shortcut_menu(void) {
       caption("DESKTOP");
       nk_layout_row_dynamic(&ui, 32, 1);
       if (nk_button_label(&ui, "New Folder")) {
-        browse("/"); open_app(FILES); file_begin_create(true); context_open = false;
+        browse("/");
+        open_app(FILES);
+        file_begin_create(true);
+        context_open = false;
       }
       if (nk_button_label(&ui, "New File")) {
-        browse("/"); open_app(FILES); file_begin_create(false); context_open = false;
+        browse("/");
+        open_app(FILES);
+        file_begin_create(false);
+        context_open = false;
       }
       if (nk_button_label(&ui, "Open Files")) {
-        browse("/"); open_app(FILES); context_open = false;
+        browse("/");
+        open_app(FILES);
+        context_open = false;
       }
       if (*file_clipboard && nk_button_label(&ui, "Paste into Home")) {
-        browse("/"); file_paste(); context_open = false;
+        browse("/");
+        file_paste();
+        context_open = false;
       }
-      if (nk_button_label(&ui, "Open Terminal")) { open_app(TERMINAL); context_open = false; }
+      if (nk_button_label(&ui, "Open Terminal")) {
+        open_app(TERMINAL);
+        context_open = false;
+      }
       if (nk_button_label(&ui, "Change Wallpaper and Appearance")) {
-        settings_page = 0; open_app(SETTINGS); context_open = false;
+        settings_page = 0;
+        open_app(SETTINGS);
+        context_open = false;
       }
-      if (nk_button_label(&ui, desktop.desktop_icons ? "Hide Desktop Icons" : "Show Desktop Icons")) {
-        desktop.desktop_icons ^= 1; desktop_dirty = true; desktop_save(); context_open = false;
+      if (nk_button_label(&ui, desktop.desktop_icons ? "Hide Desktop Icons"
+                                                     : "Show Desktop Icons")) {
+        desktop.desktop_icons ^= 1;
+        desktop_dirty = true;
+        desktop_save();
+        context_open = false;
       }
-      if (nk_button_label(&ui, "System Monitor")) { open_app(TASKS); context_open = false; }
+      if (nk_button_label(&ui, "System Monitor")) {
+        open_app(TASKS);
+        context_open = false;
+      }
       if (nk_button_label(&ui, "Refresh Desktop")) {
-        refresh_files(); update_status();
+        refresh_files();
+        update_status();
         gui_canvas_wallpaper(accent(), preferences.wallpaper);
         context_open = false;
       }
     } else {
-    nk_label(&ui, app_names[context_app], NK_TEXT_LEFT);
-    nk_layout_row_dynamic(&ui, 34, 1);
-    if (nk_button_label(&ui, desktop.shortcuts & (1u << context_app)
-                                 ? "Remove shortcut"
-                                 : "Add shortcut")) {
-      desktop.shortcuts ^= 1u << context_app;
-      desktop_dirty = true;
-      desktop_save();
-      context_open = false;
-    }
+      nk_label(&ui, app_names[context_app], NK_TEXT_LEFT);
+      nk_layout_row_dynamic(&ui, 34, 1);
+      if (nk_button_label(&ui, desktop.shortcuts & (1u << context_app)
+                                   ? "Remove shortcut"
+                                   : "Add shortcut")) {
+        desktop.shortcuts ^= 1u << context_app;
+        desktop_dirty = true;
+        desktop_save();
+        context_open = false;
+      }
     }
   }
   nk_end(&ui);
@@ -2765,7 +3151,8 @@ static void launcher_view(void) {
     unsigned matches = 0;
     for (unsigned i = 0; i < APP_COUNT; i++)
       if ((launcher_category == 0 ||
-           (launcher_category == 1 && (i == FILES || i == EDITOR || i == IMAGES)) ||
+           (launcher_category == 1 &&
+            (i == FILES || i == EDITOR || i == IMAGES)) ||
            (launcher_category == 2 &&
             (i == TERMINAL || i == TASKS || i == SETTINGS)) ||
            (launcher_category == 3 &&
@@ -2825,20 +3212,23 @@ static void modal_dialogs(void) {
     if (deleting_file) {
       copy(confirmation, "Delete ", sizeof(confirmation));
       append(confirmation, deleting_path, sizeof(confirmation));
-      append(confirmation, "? This cannot be undone. Folders must be empty.", sizeof(confirmation));
+      append(confirmation, "? This cannot be undone. Folders must be empty.",
+             sizeof(confirmation));
     } else if (ending_task) {
-      char pid[32]; number(pid, ending_pid);
+      char pid[32];
+      number(pid, ending_pid);
       copy(confirmation, "End process ", sizeof(confirmation));
       append(confirmation, pid, sizeof(confirmation));
-      append(confirmation, "? Unsaved work in this process will be lost.", sizeof(confirmation));
+      append(confirmation, "? Unsaved work in this process will be lost.",
+             sizeof(confirmation));
     } else
-      copy(confirmation, "Confirm this action. Saved changes take effect immediately.", sizeof(confirmation));
-    nk_label_wrap(
-        &ui,
-        power_dialog ? "Choose a session action."
-        : editor_discard
-            ? "Discard the unsaved changes in this document?"
-            : confirmation);
+      copy(confirmation,
+           "Confirm this action. Saved changes take effect immediately.",
+           sizeof(confirmation));
+    nk_label_wrap(&ui, power_dialog ? "Choose a session action."
+                       : editor_discard
+                           ? "Discard the unsaved changes in this document?"
+                           : confirmation);
     nk_layout_row_dynamic(&ui, 36, power_dialog || editor_discard ? 3 : 2);
     if (power_dialog) {
       if (nk_button_label(&ui, "Restart"))
@@ -2880,8 +3270,10 @@ static void modal_dialogs(void) {
     } else if (accent_button("Confirm")) {
       if (deleting_file && *deleting_path) {
         int r = fs_remove(deleting_path);
-        if (r < 0) file_error("Deletion failed", r);
-        else notify("Item deleted");
+        if (r < 0)
+          file_error("Deletion failed", r);
+        else
+          notify("Item deleted");
         refresh_files();
       }
       if (ending_task && ending_pid > 0) {
@@ -2930,14 +3322,21 @@ static void inputs(void) {
     char c = console_getchar();
     if (!c)
       break;
-    if (active_app==IMAGES && c=='\n') { picture_load_requested=true; continue; }
-    if (active_app==MUSIC && c=='\n') {music_play_requested=true;continue;}
+    if (active_app == IMAGES && c == '\n') {
+      picture_load_requested = true;
+      continue;
+    }
+    if (active_app == MUSIC && c == '\n') {
+      music_play_requested = true;
+      continue;
+    }
     if (c == 27) {
       escape_requested = true;
       continue;
     }
     if (active_app == BROWSER && c == 18) {
-      copy(browser_url, browser_tabs[browser_active].loaded_url, sizeof(browser_url));
+      copy(browser_url, browser_tabs[browser_active].loaded_url,
+           sizeof(browser_url));
       browser_load_requested = true;
       continue;
     }
@@ -2949,20 +3348,25 @@ static void inputs(void) {
       browser_close_tab(browser_active);
       continue;
     }
-    if (active_app == FILES && !files_editing && (c == 3 || c == 24 || c == 22)) {
-      if (c == 22) file_paste();
-      else file_copy_selection(c == 24);
+    if (active_app == FILES && !files_editing &&
+        (c == 3 || c == 24 || c == 22)) {
+      if (c == 22)
+        file_paste();
+      else
+        file_copy_selection(c == 24);
       continue;
     }
     if (active_app == FILES && c == 6) {
       files_search_focus = 1;
       continue;
     }
-    if (active_app == FILES && c == '\n' && !files_editing && selected_file >= 0) {
+    if (active_app == FILES && c == '\n' && !files_editing &&
+        selected_file >= 0) {
       open_file(selected_file);
       continue;
     }
-    if (active_app == GAMES && games_ui_key(c)) continue;
+    if (active_app == GAMES && games_ui_key(c))
+      continue;
     if (c == 7) {
       settings_page = 5;
       open_app(SETTINGS);
@@ -2986,7 +3390,7 @@ static void inputs(void) {
                    : c == 2  ? BROWSER
                    : c == 15 ? SETTINGS
                    : c == 21 ? IMAGES
-                   : c == 4 ? MUSIC
+                   : c == 4  ? MUSIC
                    : c == 25 ? GAMES
                              : -1;
     if (shortcut >= 0) {
@@ -3027,37 +3431,54 @@ static void inputs(void) {
     else if ((unsigned char)c >= 32 && (unsigned char)c < 127)
       nk_input_char(&ui, c);
   }
-  int key = graphics_key_event();
-  if (active_app == BROWSER && (key == 0x100 || key == 0x101)) {
-    unsigned at = 0;
-    while (at < browser_tab_count && browser_order[at] != browser_active) at++;
-    if (browser_tab_count)
-      browser_switch(browser_order[(at + browser_tab_count + (key == 0x100 ? 1 : -1)) % browser_tab_count]);
-  } else if (active_app == FILES && key == 0x53 && !files_editing && selected_file >= 0) {
-    file_begin_delete();
-  } else if (active_app == FILES && key == 0x3c && !files_editing) {
-    file_begin_rename();
-  } else if (active_app == TERMINAL && (key == 0x48 || key == 0x50) && history_count) {
-    unsigned oldest = history_count > 16 ? history_count - 16 : 0;
-    if (key == 0x48 && history_cursor > oldest)
-      history_cursor--;
-    if (key == 0x50 && history_cursor < history_count)
-      history_cursor++;
-    copy(terminal_line,
-         history_cursor < history_count ? history[history_cursor % 16] : "",
-         sizeof(terminal_line));
-    terminal_focus = 1;
-  } else {
-    enum nk_keys mapped = key == 0x4b   ? NK_KEY_LEFT
-                          : key == 0x4d ? NK_KEY_RIGHT
-                          : key == 0x48 ? NK_KEY_UP
-                          : key == 0x50 ? NK_KEY_DOWN
-                          : key == 0x47 ? NK_KEY_TEXT_LINE_START
-                          : key == 0x4f ? NK_KEY_TEXT_LINE_END
-                          : key == 0x53 ? NK_KEY_DEL
-                                        : NK_KEY_NONE;
-    if (mapped != NK_KEY_NONE)
-      nk_input_key(&ui, mapped, nk_true);
+  for (unsigned event = 0; event < 128; event++) {
+    int key = graphics_key_event();
+    if (!key)
+      break;
+    if (active_app == GAMES &&
+        (key == 0x4b || key == 0x4d || key == 0x48 || key == 0x50)) {
+      games_ui_direction(key == 0x4b   ? 0
+                         : key == 0x4d ? 1
+                         : key == 0x48 ? 2
+                                       : 3);
+      continue;
+    }
+    if (active_app == BROWSER && (key == 0x100 || key == 0x101)) {
+      unsigned at = 0;
+      while (at < browser_tab_count && browser_order[at] != browser_active)
+        at++;
+      if (browser_tab_count)
+        browser_switch(
+            browser_order[(at + browser_tab_count + (key == 0x100 ? 1 : -1)) %
+                          browser_tab_count]);
+    } else if (active_app == FILES && key == 0x53 && !files_editing &&
+               selected_file >= 0) {
+      file_begin_delete();
+    } else if (active_app == FILES && key == 0x3c && !files_editing) {
+      file_begin_rename();
+    } else if (active_app == TERMINAL && (key == 0x48 || key == 0x50) &&
+               history_count) {
+      unsigned oldest = history_count > 16 ? history_count - 16 : 0;
+      if (key == 0x48 && history_cursor > oldest)
+        history_cursor--;
+      if (key == 0x50 && history_cursor < history_count)
+        history_cursor++;
+      copy(terminal_line,
+           history_cursor < history_count ? history[history_cursor % 16] : "",
+           sizeof(terminal_line));
+      terminal_focus = 1;
+    } else {
+      enum nk_keys mapped = key == 0x4b   ? NK_KEY_LEFT
+                            : key == 0x4d ? NK_KEY_RIGHT
+                            : key == 0x48 ? NK_KEY_UP
+                            : key == 0x50 ? NK_KEY_DOWN
+                            : key == 0x47 ? NK_KEY_TEXT_LINE_START
+                            : key == 0x4f ? NK_KEY_TEXT_LINE_END
+                            : key == 0x53 ? NK_KEY_DEL
+                                          : NK_KEY_NONE;
+      if (mapped != NK_KEY_NONE)
+        nk_input_key(&ui, mapped, nk_true);
+    }
   }
   nk_input_end(&ui);
 }
@@ -3091,7 +3512,8 @@ int gui_run(void) {
   preference_load();
   desktop_load();
   memset(browser_tabs, 0, sizeof(browser_tabs));
-  for (unsigned i = 0; i < WEB_TABS; i++) web_reset(i);
+  for (unsigned i = 0; i < WEB_TABS; i++)
+    web_reset(i);
   browser_tab_count = browser_active = 0;
   browser_new_tab("about:home");
   file_history_count = file_history_at = 0;
@@ -3101,7 +3523,8 @@ int gui_run(void) {
   search_subfolders = tasks_paused = false;
   creating_file = renaming_file = creating_folder = context_open = false;
   task_sample_valid = false;
-  sample_count = sample_at = selected_pid = task_page = 0;
+  sample_count = sample_at = selected_pid = 0;
+  task_page = 2;
   style();
   for (unsigned i = 0; i < APP_COUNT; i++) {
     apps[i].visible = false;
@@ -3125,7 +3548,9 @@ int gui_run(void) {
   escape_requested = save_requested = false;
   preferences_dirty = theme_dirty = false;
   running = true;
-  music_focus=false;music_play_requested=false;music_result=0;
+  music_focus = false;
+  music_play_requested = false;
+  music_result = 0;
   clipboard[0] = 0;
   graphics_console_capture(terminal_character);
   mouse_interrupt_poll(true);
@@ -3140,7 +3565,7 @@ int gui_run(void) {
   uint32_t last_frame = clock_ticks() - 2;
   last_status = last_save = clock_ticks();
   while (running) {
-    for (unsigned i = 0; i < 64; i++)
+    for (unsigned i = 0; i < 4; i++)
       devices_poll();
     net_poll();
     user_poll();
@@ -3207,12 +3632,12 @@ int gui_run(void) {
       gui_canvas_present();
       nk_clear(&ui);
       if (picture_load_requested) {
-        picture_load_requested=false;
-        image_load(&picture,picture_path);
+        picture_load_requested = false;
+        image_load(&picture, picture_path);
       }
-      if(music_play_requested) {
-        music_play_requested=false;
-        music_result=audio_play(music_path);
+      if (music_play_requested) {
+        music_play_requested = false;
+        music_result = audio_play(music_path);
       }
       last_frame = clock_ticks();
       if (preferences_dirty && !(buttons & 1) &&

@@ -1,9 +1,12 @@
 QEMU ?= qemu-system-x86_64
+.DEFAULT_GOAL := all
 MEMORY ?= 256
 EXT4_DISK ?= avalanche/build/ext4.img
 comma := ,
 EXT4_DRIVE = $(if $(EXT4_DISK),-drive file=$(EXT4_DISK)$(comma)format=raw$(comma)if=ide)
-.PHONY: all run ext4-image ext4-check test packages package
+.PHONY: all run ext4-image ext4-check test packages package sdk
+sdk:
+	$(MAKE) -C sdk
 all:
 	$(MAKE) -C magenta
 	@if [ -n "$(EXT4_DISK)" ] && [ ! -f "$(EXT4_DISK)" ]; then sh avalanche/tools/ext4-image.sh create "$(EXT4_DISK)" magenta/files; fi
@@ -19,7 +22,8 @@ packages:
 package:
 	$(MAKE) -C magenta package
 	$(MAKE) -C avalanche package
-	sha256sum Images/avalanche.iso Images/magenta.iso Images/avalanche-data.img Images/magenta-data.img > Images/SHA256SUMS
+	$(MAKE) -C sdk
+	sha256sum Images/avalanche.iso Images/magenta.iso Images/avalanche-data.img Images/magenta-data.img Images/magenta-sdk.tar.gz > Images/SHA256SUMS
 test:
 	$(MAKE) package
 	$(CC) -Iavalanche/include avalanche/src/sha256.c avalanche/tools/test-sha256.c -o avalanche/build/test-sha256
@@ -35,6 +39,7 @@ test:
 	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-partitions.c -o avalanche/build/test-partitions
 	avalanche/build/test-partitions
 	python3 avalanche/tools/test-package-security.py
+	QEMU=$(QEMU) python3 avalanche/tools/test-sdk.py
 	python3 avalanche/tools/test-images.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-memory-protection.py
 	QEMU=$(QEMU) python3 avalanche/tools/test-linux64.py

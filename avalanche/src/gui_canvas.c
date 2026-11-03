@@ -1,7 +1,9 @@
 #include "gui_canvas.h"
 #include "font.h"
 #include "system.h"
-static uint32_t *pixels, *wallpaper, *scratch;
+static uint32_t *pixels, *wallpaper, *scratch, *presented_pixels;
+static bool first_present;
+static uint64_t presented_pixel_count;
 static int *ridges[5];
 static unsigned width, height;
 static float desktop_scale = 1;
@@ -9,7 +11,7 @@ static int clip_x, clip_y, clip_right, clip_bottom;
 static uint32_t opened_at[16];
 static bool opened[16];
 static unsigned command_alpha = 255;
-static uint64_t previous_commands[32768];
+static uint64_t previous_commands[4*1024*1024/sizeof(uint64_t)];
 static size_t previous_size;
 static unsigned wallpaper_revision, previous_wallpaper;
 static bool previous_glass, cache_valid, scene_repaint;
@@ -55,8 +57,13 @@ bool gui_canvas_changed(struct nk_context *ctx, bool glass) {
   previous_wallpaper = wallpaper_revision;
   previous_glass = glass;
   for (unsigned i = 1; i < 16; i++)
-    if (opened[i] && (uint32_t)(clock_ticks() - opened_at[i]) <= 20)
+    if (opened[i]) {
+      /* Always draw the final opaque frame, even when emulation took longer
+         than the entire opening animation to render the previous frame. */
       changed = true;
+      if ((uint32_t)(clock_ticks() - opened_at[i]) >= 18)
+        opened[i] = false;
+    }
   return changed;
 }
 void gui_canvas_open(unsigned id) {
@@ -257,18 +264,29 @@ static void blur(int x, int y, int w, int h) {
     }
 }
 bool gui_canvas_init(unsigned w, unsigned h) {
+  if (pixels && wallpaper && scratch && presented_pixels && width == w &&
+      height == h) {
+    cache_valid = cursor_drawn = cursor_moved = false;
+    first_present = true;
+    return true;
+  }
   unsigned pages = ((size_t)w * h * 4 + 4095) / 4096;
   pixels = pages_alloc(pages);
   wallpaper = pages_alloc(pages);
   scratch = pages_alloc(pages);
-  for (unsigned i = 0; i < 5; i++) ridges[i] = pages_alloc(((size_t)w * sizeof(int) + 4095) / 4096);
-  if (!pixels || !wallpaper || !scratch || !ridges[0] || !ridges[1] || !ridges[2] || !ridges[3] || !ridges[4]) return false;
+  presented_pixels = pages_alloc(pages);
+  for (unsigned i = 0; i < 5; i++)
+    ridges[i] = pages_alloc(((size_t)w * sizeof(int) + 4095) / 4096);
+  if (!pixels || !wallpaper || !scratch || !presented_pixels || !ridges[0] ||
+      !ridges[1] || !ridges[2] || !ridges[3] || !ridges[4])
+    return false;
   width = w;
   height = h;
   clip_x = clip_y = 0;
   clip_right = width;
   clip_bottom = height;
   cache_valid = cursor_drawn = cursor_moved = false;
+  first_present = true;
   return true;
 }
 static float sine(float);
@@ -278,8 +296,9 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
     for (unsigned x = 0; x < width; x++) {
       float u = (float)x / width;
       float phase = u * 5.5f + layer * 1.1f;
-      ridges[layer][x] = height * (0.45f + layer * 0.095f +
-          sine(phase) * 0.035f + sine(phase * 2.1f) * 0.018f);
+      ridges[layer][x] =
+          height * (0.45f + layer * 0.095f + sine(phase) * 0.035f +
+                    sine(phase * 2.1f) * 0.018f);
     }
   uint32_t top = variant == 1 ? 0x17181e : variant == 2 ? 0x10222d : 0x181322;
   uint32_t bottom = variant == 1   ? 0x2e3039
@@ -303,7 +322,8 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
         int distance = dx * dx + dy * dy;
         int glow = height / 8, radius = height / 38;
         if (distance < glow * glow)
-          base = blend(base, 0xfff0b7, (glow * glow - distance) * 90 / (glow * glow));
+          base = blend(base, 0xfff0b7,
+                       (glow * glow - distance) * 90 / (glow * glow));
         if (distance < radius * radius)
           base = 0xfff5ca;
         for (unsigned layer = 0; layer < 5; layer++) {
@@ -311,18 +331,25 @@ void gui_canvas_wallpaper(uint32_t accent, unsigned variant) {
           if ((int)y >= ridge - 1) {
             static const uint32_t mountains[] = {0x71b7b7, 0x3d919f, 0x246b80,
                                                  0x16485d, 0x102f42};
-            base = blend(base, mountains[layer], (int)y == ridge - 1 ? 85 : (int)y == ridge ? 190 : 255);
+            base = blend(base, mountains[layer],
+                         (int)y == ridge - 1 ? 85
+                         : (int)y == ridge   ? 190
+                                             : 255);
           }
         }
-        /* The river narrows continuously to its source and flows off the bottom. */
+        /* The river narrows continuously to its source and flows off the
+         * bottom. */
         float depth = ((float)y / height - 0.62f) / 0.38f;
         if (depth > 0) {
-          float center = width * (0.53f - depth * 0.23f + sine(depth * 5) * 0.035f);
+          float center =
+              width * (0.53f - depth * 0.23f + sine(depth * 5) * 0.035f);
           float half = width * 0.105f * depth * depth;
           float delta = x - center;
-          if (delta < 0) delta = -delta;
+          if (delta < 0)
+            delta = -delta;
           if (delta < half + 1) {
-            unsigned coverage = delta <= half - 1 ? 255 : (half + 1 - delta) * 127;
+            unsigned coverage =
+                delta <= half - 1 ? 255 : (half + 1 - delta) * 127;
             uint32_t water = blend(0x91c7c9, 0x39788a, depth * 255);
             base = blend(base, water, coverage);
           }
@@ -438,8 +465,10 @@ static float sine(float x) {
     x -= 6.2831853f;
   while (x < -3.14159265f)
     x += 6.2831853f;
-  if (x > 1.57079633f) x = 3.14159265f - x;
-  if (x < -1.57079633f) x = -3.14159265f - x;
+  if (x > 1.57079633f)
+    x = 3.14159265f - x;
+  if (x < -1.57079633f)
+    x = -3.14159265f - x;
   float squared = x * x;
   return x * (1.0f - squared / 6.0f + squared * squared / 120.0f -
               squared * squared * squared / 5040.0f);
@@ -814,12 +843,46 @@ void gui_canvas_cursor(int x, int y) {
     }
 }
 void gui_canvas_present(void) {
-  if (scene_repaint)
-    graphics_present(pixels, width, height);
-  else if (cursor_moved) {
+  if (scene_repaint) {
+    for (unsigned y = 0; y < height; y += 32) {
+      unsigned rows = height - y < 32 ? height - y : 32, left = width,
+               right = 0;
+      for (unsigned row = 0; row < rows; row++) {
+        const uint32_t *current = pixels + (y + row) * width;
+        const uint32_t *old = presented_pixels + (y + row) * width;
+        for (unsigned x = 0; x < width; x++)
+          if (first_present || current[x] != old[x]) {
+            if (x < left)
+              left = x;
+            if (x >= right)
+              right = x + 1;
+          }
+      }
+      if (left < right) {
+        presented_pixel_count += (uint64_t)(right - left) * rows;
+        graphics_present_region(pixels, width, height, left, y, right - left,
+                                rows);
+        for (unsigned row = 0; row < rows; row++)
+          copy_pixels(presented_pixels + (y + row) * width + left,
+                      pixels + (y + row) * width + left, right - left);
+      }
+    }
+    first_present = false;
+  } else if (cursor_moved) {
+    presented_pixel_count += 2 * 32 * 32;
     graphics_present_region(pixels, width, height, presented_x, presented_y, 32,
                             32);
     graphics_present_region(pixels, width, height, cursor_x, cursor_y, 32, 32);
+    for (unsigned row = 0; row < 32; row++) {
+      if (presented_y + row < height)
+        for (unsigned col = 0; col < 32 && presented_x + col < width; col++)
+          presented_pixels[(presented_y + row) * width + presented_x + col] =
+              pixels[(presented_y + row) * width + presented_x + col];
+      if (cursor_y + row < height)
+        for (unsigned col = 0; col < 32 && cursor_x + col < width; col++)
+          presented_pixels[(cursor_y + row) * width + cursor_x + col] =
+              pixels[(cursor_y + row) * width + cursor_x + col];
+    }
   }
   presented_x = cursor_x;
   presented_y = cursor_y;
@@ -853,24 +916,24 @@ void gui_canvas_icon(struct nk_command_buffer *b, struct nk_rect r,
     return;
   }
   float x = r.x + (r.w - 24) / 2, y = r.y + (r.h - 24) / 2;
-  if(kind==11) {
-    nk_stroke_rect(b,nk_rect(x,y+4,24,16),5,2,c);
-    nk_stroke_line(b,x+5,y+12,x+11,y+12,2,c);
-    nk_stroke_line(b,x+8,y+9,x+8,y+15,2,c);
-    nk_fill_circle(b,nk_rect(x+16,y+9,3,3),c);
-    nk_fill_circle(b,nk_rect(x+19,y+12,3,3),c);
-  } else if(kind==10) {
-    nk_stroke_line(b,x+9,y+17,x+9,y+4,2,c);
-    nk_stroke_line(b,x+21,y+15,x+21,y+2,2,c);
-    nk_stroke_line(b,x+9,y+4,x+21,y+2,3,c);
-    nk_fill_circle(b,nk_rect(x+2,y+15,8,6),c);
-    nk_fill_circle(b,nk_rect(x+14,y+13,8,6),c);
+  if (kind == 11) {
+    nk_stroke_rect(b, nk_rect(x, y + 4, 24, 16), 5, 2, c);
+    nk_stroke_line(b, x + 5, y + 12, x + 11, y + 12, 2, c);
+    nk_stroke_line(b, x + 8, y + 9, x + 8, y + 15, 2, c);
+    nk_fill_circle(b, nk_rect(x + 16, y + 9, 3, 3), c);
+    nk_fill_circle(b, nk_rect(x + 19, y + 12, 3, 3), c);
+  } else if (kind == 10) {
+    nk_stroke_line(b, x + 9, y + 17, x + 9, y + 4, 2, c);
+    nk_stroke_line(b, x + 21, y + 15, x + 21, y + 2, 2, c);
+    nk_stroke_line(b, x + 9, y + 4, x + 21, y + 2, 3, c);
+    nk_fill_circle(b, nk_rect(x + 2, y + 15, 8, 6), c);
+    nk_fill_circle(b, nk_rect(x + 14, y + 13, 8, 6), c);
   } else if (kind == 9) {
-    nk_stroke_rect(b,nk_rect(x+1,y+2,22,20),3,2,c);
-    nk_stroke_circle(b,nk_rect(x+5,y+6,5,5),2,c);
-    nk_stroke_line(b,x+3,y+20,x+13,y+10,2,c);
-    nk_stroke_line(b,x+13,y+10,x+22,y+19,2,c);
-    nk_stroke_line(b,x+8,y+15,x+3,y+10,2,c);
+    nk_stroke_rect(b, nk_rect(x + 1, y + 2, 22, 20), 3, 2, c);
+    nk_stroke_circle(b, nk_rect(x + 5, y + 6, 5, 5), 2, c);
+    nk_stroke_line(b, x + 3, y + 20, x + 13, y + 10, 2, c);
+    nk_stroke_line(b, x + 13, y + 10, x + 22, y + 19, 2, c);
+    nk_stroke_line(b, x + 8, y + 15, x + 3, y + 10, 2, c);
   } else if (kind == 0) {
     nk_stroke_rect(b, nk_rect(x, y + 2, 24, 20), 4, 2, c);
     nk_stroke_line(b, x + 5, y + 8, x + 9, y + 12, 2, c);

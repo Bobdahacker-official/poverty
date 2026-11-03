@@ -60,9 +60,12 @@ static const struct package catalog[] = {{"hello", "1.0.0", -1},
 static uint8_t image[FS_MAX_FILE], previous[FS_MAX_FILE];
 static uint8_t response[FS_MAX_FILE + 4096];
 static bool safe_name(const char *name) {
+  unsigned length = strlen(name);
+  bool magenta = length > 6 && str_eq(name + length - 6, ".mgnta");
   unsigned n = 0;
   for (; name[n]; n++)
-    if (n >= 27 || !((name[n] >= 'a' && name[n] <= 'z') ||
+    if (n >= 27 || !((magenta && n == length - 6 && name[n] == '.') ||
+                     (name[n] >= 'a' && name[n] <= 'z') ||
                      (name[n] >= '0' && name[n] <= '9') || name[n] == '-' ||
                      name[n] == '_'))
       return false;
@@ -585,13 +588,17 @@ void package_command(char *args) {
   char *action = word(&args), *name = word(&args);
   if (str_eq(action, "recover"))
     return;
-  if (str_eq(action, "trust")) {
+  if (str_eq(action, "trust") || str_eq(action, "trust-url")) {
     if (!*name) {
       console_write(
           "pkg trust LOCAL-DER-CERTIFICATE pins an RSA signing certificate\n");
       return;
     }
-    int count = fs_read(name, trust_certificate, sizeof(trust_certificate));
+    int count =
+        str_eq(action, "trust-url")
+            ? package_download(name, word(&args), trust_certificate,
+                               sizeof(trust_certificate))
+            : fs_read(name, trust_certificate, sizeof(trust_certificate));
     if (count < 0 || !trust_key(trust_certificate, count)) {
       console_write(
           "Expected a DER certificate with a 2048 to 4096 bit RSA key.\n");

@@ -57,6 +57,17 @@ tools.id = 'magenta-mobile-keys';
 tools.hidden = true;
 toolbar.append(tools);
 document.body.append(toolbar);
+const upload = document.createElement('button');
+upload.type = 'button';upload.textContent = 'Upload app';
+upload.addEventListener('click', () => {
+    const address = new URL(window.location.href);
+    if (address.hostname.endsWith('.app.github.dev')) {
+        address.hostname = address.hostname.replace(/-\d+\.app\.github\.dev$/, '-6082.app.github.dev');
+    } else { address.port = '6082'; }
+    address.pathname = '/';address.search = '';address.hash = '';
+    window.open(address.href, '_blank', 'noopener');
+});
+toolbar.append(upload);
 
 function focusKeyboard() {
     input.focus({preventScroll: true});

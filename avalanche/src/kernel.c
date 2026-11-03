@@ -120,7 +120,8 @@ void *pages_alloc(unsigned count) {
 void *page_alloc(void) { return pages_alloc(1); }
 bool page_free(void *p) {
   uint64_t a = page_physical(p), i = a / PAGE;
-  if (a % PAGE || i >= PAGES || !bit(allocated, i)) return false;
+  if (a % PAGE || i >= PAGES || !bit(allocated, i))
+    return false;
   mark(allocated, i, false);
   if (i >= 1048576u)
     high_used--;
@@ -254,13 +255,21 @@ static void newline(void) {
 static char *capture_buffer;
 static unsigned capture_size, capture_used;
 static void (*console_observer)(char);
-static int gui_key;
+static int gui_keys[128];
+static unsigned gui_key_head, gui_key_count;
+static void graphics_queue_key(int key) {
+  if (gui_key_count < 128)
+    gui_keys[(gui_key_head + gui_key_count++) % 128] = key;
+}
 void graphics_console_capture(void (*observer)(char)) {
   console_observer = observer;
 }
 int graphics_key_event(void) {
-  int key = gui_key;
-  gui_key = 0;
+  if (!gui_key_count)
+    return 0;
+  int key = gui_keys[gui_key_head];
+  gui_key_head = (gui_key_head + 1) % 128;
+  gui_key_count--;
   return key;
 }
 void console_putc(char c) {
@@ -342,18 +351,21 @@ void console_keyboard_poll(void) {
     return;
   uint8_t scancode = inb(0x60);
   if (keyboard_count < sizeof(keyboard_queue)) {
-    keyboard_queue[(keyboard_head + keyboard_count) % sizeof(keyboard_queue)] = scancode;
+    keyboard_queue[(keyboard_head + keyboard_count) % sizeof(keyboard_queue)] =
+        scancode;
     keyboard_count++;
   }
 }
 void keyboard_feed_scancode(uint8_t scancode) {
   uintptr_t flags;
-  __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+  __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags)::"memory");
   if (keyboard_count < sizeof(keyboard_queue)) {
-    keyboard_queue[(keyboard_head + keyboard_count) % sizeof(keyboard_queue)] = scancode;
+    keyboard_queue[(keyboard_head + keyboard_count) % sizeof(keyboard_queue)] =
+        scancode;
     keyboard_count++;
   }
-  if (flags & (1u << 9)) __asm__ volatile("sti" ::: "memory");
+  if (flags & (1u << 9))
+    __asm__ volatile("sti" ::: "memory");
 }
 static bool keyboard_scancode(uint8_t *scancode) {
   uintptr_t flags;
@@ -397,7 +409,7 @@ char console_getchar(void) {
       if (console_observer && !(s & 128) &&
           (s == 0x4b || s == 0x4d || s == 0x48 || s == 0x50 || s == 0x47 ||
            s == 0x4f || s == 0x53))
-        gui_key = s;
+        graphics_queue_key(s);
       if (s == 29 || s == 157)
         right_ctrl = s == 29;
       continue;
@@ -421,11 +433,11 @@ char console_getchar(void) {
     if (s & 128)
       continue;
     if (console_observer && s == 0x3c) {
-      gui_key = s;
+      graphics_queue_key(s);
       continue;
     }
     if (console_observer && s == 15 && (left_ctrl || right_ctrl)) {
-      gui_key = left_shift || right_shift ? 0x101 : 0x100;
+      graphics_queue_key(left_shift || right_shift ? 0x101 : 0x100);
       continue;
     }
     char c = keys[s];
@@ -535,18 +547,36 @@ static void command(char *line) {
   char *rest = line, *cmd = token(&rest);
   if (!*cmd)
     return;
-  if (eq(cmd,"audio")) {audio_info();return;}
-  if (eq(cmd,"play")) {
-    int status=audio_play(token(&rest));
-    if(!status) while((status=audio_status())>0) {devices_poll();net_poll();user_poll();user_yield_kernel();}
-    result(status);return;
+  if (eq(cmd, "audio")) {
+    audio_info();
+    return;
   }
-  if (eq(cmd,"stopaudio")) {audio_stop();return;}
-  if (eq(cmd,"diskcrc")) {
-    bool a,b; unsigned disk=parse_uint(token(&rest),&a),lba=parse_uint(token(&rest),&b);
+  if (eq(cmd, "play")) {
+    int status = audio_play(token(&rest));
+    if (!status)
+      while ((status = audio_status()) > 0) {
+        devices_poll();
+        net_poll();
+        user_poll();
+        user_yield_kernel();
+      }
+    result(status);
+    return;
+  }
+  if (eq(cmd, "stopaudio")) {
+    audio_stop();
+    return;
+  }
+  if (eq(cmd, "diskcrc")) {
+    bool a, b;
+    unsigned disk = parse_uint(token(&rest), &a),
+             lba = parse_uint(token(&rest), &b);
     uint8_t data[512];
-    if(a && b && disk_read(disk,lba,data)) { print_hex(crc32(data,512)); console_putc('\n'); }
-    else result(-5);
+    if (a && b && disk_read(disk, lba, data)) {
+      print_hex(crc32(data, 512));
+      console_putc('\n');
+    } else
+      result(-5);
     return;
   }
   if (eq(cmd, "priority")) {
@@ -690,14 +720,20 @@ static void command(char *line) {
   else if (eq(cmd, "display")) {
     console_write(uefi_boot ? "Firmware: UEFI\n" : "Firmware: BIOS\n");
     if (fb) {
-      console_write("Framebuffer: "); print_uint(fw); console_putc('x');
-      print_uint(fh); console_write(" depth="); print_uint(bytespp*8);
-      console_write(" stride="); print_uint(pitch); console_putc('\n');
+      console_write("Framebuffer: ");
+      print_uint(fw);
+      console_putc('x');
+      print_uint(fh);
+      console_write(" depth=");
+      print_uint(bytespp * 8);
+      console_write(" stride=");
+      print_uint(pitch);
+      console_putc('\n');
       console_write("Renderer: CPU software compositor\n");
-    } else console_write("Display: serial console\n");
+    } else
+      console_write("Display: serial console\n");
     devices_display();
-  }
-  else if (eq(cmd, "devices"))
+  } else if (eq(cmd, "devices"))
     devices_list();
   else if (eq(cmd, "fs"))
     fs_info();
@@ -855,7 +891,8 @@ static void command(char *line) {
   } else if (eq(cmd, "shutdown")) {
     kernel_power(AV_POWER_HALT);
   } else if (eq(cmd, "sync")) {
-    console_write(power_flush() ? "Disks synchronized.\n" : "Disk synchronization failed.\n");
+    console_write(power_flush() ? "Disks synchronized.\n"
+                                : "Disk synchronization failed.\n");
   } else if (eq(cmd, "halt")) {
     console_write("CPU halted.\n");
     for (;;)
@@ -1010,7 +1047,8 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
         bg = rgb(13, 23, 39);
       }
     }
-    if (t->type==11 || t->type==12) uefi_boot=true;
+    if (t->type == 11 || t->type == 12)
+      uefi_boot = true;
     uint32_t next = (t->size + 7) & ~7u;
     if (next > end - (uintptr_t)t)
       break;
@@ -1040,11 +1078,11 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
     fb = page_pointer(fb_address);
   console_clear();
   platform_enable();
-  pci_ecam_init(mbi,end);
+  pci_ecam_init(mbi, end);
   devices_init();
   net_init();
   fs_init();
-  char recovery_command[]="recover";
+  char recovery_command[] = "recover";
   package_command(recovery_command);
   console_write("AVALANCHE KERNEL 0.4.0\n");
   console_write(

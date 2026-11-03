@@ -4,5 +4,6 @@
 void games_ui(struct nk_context *, struct nk_color text, struct nk_color muted,
               struct nk_color surface, struct nk_color accent);
 bool games_ui_key(char);
+void games_ui_direction(unsigned);
 void games_ui_save(void);
 #endif
