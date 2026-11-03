@@ -79,7 +79,7 @@ case ${1:-} in
     stop_service "$runtime/upload.pid"
     stop_service "$runtime/websockify.pid"
     stop_service "$runtime/qemu.pid"
-    rm -f "$runtime/data.img" "$runtime/ext4.img" "$runtime/classicube-data.img"
+    rm -f "$runtime/data.img" "$runtime/ext4.img"
     ;;
   --restart-vnc)
     stop_service "$runtime/websockify.pid"
@@ -121,7 +121,7 @@ for slot in range(32):
     offset = (start + 10 + slot * 256) * 512
     (target / name).write_bytes(image[offset:offset + size])
 PYEXTRACT
-    if ! command -v mkfs.ext4 >/dev/null; then
+    if ! command -v mkfs.ext4 >/dev/null || ! command -v debugfs >/dev/null; then
       sudo -n apt-get update -qq
       sudo -n apt-get install -y -qq e2fsprogs
     fi
@@ -130,8 +130,12 @@ PYEXTRACT
       -E lazy_itable_init=0,lazy_journal_init=0 -d "$stage" "$runtime/ext4.img"
     rm -rf "$stage"
   fi
-  if ! test -f "$runtime/classicube-data.img"; then
-    gzip -dc "$repo_root/Images/classicube-data.img.gz" > "$runtime/classicube-data.img"
+  if ! debugfs -R 'stat /classicube.mgnta' "$runtime/ext4.img" 2>/dev/null | grep -q 'Inode:'; then
+    classicube_stage=$(mktemp -d "$runtime/classicube-files.XXXXXX")
+    gzip -dc "$repo_root/Images/classicube-data.img.gz" > "$classicube_stage/disk.img"
+    debugfs -R "dump /classicube.mgnta $classicube_stage/classicube.mgnta" "$classicube_stage/disk.img" >/dev/null 2>&1
+    debugfs -w -R "write $classicube_stage/classicube.mgnta /classicube.mgnta" "$runtime/ext4.img" >/dev/null
+    rm -rf "$classicube_stage"
   fi
   acceleration=(-accel tcg,thread=multi -cpu max)
   if [[ -r /dev/kvm && -w /dev/kvm ]]; then
@@ -141,7 +145,6 @@ PYEXTRACT
     -cdrom "$repo_root/Images/magenta.iso" \
     -drive "file=$runtime/data.img,format=raw,if=ide" \
     -drive "file=$runtime/ext4.img,format=raw,if=ide" \
-    -drive "file=$runtime/classicube-data.img,format=raw,if=ide" \
     -netdev user,id=net0 -device virtio-net-pci,netdev=net0,disable-modern=on,romfile= \
     -device virtio-rng-pci,disable-modern=on \
     -vga std -display none -vnc 127.0.0.1:1,lossy=off \
