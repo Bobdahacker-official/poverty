@@ -770,19 +770,19 @@ static void open_file(unsigned index) {
       return;
     }
   }
-  if (editor_dirty) {
-    notify("Save or discard the current document first");
-    open_app(EDITOR);
-    return;
-  }
   /* Read the ELF ident first.  Programs can be much larger than an editor
    * document, while the executable loader reads them directly from ext4. */
   char ident[4];
-  int ident_size = fs_read(path, ident, sizeof(ident));
+  int ident_size = fs_read_at(path, 0, ident, sizeof(ident));
   if (ident_size == 4 && ident[0] == 0x7f && ident[1] == 'E' &&
       ident[2] == 'L' && ident[3] == 'F') {
     if (user_spawn(path, "", false) < 0)
       notify("Program launch failed");
+    return;
+  }
+  if (editor_dirty) {
+    notify("Save or discard the current document first");
+    open_app(EDITOR);
     return;
   }
   if (file_items[index].size > FS_MAX_FILE) {
@@ -3368,6 +3368,34 @@ static void launcher_view(void) {
             app_names[i], strlen(app_names[i]), &body_font, nk_rgba(0, 0, 0, 0),
             rgb(palette()->text));
       }
+    bool classicube_available = fs_size("/classicube.mgnta") > 0;
+    bool classicube_matches =
+        classicube_available &&
+        (launcher_category == 0 || launcher_category == 1 ||
+         launcher_category == 4) &&
+        (contains("ClassiCube", launcher_search) ||
+         contains("Creative multiplayer block game", launcher_search));
+    if (classicube_matches) {
+      matches++;
+      struct nk_rect r = nk_widget_bounds(&ui);
+      if (nk_button_label(&ui, "")) {
+        if (user_spawn("/classicube.mgnta", "", false) < 0)
+          notify("ClassiCube launch failed");
+        else
+          launcher = false;
+      }
+      struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
+      app_badge(canvas, nk_rect(r.x + (r.w - 48) / 2, r.y + 12, 48, 48),
+                GAMES);
+      const char *name = "ClassiCube";
+      float label_width = gui_font_width(body_font.userdata, 16, name,
+                                         strlen(name));
+      nk_draw_text(canvas,
+                   nk_rect(r.x + (r.w - label_width) / 2, r.y + 76,
+                           label_width, 24),
+                   name, strlen(name), &body_font, nk_rgba(0, 0, 0, 0),
+                   rgb(palette()->text));
+    }
     if (!matches) {
       nk_layout_row_dynamic(&ui, 44, 1);
       caption("No applications match your search.");
@@ -3768,7 +3796,7 @@ int gui_run(void) {
   focus_request = -1;
   notification_until = 0;
   console_write("Magenta graphical desktop ready\n");
-  uint32_t last_frame = clock_ticks() - 2;
+  uint32_t last_frame = clock_ticks() - 3;
   last_status = last_save = clock_ticks();
   while (running) {
     for (unsigned i = 0; i < 4; i++)
@@ -3781,7 +3809,7 @@ int gui_run(void) {
       update_status();
       last_status = clock_ticks();
     }
-    if ((uint32_t)(clock_ticks() - last_frame) >= 2) {
+    if ((uint32_t)(clock_ticks() - last_frame) >= 3) {
       inputs();
       if (browser_load_requested)
         browser_load();
