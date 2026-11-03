@@ -149,3 +149,9 @@ See [kernel details](avalanche/images/NOTICE) and [distribution details](magenta
 The desktop uses [Nuklear](https://github.com/Immediate-Mode-UI/Nuklear), [Catppuccin](https://github.com/catppuccin/palette), [Lucide](https://lucide.dev/), and DejaVu fonts. Its layout takes ideas from elementary, COSMIC, Linux Mint, and macOS.
 
 Avalanche source uses the [MIT license](avalanche/LICENSE). The linked Elk engine is licensed under [AGPL-3.0](avalanche/vendor/elk/AGPL-3.0.txt); its source is included in this repository. BearSSL, printf, and the stb image decoder carry their own MIT licenses. GRUB, Nuklear, Catppuccin, Lucide, DejaVu, and v86 keep their own licenses. Their notices are included with the source and in the ISO's `/licenses` directory. GRUB source and Debian patches are in [grub-source](avalanche/images/grub-source/).
+
+### NetSurf and graphical apps
+
+[NetSurf](https://bobdahacker-official.github.io/poverty/docs/browser.html) runs in a userspace window with HTML, CSS, JavaScript, TrueType text and HTTPS. Download its writable app disk from [Images/netsurf-data.img.gz](Images/netsurf-data.img.gz), or build it with `make netsurf`. The [port source](ports/netsurf) includes the build recipe and integration checks.
+
+The [graphical SDK example](sdk/examples/window) opens a native window, draws a pixel surface and responds to pointer input. See the [window API](https://bobdahacker-official.github.io/poverty/docs/windows.html) for the drawing and event interfaces.

@@ -233,7 +233,7 @@ void net_init(void) {
     return;
   }
   const struct pci_device *d = pci_find(0x10ec, 0x8139);
-    if (d && rtl_init(d))
+  if (d && rtl_init(d))
     link_ready = true;
   else {
     const uint16_t models[] = {0x100e, 0x100f, 0x1010, 0x1011, 0x1012,
@@ -608,7 +608,7 @@ void net_snapshot(struct network_info *out) {
   const char *name = nic == VIRTIO    ? "VirtIO"
                      : nic == RTL8139 ? "RTL8139"
                      : nic == E1000   ? "Intel E1000"
-                : nic == PCNET   ? "AMD PCnet"
+                     : nic == PCNET   ? "AMD PCnet"
                                       : "No Ethernet adapter";
   memcpy(out->adapter, name, strlen(name) + 1);
 }
@@ -829,39 +829,41 @@ int net_dns(const char *name, uint32_t *answer) {
     if (!server || (resolver && server == resolvers[0]))
       continue;
     for (unsigned attempt = 0; attempt < 3; attempt++) {
-    if (net_udp_send(server, port, 53, query, pos) < 0)
-      return -3;
-    uint32_t start = clock_ticks();
-    while (clock_ticks() - start < 500) {
-      uint32_t source;
-      uint16_t srcport;
-      int result = net_udp_recv(port, reply, sizeof(reply), &source, &srcport);
-      if (result < 12 || source != server || srcport != 53)
-        continue;
-      unsigned n = (unsigned)result;
-      if (be16(reply) != id || (be16(reply + 2) & 0x820f) != 0x8000)
-        continue;
-      unsigned off = 12, questions = be16(reply + 4), answers = be16(reply + 6);
-      if (questions != 1 || answers > 128)
-        continue;
-      if (!skip_name(reply, n, &off) || n - off < 4)
-        continue;
-      off += 4;
-      for (unsigned i = 0; i < answers; i++) {
-        if (!skip_name(reply, n, &off) || n - off < 10)
-          break;
-        uint16_t type = be16(reply + off), cls = be16(reply + off + 2),
-                 len = be16(reply + off + 8);
-        off += 10;
-        if (len > n - off)
-          break;
-        if (type == 1 && cls == 1 && len == 4) {
-          *answer = be32(reply + off);
-          return 0;
+      if (net_udp_send(server, port, 53, query, pos) < 0)
+        return -3;
+      uint32_t start = clock_ticks();
+      while (clock_ticks() - start < 500) {
+        uint32_t source;
+        uint16_t srcport;
+        int result =
+            net_udp_recv(port, reply, sizeof(reply), &source, &srcport);
+        if (result < 12 || source != server || srcport != 53)
+          continue;
+        unsigned n = (unsigned)result;
+        if (be16(reply) != id || (be16(reply + 2) & 0x820f) != 0x8000)
+          continue;
+        unsigned off = 12, questions = be16(reply + 4),
+                 answers = be16(reply + 6);
+        if (questions != 1 || answers > 128)
+          continue;
+        if (!skip_name(reply, n, &off) || n - off < 4)
+          continue;
+        off += 4;
+        for (unsigned i = 0; i < answers; i++) {
+          if (!skip_name(reply, n, &off) || n - off < 10)
+            break;
+          uint16_t type = be16(reply + off), cls = be16(reply + off + 2),
+                   len = be16(reply + off + 8);
+          off += 10;
+          if (len > n - off)
+            break;
+          if (type == 1 && cls == 1 && len == 4) {
+            *answer = be32(reply + off);
+            return 0;
+          }
+          off += len;
         }
-        off += len;
       }
-    }
     }
   }
   return -4;
@@ -880,6 +882,11 @@ static struct {
   uint32_t head, count;
 } tcp;
 static uint16_t tcp_port = 50000;
+void net_tcp_snapshot(struct tcp_snapshot *out) {
+  *out = (struct tcp_snapshot){tcp.active,     tcp.established, tcp.peer_closed,
+                               tcp.reset,      tcp.count,       tcp.remote,
+                               tcp.local_port, tcp.remote_port};
+}
 static void tcp_emit(uint8_t flags, uint32_t seq, const void *data,
                      uint32_t size) {
   uint8_t p[594], pseudo[572];

@@ -1,4 +1,5 @@
 #include "abi.h"
+#include "client.h"
 #include "ext4.h"
 #include "package.h"
 #include "process.h"
@@ -26,6 +27,18 @@ static void drop_page(uint64_t entry) {
 }
 static int current = -1, next_pid = 1;
 static int tcp_owner;
+int process_tcp_claim(int pid) {
+  if (tcp_owner && tcp_owner != pid)
+    return -16;
+  tcp_owner = pid;
+  return 0;
+}
+void process_tcp_release(int pid) {
+  if (tcp_owner == pid) {
+    net_tcp_close();
+    tcp_owner = 0;
+  }
+}
 static bool tcp_cleanup;
 static struct trap_frame *kernel_frame;
 #define APP(n) extern const uint8_t app_##n##_start[], app_##n##_end[]
@@ -745,6 +758,7 @@ static void wake_waiters(void) {
 void process_exit(struct process *t, int status, int signal) {
   if (!t || t->state == TASK_ZOMBIE || t->state == TASK_EMPTY)
     return;
+  client_destroy(t->pid);
   if (tcp_owner == t->pid)
     tcp_cleanup = true;
   t->status = status;
@@ -780,10 +794,43 @@ int user_kill(int pid, int signal) {
     return -3;
   if (!signal)
     return 0;
-  if (signal != 2 && signal != 3 && signal != 9 && signal != 15)
+  if (signal != 2 && signal != 3 && signal != 6 && signal != 9 &&
+      signal != 11 && signal != 13 && signal != 15)
     return -22;
+  uint64_t bit = UINT64_C(1) << (signal - 1);
+  if (signal != 9 && (t->ignored_signals & bit))
+    return 0;
+  if (signal != 9 && (t->blocked_signals & bit)) {
+    t->pending_signals |= bit;
+    return 0;
+  }
   process_exit(t, 128 + signal, signal);
   return 0;
+}
+void process_pending_signals(struct process *t) {
+  uint64_t ready = t->pending_signals & ~t->blocked_signals;
+  for (unsigned i = 0; i < 31; i++)
+    if (ready & (UINT64_C(1) << i)) {
+      t->pending_signals &= ~(UINT64_C(1) << i);
+      user_kill(t->pid, i + 1);
+      if (t->state == TASK_ZOMBIE)
+        break;
+    }
+}
+int process_futex_wake(uint64_t key, bool private, unsigned count,
+                       uint32_t mask) {
+  unsigned woken = 0;
+  for (unsigned i = 0; i < PROCESS_MAX && woken < count; i++) {
+    struct process *t = &tasks[i];
+    if (t->state == TASK_FUTEX && t->futex_key == key &&
+        t->futex_private == private && (t->futex_mask & mask)) {
+      t->frame->eax = 0;
+      t->state = TASK_READY;
+      t->ready_since = clock_ticks();
+      woken++;
+    }
+  }
+  return woken;
 }
 int process_wait(struct process *p, int pid, uint32_t status, bool nohang) {
   bool children = false;
@@ -823,7 +870,11 @@ void process_read(struct process *t, uint32_t address, uint32_t capacity,
 static void wake_sleepers(void) {
   uint32_t now = clock_ticks();
   for (unsigned i = 0; i < PROCESS_MAX; i++)
-    if (tasks[i].state == TASK_SLEEP && (int32_t)(now - tasks[i].wake) >= 0) {
+    if ((tasks[i].state == TASK_SLEEP ||
+         (tasks[i].state == TASK_FUTEX && tasks[i].futex_timed)) &&
+        (int32_t)(now - tasks[i].wake) >= 0) {
+      if (tasks[i].state == TASK_FUTEX)
+        tasks[i].frame->eax = (int64_t)-110;
       tasks[i].state = TASK_READY;
       tasks[i].ready_since = now;
     }
@@ -905,10 +956,6 @@ struct trap_frame *user_timer(struct trap_frame *f) {
   struct process *t = &tasks[current];
   total_user_ticks++;
   t->cpu_ticks++;
-  if (t->cpu_ticks >= 12000) {
-    process_exit(t, 124, 0);
-    return user_reschedule(f);
-  }
   if (t->slice_left && --t->slice_left)
     return f;
   return user_reschedule(f);
@@ -957,6 +1004,9 @@ void user_poll(void) {
   }
   wake_sleepers();
   bool foreground = false;
+  for (unsigned i = 0; i < PROCESS_MAX; i++)
+    if (tasks[i].state == TASK_POLL)
+      linux_poll_wake(&tasks[i]);
   for (unsigned i = 0; i < PROCESS_MAX; i++)
     if (tasks[i].foreground && tasks[i].state != TASK_EMPTY &&
         tasks[i].state != TASK_ZOMBIE)
@@ -1037,8 +1087,8 @@ int user_wait_pid(int pid) {
   }
 }
 void user_list(void) {
-  const char *states[] = {"empty", "ready", "running", "sleep",
-                          "input", "wait",  "zombie"};
+  const char *states[] = {"empty", "ready",  "running", "sleep", "input",
+                          "wait",  "zombie", "poll",    "futex"};
   console_write("PID PPID STATE ABI NAME\n");
   for (unsigned i = 0; i < PROCESS_MAX; i++) {
     struct process *t = &tasks[i];
@@ -1062,6 +1112,8 @@ int process_fork(struct trap_frame *f) {
   c->linux_abi = p->linux_abi;
   c->linux64 = p->linux64;
   c->fs_base = p->fs_base;
+  c->ignored_signals = p->ignored_signals;
+  c->blocked_signals = p->blocked_signals;
   c->foreground = p->foreground;
   c->heap_min = p->heap_min;
   c->heap_break = p->heap_break;
@@ -1213,6 +1265,12 @@ void user_syscall(struct trap_frame *f) {
   char name[256];
   int result = -1;
   switch (f->eax) {
+  case AV_GUI_OPEN:
+  case AV_GUI_DRAW:
+  case AV_GUI_EVENT:
+  case AV_GUI_CLOSE:
+    result = client_call(t, f->eax - AV_GUI_OPEN, f->ebx);
+    break;
   case AV_FILE_MKDIR:
     if (user_string(f->ebx, name, sizeof(name)))
       result = fs_mkdir(name);

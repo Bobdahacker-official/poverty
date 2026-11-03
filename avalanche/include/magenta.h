@@ -1,6 +1,25 @@
 #ifndef MAGENTA_ABI_H
 #define MAGENTA_ABI_H
 #include <stdint.h>
+struct av_gui_open {
+  uint32_t width, height;
+  char title[64];
+};
+struct av_gui_draw {
+  uint32_t x, y, width, height, stride, reserved;
+  uint64_t pixels;
+};
+struct av_gui_event {
+  uint32_t type;
+  int32_t a, b, c;
+};
+enum av_gui_event_type {
+  AV_GUI_NONE,
+  AV_GUI_TEXT,
+  AV_GUI_KEY,
+  AV_GUI_MOUSE,
+  AV_GUI_QUIT
+};
 struct av_audio_status {
   uint32_t available, playing, rate, channels, frames_played, frames_total;
   int32_t error;
@@ -16,8 +35,8 @@ struct av_file_entry {
   uint32_t size;
 };
 struct av_task_info {
-  int32_t pid,parent;
-  uint32_t state,priority,pages,cpu;
+  int32_t pid, parent;
+  uint32_t state, priority, pages, cpu;
   char name[32];
 };
 enum av_report {

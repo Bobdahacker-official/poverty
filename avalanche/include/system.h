@@ -169,6 +169,13 @@ int net_tcp_connect(uint32_t, uint16_t);
 int net_tcp_send(const void *, uint32_t);
 int net_tcp_recv(void *, uint32_t, uint32_t);
 int net_tcp_close(void);
+struct tcp_snapshot {
+  bool active, established, closed, reset;
+  uint32_t queued, remote;
+  uint16_t local_port, remote_port;
+};
+void net_tcp_snapshot(struct tcp_snapshot *);
+void linux_trace_set(bool);
 void net_http(const char *, const char *);
 struct trap_frame {
   uint64_t r15, r14, r13, r12, r11, r10, r9, r8;

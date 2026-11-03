@@ -547,6 +547,7 @@ static void command(char *line) {
   char *rest = line, *cmd = token(&rest);
   if (!*cmd)
     return;
+  if(eq(cmd,"linuxtrace")) {linux_trace_set(eq(token(&rest),"on"));return;}
   if (eq(cmd, "audio")) {
     audio_info();
     return;

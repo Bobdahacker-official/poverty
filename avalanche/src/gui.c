@@ -1,3 +1,4 @@
+#include "client.h"
 #include "font.h"
 #include "gui_canvas.h"
 #include "gui_games.h"
@@ -101,6 +102,16 @@ static int selected_file = -1;
 static bool file_more, creating_file, deleting_file;
 static struct task_info task_items[256];
 static unsigned task_slots;
+static int focused_client = -1;
+static int client_focus_request = -1;
+static int client_seen[GUI_CLIENTS];
+static int client_return_app[GUI_CLIENTS];
+static struct nk_rect client_bounds[GUI_CLIENTS];
+static struct nk_rect client_restore[GUI_CLIENTS];
+static bool client_maximized[GUI_CLIENTS];
+static void client_name(unsigned i, char name[96]);
+static bool pointer_targets_window(const char *name);
+static int client_mouse_x = -1, client_mouse_y = -1, client_mouse_buttons = -1;
 static int selected_pid, task_priority = 16;
 static bool ending_task;
 static int ending_pid;
@@ -483,6 +494,7 @@ static void clipboard_paste(nk_handle handle, struct nk_text_edit *edit) {
 static void open_app(unsigned id) {
   if (id >= APP_COUNT)
     return;
+  focused_client = -1;
   if (id == IMAGES)
     picture_focus = true;
   if (id == MUSIC)
@@ -1614,6 +1626,23 @@ static void tasks_view(void) {
           if (nk_button_label(&ui, "Close"))
             nk_window_show(&ui, app_names[i], NK_HIDDEN);
         }
+      for (unsigned i = 0; i < GUI_CLIENTS; i++) {
+        struct gui_client *c = &gui_clients[i];
+        if (!c->pixels || c->closing)
+          continue;
+        char name[96];
+        client_name(i, name);
+        nk_layout_row_dynamic(&ui, 36, 4);
+        nk_label(&ui, c->title, NK_TEXT_LEFT);
+        caption(nk_window_is_collapsed(&ui, name) ? "Minimized" : "Open");
+        if (nk_button_label(&ui, "Focus")) {
+          nk_window_collapse(&ui, name, NK_MAXIMIZED);
+          nk_window_set_focus(&ui, name);
+          focused_client = i;
+        }
+        if (nk_button_label(&ui, "Close"))
+          client_event(i, AV_GUI_QUIT, 0, 0, 0);
+      }
       nk_group_end(&ui);
     }
     return;
@@ -1675,8 +1704,8 @@ static void tasks_view(void) {
       caption("--");
       shown++;
     }
-    const char *states[] = {"Empty", "Ready",   "Running", "Sleeping",
-                            "Input", "Waiting", "Exited"};
+    const char *states[] = {"Empty",   "Ready",  "Running", "Sleeping", "Input",
+                            "Waiting", "Exited", "Polling", "Futex"};
     for (unsigned i = 0; i < task_slots; i++) {
       struct task_info *t = &task_items[i];
       char pid[32];
@@ -1691,7 +1720,8 @@ static void tasks_view(void) {
         task_priority = t->priority;
       }
       label_value("", t->pid, "");
-      caption(t->state < 7 ? states[t->state] : "Unknown");
+      caption(t->state < sizeof(states) / sizeof(states[0]) ? states[t->state]
+                                                            : "Unknown");
       label_value("", task_usage(t->pid), "%");
       char memory[64];
       format_size(memory, (uint64_t)t->pages * 4096);
@@ -2204,40 +2234,60 @@ static void maximize(unsigned id) {
   nk_window_set_bounds(&ui, app_names[id], apps[id].bounds);
 }
 static struct nk_rect window_control_bounds(unsigned id, unsigned control) {
-  struct nk_rect r = apps[id].bounds;
+  struct nk_rect r =
+      id < APP_COUNT ? apps[id].bounds : client_bounds[id - APP_COUNT];
   return nk_rect(r.x + r.w - 144 + control * 44, r.y + 6, 40, 44);
 }
 static int window_controls(unsigned id) {
   struct nk_command_buffer *canvas = nk_window_get_canvas(&ui);
   struct nk_rect clip = canvas->clip;
   nk_push_scissor(canvas, nk_rect(0, 0, width, height));
-  struct nk_rect bounds = apps[id].bounds;
-  bool active = nk_window_is_active(&ui, app_names[id]);
+  char client_title[96];
+  const char *title, *summary, *name;
+  bool maximized;
+  unsigned icon;
+  struct nk_rect bounds;
+  if (id < APP_COUNT) {
+    bounds = apps[id].bounds;
+    title = name = app_names[id];
+    summary = app_summaries[id];
+    maximized = apps[id].maximized;
+    icon = id == BROWSER  ? 4
+           : id == IMAGES ? 9
+           : id == MUSIC  ? 10
+           : id == GAMES  ? 11
+                          : id;
+  } else {
+    unsigned i = id - APP_COUNT;
+    bounds = client_bounds[i];
+    client_name(i, client_title);
+    name = client_title;
+    title = gui_clients[i].title;
+    summary = "Magenta application";
+    maximized = client_maximized[i];
+    icon = 4;
+  }
+  bool active = nk_window_is_active(&ui, name);
   nk_fill_rect(canvas, nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 9,
                rgb(palette()->mantle));
   gui_canvas_gloss(canvas,
                    nk_rect(bounds.x + 1, bounds.y + 1, bounds.w - 2, 55), 12);
-  gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28),
-                  id == BROWSER  ? 4
-                  : id == IMAGES ? 9
-                  : id == MUSIC  ? 10
-                  : id == GAMES  ? 11
-                                 : id,
+  gui_canvas_icon(canvas, nk_rect(bounds.x + 16, bounds.y + 13, 28, 28), icon,
                   active ? rgb(accent()) : rgb(palette()->muted));
-  nk_draw_text(canvas,
-               nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20),
-               app_names[id], strlen(app_names[id]), &body_font,
-               nk_rgba(0, 0, 0, 0), rgb(palette()->text));
+  nk_draw_text(
+      canvas, nk_rect(bounds.x + 56, bounds.y + 10, bounds.w - 216, 20), title,
+      strlen(title), &body_font, nk_rgba(0, 0, 0, 0), rgb(palette()->text));
   nk_draw_text(canvas,
                nk_rect(bounds.x + 56, bounds.y + 30, bounds.w - 216, 18),
-               app_summaries[id], strlen(app_summaries[id]), &body_font,
-               nk_rgba(0, 0, 0, 0), rgb(palette()->muted));
+               summary, strlen(summary), &body_font, nk_rgba(0, 0, 0, 0),
+               rgb(palette()->muted));
   nk_stroke_line(canvas, bounds.x + 16, bounds.y + 55, bounds.x + bounds.w - 16,
                  bounds.y + 55, 1, alpha_color(palette()->surface, 120));
   int action = -1;
   for (unsigned control = 0; control < 3; control++) {
     struct nk_rect r = window_control_bounds(id, control);
-    bool hover = nk_input_is_mouse_hovering_rect(&ui.input, r);
+    bool hover = pointer_targets_window(name) &&
+                 nk_input_is_mouse_hovering_rect(&ui.input, r);
     if (hover && (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) ||
                   nk_input_is_mouse_released(&ui.input, NK_BUTTON_LEFT))) {
       held_control_app = id;
@@ -2261,7 +2311,7 @@ static int window_controls(unsigned id) {
       nk_stroke_line(canvas, x, y + 8, x + 12, y + 8, 2, ink);
     else if (control == 1) {
       nk_stroke_rect(canvas, nk_rect(x, y, 12, 12), 1, 2, ink);
-      if (apps[id].maximized)
+      if (maximized)
         nk_stroke_rect(canvas, nk_rect(x + 3, y - 3, 12, 12), 1, 1, ink);
     } else {
       nk_stroke_line(canvas, x, y, x + 12, y + 12, 2, ink);
@@ -2713,6 +2763,130 @@ static void images_view(void) {
                   nk_rgb(255, 255, 255));
   }
 }
+static void client_name(unsigned i, char name[96]) {
+  copy(name, gui_clients[i].title, 96);
+  append(name, " #", 96);
+  char pid[32];
+  number(pid, gui_clients[i].pid);
+  append(name, pid, 96);
+}
+static bool pointer_targets_window(const char *name) {
+  struct nk_window *target = nk_window_find(&ui, name);
+  for (struct nk_window *window = ui.end; window; window = window->prev) {
+    if (window->flags &
+        (NK_WINDOW_HIDDEN | NK_WINDOW_CLOSED | NK_WINDOW_NO_INPUT))
+      continue;
+    struct nk_rect bounds = window->bounds;
+    if (window->flags & NK_WINDOW_MINIMIZED)
+      bounds.h = 56;
+    if (nk_input_is_mouse_hovering_rect(&ui.input, bounds))
+      return window == target;
+  }
+  return false;
+}
+static void client_windows(void) {
+  for (unsigned i = 0; i < GUI_CLIENTS; i++) {
+    struct gui_client *c = &gui_clients[i];
+    if (!c->pixels || c->closing)
+      continue;
+    char name[96];
+    client_name(i, name);
+    if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&
+        pointer_targets_window(name))
+      focused_client = i;
+    if (focused_client == (int)i)
+      nk_window_set_focus(&ui, name);
+    bool first = client_seen[i] != c->pid;
+    if (first) {
+      client_return_app[i] = active_app;
+      float w = c->width + 32, h = c->height + 105;
+      if (w > width - 48)
+        w = width - 48;
+      if (h > height - 100)
+        h = height - 100;
+      client_bounds[i] = nk_rect((width - w) / 2, (height - h) / 2, w, h);
+      client_seen[i] = c->pid;
+      client_maximized[i] = false;
+    }
+    nk_set_user_data(&ui, nk_handle_id(0));
+    nk_flags flags = NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
+                     NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR;
+    for (unsigned control = 0; control < 3; control++)
+      if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&
+          nk_input_is_mouse_hovering_rect(
+              &ui.input, window_control_bounds(APP_COUNT + i, control)))
+        flags &= ~NK_WINDOW_MOVABLE;
+    if (held_control_app == (int)(APP_COUNT + i))
+      flags &= ~NK_WINDOW_MOVABLE;
+    bool contents = nk_begin(&ui, name, client_bounds[i], flags);
+    client_bounds[i] = nk_window_get_bounds(&ui);
+    int action = window_controls(APP_COUNT + i);
+    if (nk_window_is_active(&ui, name)) {
+      focused_client = i;
+      active_app = -1;
+    }
+    if (contents) {
+      struct nk_rect region = nk_window_get_content_region(&ui);
+      float scale = region.w / c->width;
+      if (scale > (region.h - 8) / c->height)
+        scale = (region.h - 8) / c->height;
+      if (scale < 0.05f)
+        scale = 0.05f;
+      nk_layout_row_dynamic(&ui, c->height * scale, 1);
+      struct nk_rect r;
+      if (nk_widget(&r, &ui)) {
+        r.x += (r.w - c->width * scale) / 2;
+        r.w = c->width * scale;
+        struct nk_image image = nk_image_ptr(c->pixels);
+        image.w = c->width;
+        image.h = c->height;
+        nk_draw_image(nk_window_get_canvas(&ui), r, &image,
+                      nk_rgb(255, 255, 255));
+        if (nk_window_is_active(&ui, name) &&
+            nk_input_is_mouse_hovering_rect(&ui.input, r)) {
+          int x = (ui.input.mouse.pos.x - r.x) / scale,
+              y = (ui.input.mouse.pos.y - r.y) / scale;
+          int buttons = ui.input.mouse.buttons[NK_BUTTON_LEFT].down |
+                        (ui.input.mouse.buttons[NK_BUTTON_RIGHT].down << 1) |
+                        (ui.input.mouse.buttons[NK_BUTTON_MIDDLE].down << 2);
+          if (x != client_mouse_x || y != client_mouse_y ||
+              buttons != client_mouse_buttons) {
+            client_event(i, AV_GUI_MOUSE, x, y, buttons);
+            client_mouse_x = x;
+            client_mouse_y = y;
+            client_mouse_buttons = buttons;
+          }
+        }
+      }
+    }
+    nk_end(&ui);
+    if (first)
+      client_focus_request = i;
+    if (action == 0)
+      nk_window_collapse(&ui, name,
+                         nk_window_is_collapsed(&ui, name) ? NK_MAXIMIZED
+                                                           : NK_MINIMIZED);
+    else if (action == 1) {
+      nk_window_collapse(&ui, name, NK_MAXIMIZED);
+      if (!client_maximized[i]) {
+        client_restore[i] = client_bounds[i];
+        client_bounds[i] = nk_rect(16, 68, width - 32, height - 164);
+      } else
+        client_bounds[i] = client_restore[i];
+      client_maximized[i] = !client_maximized[i];
+      nk_window_set_bounds(&ui, name, client_bounds[i]);
+    }
+    if (action == 2 || nk_window_is_closed(&ui, name)) {
+      client_event(i, AV_GUI_QUIT, 0, 0, 0);
+      c->closing = true;
+      if (focused_client == (int)i)
+        focused_client = -1;
+      int previous = client_return_app[i];
+      if (previous >= 0 && previous < APP_COUNT && apps[previous].visible)
+        focus_request = previous;
+    }
+  }
+}
 static void application(unsigned id) {
   if (!apps[id].visible)
     return;
@@ -2734,8 +2908,12 @@ static void application(unsigned id) {
       !nk_window_is_closed(&ui, app_names[id]))
     action = window_controls(id);
   if (content) {
-    if (nk_window_is_active(&ui, app_names[id]))
+    if (nk_window_is_active(&ui, app_names[id])) {
       active_app = id;
+      if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&
+          pointer_targets_window(app_names[id]))
+        focused_client = -1;
+    }
     if (id == TERMINAL)
       terminal_view();
     else if (id == FILES)
@@ -2920,6 +3098,17 @@ static bool desktop_pointer_free(void) {
     struct nk_rect bounds = apps[i].bounds;
     if (nk_window_is_collapsed(&ui, app_names[i]))
       bounds.h = 44;
+    if (nk_input_is_mouse_hovering_rect(&ui.input, bounds))
+      return false;
+  }
+  for (unsigned i = 0; i < GUI_CLIENTS; i++) {
+    if (!gui_clients[i].pixels || gui_clients[i].closing)
+      continue;
+    char name[96];
+    client_name(i, name);
+    struct nk_rect bounds = client_bounds[i];
+    if (nk_window_is_collapsed(&ui, name))
+      bounds.h = 56;
     if (nk_input_is_mouse_hovering_rect(&ui.input, bounds))
       return false;
   }
@@ -3319,9 +3508,16 @@ static void inputs(void) {
   nk_input_button(&ui, NK_BUTTON_RIGHT, x, y, (buttons & 2) != 0);
   nk_input_button(&ui, NK_BUTTON_MIDDLE, x, y, (buttons & 4) != 0);
   for (unsigned n = 0; n < 64; n++) {
+    if (ui.input.keyboard.text_len >= NK_INPUT_MAX - 4)
+      break;
     char c = console_getchar();
     if (!c)
       break;
+    if (focused_client >= 0 &&
+        (c >= 32 || c == '\n' || c == '\b' || c == '\t' || c == 27)) {
+      client_event(focused_client, AV_GUI_TEXT, (unsigned char)c, 0, 0);
+      continue;
+    }
     if (active_app == IMAGES && c == '\n') {
       picture_load_requested = true;
       continue;
@@ -3435,6 +3631,10 @@ static void inputs(void) {
     int key = graphics_key_event();
     if (!key)
       break;
+    if (focused_client >= 0) {
+      client_event(focused_client, AV_GUI_KEY, key, 0, 0);
+      continue;
+    }
     if (active_app == GAMES &&
         (key == 0x4b || key == 0x4d || key == 0x48 || key == 0x50)) {
       games_ui_direction(key == 0x4b   ? 0
@@ -3559,6 +3759,8 @@ int gui_run(void) {
   browse("/");
   refresh_packages();
   active_app = -1;
+  focused_client = -1;
+  client_enable(true);
   focus_request = -1;
   notification_until = 0;
   console_write("Magenta graphical desktop ready\n");
@@ -3588,6 +3790,7 @@ int gui_run(void) {
       desktop_context_input();
       for (unsigned i = 0; i < APP_COUNT; i++)
         application(i);
+      client_windows();
       nk_set_user_data(&ui, nk_handle_id(0));
       dock();
       launcher_view();
@@ -3613,6 +3816,14 @@ int gui_run(void) {
       if (focus_request >= 0) {
         nk_window_set_focus(&ui, app_names[focus_request]);
         focus_request = -1;
+      }
+      if (client_focus_request >= 0) {
+        char name[96];
+        client_name(client_focus_request, name);
+        nk_window_set_focus(&ui, name);
+        focused_client = client_focus_request;
+        active_app = -1;
+        client_focus_request = -1;
       }
       if (save_requested) {
         save_editor();
@@ -3649,6 +3860,7 @@ int gui_run(void) {
   if (terminal_pid)
     user_tty_input(3);
   poll_processes();
+  client_enable(false);
   user_tty_external(false);
   if (preferences_dirty)
     preference_save(false);

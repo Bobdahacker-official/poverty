@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>NetSurf on Magenta</title>
+  <link rel="stylesheet" href="../assets/site.css">
+</head>
+<body>
+<header><a class="brand" href="../">magenta / avalanche</a><nav><a href="./">Documentation</a><a href="sdk.html">Developer SDK</a></nav></header>
+<main class="docs"><aside><a href="#download">Download</a><a href="#open">Open NetSurf</a><a href="#build">Build</a></aside><article>
+<p class="eyebrow">BROWSING</p><h1>NetSurf.<br>At home in Magenta.</h1>
+<p>NetSurf runs in its own userspace process, with HTML, CSS, JavaScript, antialiased TrueType text and HTTPS certificate validation. Its window uses Magenta's desktop controls.</p>
+<figure class="desktop-shot"><img src="../Images/netsurf.png" alt="NetSurf's welcome page running inside the Magenta desktop" width="1920" height="1080" loading="lazy"></figure>
+<h2 id="download">Get the browser disk</h2>
+<p>Download the <a href="https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/Images/magenta.iso">Magenta ISO</a> and <a href="https://github.com/Bobdahacker-official/poverty/raw/refs/heads/main/Images/netsurf-data.img.gz">NetSurf app disk</a>. Extract the compressed disk and attach it as the virtual machine's writable IDE disk.</p>
+<pre><code>gzip -dk netsurf-data.img.gz
+qemu-system-x86_64 -m 512 -boot d -cdrom magenta.iso \
+  -drive file=netsurf-data.img,format=raw,if=ide \
+  -nic user,model=e1000 -device virtio-rng-pci,disable-modern=on</code></pre>
+<h2 id="open">Open NetSurf</h2>
+<p>Open <code>netsurf.mgnta</code> in Files, or type its name in Terminal. The welcome page opens from disk. Enter a web address in the toolbar and press Enter. Back, forward, reload and stop are beside the address bar.</p>
+<pre><code>netsurf.mgnta
+netsurf.mgnta https://www.netsurf-browser.org/</code></pre>
+<p>Drag the header to move the window. Its controls minimize, maximize and close it. System Monitor lists NetSurf in Applications and shows its process and memory in Processes.</p>
+<p>Certificates are checked against the bundled Mozilla CA certificates. An invalid certificate opens NetSurf's privacy error page.</p>
+<h2 id="build">Build from source</h2>
+<pre><code>make package
+make netsurf
+make test-netsurf</code></pre>
+<p>The <a href="https://github.com/Bobdahacker-official/poverty/tree/main/ports/netsurf">port source</a> contains the native surface, resolver, build recipe and integration checks. Learn more about the upstream browser at <a href="https://www.netsurf-browser.org/">netsurf-browser.org</a>.</p>
+</article></main><footer><a href="./">← Documentation</a></footer>
+</body></html>

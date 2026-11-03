@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Magenta window API</title><link rel="stylesheet" href="../assets/site.css"></head>
+<body><header><a class="brand" href="../">magenta / avalanche</a><nav><a href="sdk.html">Developer SDK</a><a href="./">Documentation</a></nav></header>
+<main class="docs"><aside><a href="#draw">Draw</a><a href="#events">Events</a><a href="#example">Example</a></aside><article>
+<p class="eyebrow">NATIVE GUI SDK</p><h1>Give your app<br>a window.</h1>
+<p>The desktop hosts application surfaces in movable, resizable windows. The app owns its pixels and receives input events. The compositor draws the header and pointer.</p>
+<h2 id="draw">Open and draw</h2>
+<pre><code>#include &lt;magenta/app.h&gt;
+static uint32_t pixels[320 * 200];
+
+struct av_gui_open window = {320, 200, "My app"};
+int result = mg_window_open(&amp;window);
+struct av_gui_draw draw = {
+    .width = 320, .height = 200, .stride = 320,
+    .pixels = (uintptr_t)pixels
+};
+result = mg_window_draw(&amp;draw);</code></pre>
+<p>Pixels are 32-bit RGB values; the compositor presents them as opaque pixels. The stride is measured in pixels. Set x, y, width and height to update a rectangle. Pixels point to the first source pixel for that rectangle. Calls copy the pixels into kernel-owned display memory before returning.</p>
+<p>Surfaces range from 160×100 to 2048×1536 pixels. Each process owns one surface. The desktop fits it within its window while preserving its aspect ratio. API calls return negative error codes on failure.</p>
+<h2 id="events">Handle input and close</h2>
+<p><code>mg_window_event(&amp;event)</code> returns 1 with an event, 0 when the queue is empty, or a negative error code. Sleep between empty polls.</p>
+<table><thead><tr><th>Event</th><th>Values</th></tr></thead><tbody>
+<tr><td>AV_GUI_TEXT</td><td>a: text byte, including Enter, Tab and Backspace</td></tr>
+<tr><td>AV_GUI_KEY</td><td>a: extended keyboard scan code</td></tr>
+<tr><td>AV_GUI_MOUSE</td><td>a: x, b: y in surface pixels; c: left, right and middle button bits</td></tr>
+<tr><td>AV_GUI_QUIT</td><td>The close control was selected</td></tr>
+</tbody></table>
+<p>On quit, save the app's work, call <code>mg_window_close()</code> and return from main. The kernel also releases the surface when the process exits.</p>
+<h2 id="example">Build the example</h2>
+<pre><code>mgnta build magenta-sdk/examples/window
+sign magenta-sdk/examples/window/build/sdk-window.mgnta \
+  --key keys/private.pem --certificate keys/certificate.pem \
+  --version 1.0.0 --out signed</code></pre>
+<p>The <a href="https://github.com/Bobdahacker-official/poverty/tree/main/sdk/examples/window">window example</a> draws a gradient, paints at the pointer when clicked, and exits through the desktop close control. Upload its signed bundle through Packages using the <a href="sdk.html#upload">same installation flow</a> as a terminal app.</p>
+</article></main><footer><a href="sdk.html">← Developer SDK</a></footer></body></html>

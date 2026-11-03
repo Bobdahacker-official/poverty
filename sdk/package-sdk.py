@@ -9,7 +9,7 @@ with tempfile.TemporaryDirectory() as temporary:
     target=pathlib.Path(temporary)/'magenta-sdk';target.mkdir()
     for name in ['mgnta.py','bin','examples','include']:
         source=root/name
-        if source.is_dir():shutil.copytree(source,target/name)
+        if source.is_dir():shutil.copytree(source,target/name,ignore=shutil.ignore_patterns('build','__pycache__'))
         else:shutil.copyfile(source,target/name)
     (target/'runtime').mkdir()
     for name in ['lib.c','lib.h','crt.S','linker.ld']:

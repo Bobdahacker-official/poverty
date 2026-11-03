@@ -15,6 +15,7 @@ static uint64_t previous_commands[4*1024*1024/sizeof(uint64_t)];
 static size_t previous_size;
 static unsigned wallpaper_revision, previous_wallpaper;
 static bool previous_glass, cache_valid, scene_repaint;
+void gui_canvas_invalidate(void) {cache_valid=false;}
 void gui_canvas_scale(float scale) {
   desktop_scale = scale;
   cache_valid = false;

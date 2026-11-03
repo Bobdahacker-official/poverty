@@ -322,10 +322,14 @@ void mouse_feed_relative(int dx, int dy, uint8_t buttons) {
   mouse_y -= mouse_y_fraction / 100;
   mouse_x_fraction %= 100;
   mouse_y_fraction %= 100;
-  if (mouse_x < 0) mouse_x = 0;
-  if (mouse_y < 0) mouse_y = 0;
-  if (mouse_x >= (int)mouse_width) mouse_x = mouse_width - 1;
-  if (mouse_y >= (int)mouse_height) mouse_y = mouse_height - 1;
+  if (mouse_x < 0)
+    mouse_x = 0;
+  if (mouse_y < 0)
+    mouse_y = 0;
+  if (mouse_x >= (int)mouse_width)
+    mouse_x = mouse_width - 1;
+  if (mouse_y >= (int)mouse_height)
+    mouse_y = mouse_height - 1;
   pointer_buttons(buttons & 7);
 }
 static void pointer_absolute_poll(void) {
@@ -430,7 +434,8 @@ static void mouse_poll(void) {
 }
 void devices_poll(void) {
   audio_poll();
-  if (!mouse_irq_poll) mouse_poll();
+  if (!mouse_irq_poll)
+    mouse_poll();
   usb_poll();
 }
 void devices_tick(void) {
@@ -492,6 +497,8 @@ static uint8_t cmos(uint8_t r) {
 }
 static uint8_t decimal(uint8_t n) { return (n >> 4) * 10 + (n & 15); }
 bool rtc_time(uint32_t *days, uint32_t *seconds) {
+  static bool have_time;
+  static uint32_t cached_days, cached_seconds, cached_ticks;
   uint8_t a[7], b[7];
   const uint8_t regs[] = {0, 2, 4, 7, 8, 9, 11};
   bool stable = false;
@@ -511,9 +518,8 @@ bool rtc_time(uint32_t *days, uint32_t *seconds) {
     if (stable)
       break;
   }
-  if (!stable) {
-    return false;
-  }
+  if (!stable)
+    goto cached;
   bool pm = a[2] & 0x80;
   a[2] &= 0x7f;
   if (!(a[6] & 4))
@@ -522,13 +528,31 @@ bool rtc_time(uint32_t *days, uint32_t *seconds) {
   if (!(a[6] & 2))
     a[2] = (a[2] % 12) + (pm ? 12 : 0);
   unsigned year = 2000 + a[5], month = a[4], day = a[3];
-  if (month < 1 || month > 12 || day < 1 || day > 31 || a[2] > 23 || a[1] > 59 || a[0] > 59) return false;
+  if (month < 1 || month > 12 || day < 1 || day > 31 || a[2] > 23 ||
+      a[1] > 59 || a[0] > 59)
+    goto cached;
   uint32_t total = 719528;
-  for (unsigned y = 1970; y < year; y++) total += 365 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
-  static const unsigned lengths[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-  for (unsigned m = 1; m < month; m++) total += lengths[m-1] + (m == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+  for (unsigned y = 1970; y < year; y++)
+    total += 365 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+  static const unsigned lengths[] = {31, 28, 31, 30, 31, 30,
+                                     31, 31, 30, 31, 30, 31};
+  for (unsigned m = 1; m < month; m++)
+    total += lengths[m - 1] +
+             (m == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
   *days = total + day - 1;
   *seconds = a[2] * 3600u + a[1] * 60u + a[0];
+  cached_days = *days;
+  cached_seconds = *seconds;
+  cached_ticks = clock_ticks();
+  have_time = true;
+  return true;
+cached:
+  if (!have_time)
+    return false;
+  uint32_t elapsed = (clock_ticks() - cached_ticks) / 100;
+  uint64_t now = (uint64_t)cached_seconds + elapsed;
+  *days = cached_days + now / 86400;
+  *seconds = now % 86400;
   return true;
 }
 void rtc_print(void) {
@@ -599,7 +623,8 @@ void devices_init(void) {
   audio_init();
 }
 void devices_list(void) {
-  console_write(pci_ecam_bus(0) ? "PCI Express ECAM: " : "PCI configuration ports: ");
+  console_write(pci_ecam_bus(0) ? "PCI Express ECAM: "
+                                : "PCI configuration ports: ");
   print_uint(pci_count);
   console_write(" devices\n");
   for (unsigned i = 0; i < pci_count; i++) {
@@ -636,14 +661,19 @@ void devices_list(void) {
       "PCnet.\n");
 }
 void devices_display(void) {
-  for (unsigned i=0;i<pci_count;i++) {
-    const struct pci_device *d=&pci[i];
-    if (d->class_id!=3) continue;
+  for (unsigned i = 0; i < pci_count; i++) {
+    const struct pci_device *d = &pci[i];
+    if (d->class_id != 3)
+      continue;
     console_write("Display adapter: ");
-    console_write(d->vendor==0x10de ? "NVIDIA" : d->vendor==0x1002 ? "AMD" :
-                  d->vendor==0x8086 ? "Intel" : "PCI");
-    console_write(" vendor="); print_hex(d->vendor);
-    console_write(" device="); print_hex(d->device);
+    console_write(d->vendor == 0x10de   ? "NVIDIA"
+                  : d->vendor == 0x1002 ? "AMD"
+                  : d->vendor == 0x8086 ? "Intel"
+                                        : "PCI");
+    console_write(" vendor=");
+    print_hex(d->vendor);
+    console_write(" device=");
+    print_hex(d->device);
     console_putc('\n');
   }
 }

@@ -1,4 +1,5 @@
 #include "abi.h"
+#include "client.h"
 #include "process.h"
 /* Linux i386 int-0x80 and x86-64 SYSCALL interfaces for static ELF programs. */
 #define HANDLES 64
@@ -6,12 +7,24 @@
 #define H_DIR 2
 #define H_NULL 3
 #define H_ZERO 4
+#define H_SOCKET 5
 struct handle {
   unsigned refs, kind;
   uint32_t flags, position;
+  uint32_t remote;
+  uint16_t port;
+  int socket_error, owner;
+  bool connected;
   char name[256];
 };
 static struct handle handles[HANDLES];
+static struct handle *tcp_handle;
+static bool trace_enabled;
+static unsigned trace_count;
+void linux_trace_set(bool enabled) {
+  trace_enabled = enabled;
+  trace_count = 0;
+}
 static uint8_t contents[FS_MAX_FILE];
 static void put32(uint8_t *p, uint32_t n) { memcpy(p, &n, 4); }
 static void put64(uint8_t *p, uint32_t n) {
@@ -54,8 +67,13 @@ static int close_fd(struct process *t, unsigned fd) {
   if (fd >= PROCESS_FDS || t->fds[fd] == FD_UNUSED)
     return -9;
   int h = t->fds[fd];
-  if (h >= 0 && handles[h].refs && !--handles[h].refs)
+  if (h >= 0 && handles[h].refs && !--handles[h].refs) {
+    if (tcp_handle == &handles[h]) {
+      process_tcp_release(handles[h].owner);
+      tcp_handle = NULL;
+    }
     memset(&handles[h], 0, sizeof(handles[h]));
+  }
   t->fds[fd] = FD_UNUSED;
   t->cloexec &= ~(1u << fd);
   return 0;
@@ -161,6 +179,19 @@ static int read_fd(struct process *t, unsigned fd, uint32_t out, uint32_t n) {
   if (t->fds[fd] < 0)
     return -9;
   struct handle *h = get_handle(t, fd);
+  if (h->kind == H_SOCKET) {
+    if (!h->connected || h != tcp_handle)
+      return -107;
+    unsigned count = n;
+    if (count > sizeof(contents))
+      count = sizeof(contents);
+    int r = net_tcp_recv(contents, count, (h->flags & 2048) ? 0 : 500);
+    if (r < 0)
+      return r == -2 ? -11 : -104;
+    if (!process_copyout(t, out, contents, r))
+      return -14;
+    return r;
+  }
   if ((h->flags & 3) == 1)
     return -9;
   if (h->kind == H_DIR)
@@ -221,6 +252,23 @@ static int write_fd(struct process *t, unsigned fd, uint32_t p, uint32_t n) {
   if (t->fds[fd] < 0)
     return -9;
   struct handle *h = get_handle(t, fd);
+  if (h->kind == H_SOCKET) {
+    if (!h->connected || h != tcp_handle)
+      return -107;
+    unsigned done = 0;
+    while (done < n) {
+      unsigned count = n - done;
+      if (count > sizeof(contents))
+        count = sizeof(contents);
+      if (!process_copyin(t, contents, p + done, count))
+        return done ? (int)done : -14;
+      int r = net_tcp_send(contents, count);
+      if (r < 0)
+        return done ? (int)done : -104;
+      done += r;
+    }
+    return done;
+  }
   if (!(h->flags & 3))
     return -9;
   if (h->kind == H_DIR)
@@ -261,7 +309,7 @@ static int seek_fd(struct process *t, unsigned fd, int32_t offset,
                  : whence == 1 ? (int64_t)h->position
                                : (int64_t)size;
   int64_t pos = base + offset;
-  if (pos < 0 || pos > FS_MAX_FILE)
+  if (pos < 0 || pos > INT32_MAX)
     return -22;
   h->position = (uintptr_t)pos;
   return (int)pos;
@@ -541,6 +589,17 @@ void linux_syscall(struct trap_frame *f) {
       result = -9;
       break;
     }
+    struct handle *socket = get_handle(t, a);
+    if (socket && socket->kind == H_SOCKET && b == 0x5421) {
+      uint32_t flag;
+      if (!process_copyin(t, &flag, c, 4))
+        result = -14;
+      else {
+        socket->flags = (socket->flags & ~2048u) | (flag ? 2048u : 0);
+        result = 0;
+      }
+      break;
+    }
     if (t->fds[a] >= 0) {
       result = -25;
       break;
@@ -606,17 +665,25 @@ void linux_syscall(struct trap_frame *f) {
     break;
   case 85: {
     const char *target = "";
-    char path[96];
+    char path[256];
     if (!process_string(t, a, path, sizeof(path)))
       result = -14;
     else if (str_eq(path, "/proc/self/exe")) {
-      target = t->name;
+      char absolute[sizeof(t->name) + 2];
+      unsigned prefix = t->name[0] == '/' ? 0 : 1;
+      if (prefix)
+        absolute[0] = '/';
+      memcpy(absolute + prefix, t->name, strlen(t->name) + 1);
+      target = absolute;
       unsigned n = strlen(target);
       if (n > c)
         n = c;
       result = process_copyout(t, b, target, n) ? (int)n : -14;
-    } else
-      result = -2;
+    } else {
+      char name[256];
+      struct file_metadata metadata;
+      result = filename(t, a, name) && !fs_metadata(name, &metadata) ? -22 : -2;
+    }
     break;
   }
   case 90: {
@@ -840,10 +907,20 @@ static int clock64(struct process *t, unsigned clock, uint32_t out,
   uint64_t stamp[2] = {0};
   uint32_t ticks = clock_ticks();
   if (clock == 0) {
-    uint32_t days, seconds;
-    if (!rtc_time(&days, &seconds) || days < 719528)
-      return -5;
-    stamp[0] = (uint64_t)(days - 719528) * 86400 + seconds;
+    static bool valid;
+    static uint64_t epoch;
+    static uint32_t base;
+    if (!valid) {
+      uint32_t days, seconds;
+      if (!rtc_time(&days, &seconds) || days < 719528)
+        return -5;
+      epoch = (uint64_t)(days - 719528) * 86400 + seconds;
+      base = ticks;
+      valid = true;
+    }
+    uint32_t elapsed = ticks - base;
+    stamp[0] = epoch + elapsed / 100;
+    stamp[1] = (elapsed % 100) * (micro ? 10000u : 10000000u);
   } else if (clock == 1 || clock == 4 || clock == 6) {
     stamp[0] = ticks / 100;
     stamp[1] = (ticks % 100) * (micro ? 10000u : 10000000u);
@@ -891,14 +968,437 @@ static int linux64_vector(struct process *t, unsigned fd, uint32_t address,
   }
   return done;
 }
+struct linux_pollfd {
+  int32_t fd;
+  uint16_t events, revents;
+};
+static int poll_descriptors(struct process *t, uint32_t address,
+                            unsigned count) {
+  if (count > 256 ||
+      (count &&
+       !process_range(t, address, count * sizeof(struct linux_pollfd), true)))
+    return -14;
+  unsigned ready = 0;
+  net_poll();
+  struct tcp_snapshot state;
+  net_tcp_snapshot(&state);
+  for (unsigned i = 0; i < count; i++) {
+    struct linux_pollfd p;
+    if (!process_copyin(t, &p, address + i * sizeof(p), sizeof(p)))
+      return -14;
+    p.revents = 0;
+    if (p.fd >= 0) {
+      if (p.fd >= PROCESS_FDS || t->fds[p.fd] == FD_UNUSED)
+        p.revents = 32;
+      else {
+        struct handle *h = get_handle(t, p.fd);
+        if (h && h->kind == H_SOCKET) {
+          if (h->socket_error || (h->connected && state.reset))
+            p.revents |= 8;
+          if (h == tcp_handle && h->connected) {
+            if ((p.events & 1) && (state.queued || state.closed))
+              p.revents |= 1;
+            if ((p.events & 4) && state.active && state.established &&
+                !state.reset)
+              p.revents |= 4;
+            if (state.closed)
+              p.revents |= 16;
+          }
+        } else {
+          if ((p.events & 1) && h && (h->flags & 3) != 1)
+            p.revents |= 1;
+          if ((p.events & 4) &&
+              (t->fds[p.fd] == FD_OUTPUT || t->fds[p.fd] == FD_ERROR ||
+               (h && (h->flags & 3))))
+            p.revents |= 4;
+        }
+      }
+    }
+    if (p.revents)
+      ready++;
+    if (!process_copyout(t, address + i * sizeof(p), &p, sizeof(p)))
+      return -14;
+  }
+  return ready;
+}
+void linux_poll_wake(struct process *t) {
+  int ready = poll_descriptors(t, t->poll_address, t->poll_count);
+  if (!ready &&
+      (t->poll_infinite || (int32_t)(clock_ticks() - t->poll_deadline) < 0))
+    return;
+  t->frame->eax = (int64_t)ready;
+  t->state = TASK_READY;
+  t->ready_since = clock_ticks();
+}
+static int poll_start(struct process *t, uint32_t address, unsigned count,
+                      int timeout) {
+  if (count > 256 || timeout > 86400000)
+    return -22;
+  int ready = poll_descriptors(t, address, count);
+  if (ready || !timeout)
+    return ready;
+  t->poll_address = address;
+  t->poll_count = count;
+  t->poll_infinite = timeout < 0;
+  t->poll_deadline = clock_ticks() + (timeout + 9) / 10;
+  t->state = TASK_POLL;
+  return 0;
+}
+static int socket_create(struct process *t, unsigned family, unsigned type,
+                         unsigned protocol) {
+  if (family != 2)
+    return -97;
+  if ((type & ~0x80800u) != 1 || (protocol && protocol != 6))
+    return -93;
+  int fd = new_fd(t, 0);
+  if (fd < 0)
+    return fd;
+  unsigned i = 0;
+  while (i < HANDLES && handles[i].refs)
+    i++;
+  if (i == HANDLES)
+    return -23;
+  struct handle *h = &handles[i];
+  memset(h, 0, sizeof(*h));
+  h->refs = 1;
+  h->kind = H_SOCKET;
+  h->flags = 2 | ((type & 0x800) ? 2048 : 0);
+  t->fds[fd] = i;
+  if (type & 0x80000)
+    t->cloexec |= 1u << fd;
+  return fd;
+}
+static int socket_connect(struct process *t, unsigned fd, uint32_t address,
+                          unsigned length) {
+  struct handle *h = get_handle(t, fd);
+  if (!h || h->kind != H_SOCKET)
+    return -88;
+  uint8_t a[16];
+  if (length < 16 || !process_copyin(t, a, address, 16))
+    return -14;
+  if (a[0] != 2 || a[1])
+    return -97;
+  if (h->connected)
+    return -106;
+  if (tcp_handle && tcp_handle != h)
+    return -16;
+  int r = process_tcp_claim(t->pid);
+  if (r < 0)
+    return r;
+  h->remote =
+      (uint32_t)a[4] << 24 | (uint32_t)a[5] << 16 | (uint32_t)a[6] << 8 | a[7];
+  h->port = (unsigned)a[2] << 8 | a[3];
+  h->owner = t->pid;
+  struct network_info info;
+  net_snapshot(&info);
+  if (!info.ip && net_dhcp() < 0) {
+    process_tcp_release(t->pid);
+    return -101;
+  }
+  r = net_tcp_connect(h->remote, h->port);
+  if (r < 0) {
+    h->socket_error = r == -4 ? 110 : 111;
+    process_tcp_release(t->pid);
+    return -h->socket_error;
+  }
+  h->connected = true;
+  tcp_handle = h;
+  return 0;
+}
+static int socket_address(struct process *t, unsigned fd, uint32_t out,
+                          uint32_t size, bool peer) {
+  struct handle *h = get_handle(t, fd);
+  if (!h || h->kind != H_SOCKET)
+    return -88;
+  if (peer && !h->connected)
+    return -107;
+  uint32_t capacity;
+  if (!process_copyin(t, &capacity, size, 4))
+    return -14;
+  struct tcp_snapshot snapshot;
+  net_tcp_snapshot(&snapshot);
+  struct network_info network;
+  net_snapshot(&network);
+  uint32_t ip = peer ? h->remote : h->connected ? network.ip : 0;
+  unsigned port = peer ? h->port : h->connected ? snapshot.local_port : 0;
+  uint8_t data[16] = {2, 0, port >> 8, port, ip >> 24, ip >> 16, ip >> 8, ip};
+  uint32_t n = 16;
+  if (capacity < n)
+    n = capacity;
+  if (!process_copyout(t, out, data, n))
+    return -14;
+  n = 16;
+  return process_copyout(t, size, &n, 4) ? 0 : -14;
+}
 void linux_syscall64(struct trap_frame *f) {
   struct process *t = process_current();
+  uint64_t syscall_number = f->eax;
+  if (f->eax >= 4096 && f->eax <= 4099) {
+    f->eax = f->edi > UINT32_MAX ? -14 : client_call(t, f->eax - 4096, f->edi);
+    return;
+  }
   uint64_t a = f->edi, b = f->esi, c = f->edx, d = f->r10;
   int64_t result = -38;
   /* All user mappings currently fit in the lower 4 GiB. Reject high pointers
      rather than truncating them into a different, valid user allocation. */
   unsigned alias = 0;
   switch (f->eax) {
+  case 200:
+    result = user_kill((int)a, (int)b);
+    break;
+  case 234:
+    result = (int)a == t->pid && (int)b == t->pid ? user_kill(t->pid, c) : -3;
+    break;
+  case 13: {
+    if (!a || a > 64 || a == 9 || a == 19 || d != 8) {
+      result = -22;
+      break;
+    }
+    uint64_t bit = UINT64_C(1) << (a - 1), action[4] = {0};
+    if (b &&
+        (b > UINT32_MAX || !process_copyin(t, action, b, sizeof(action)))) {
+      result = -14;
+      break;
+    }
+    if (b && action[0] > 1) {
+      result = -38;
+      break;
+    }
+    if (c) {
+      uint64_t old[4] = {(t->ignored_signals & bit) ? 1 : 0, 0, 0, 0};
+      if (c > UINT32_MAX || !process_copyout(t, c, old, sizeof(old))) {
+        result = -14;
+        break;
+      }
+    }
+    if (b) {
+      if (action[0])
+        t->ignored_signals |= bit;
+      else
+        t->ignored_signals &= ~bit;
+    }
+    result = 0;
+    break;
+  }
+  case 14: {
+    if (d != 8 || a > 2) {
+      result = -22;
+      break;
+    }
+    uint64_t mask;
+    if (b && (b > UINT32_MAX || !process_copyin(t, &mask, b, 8))) {
+      result = -14;
+      break;
+    }
+    if (c &&
+        (c > UINT32_MAX || !process_copyout(t, c, &t->blocked_signals, 8))) {
+      result = -14;
+      break;
+    }
+    if (b) {
+      if (a == 0)
+        t->blocked_signals |= mask;
+      else if (a == 1)
+        t->blocked_signals &= ~mask;
+      else
+        t->blocked_signals = mask;
+      t->blocked_signals &= ~((UINT64_C(1) << 8) | (UINT64_C(1) << 18));
+      process_pending_signals(t);
+    }
+    result = 0;
+    break;
+  }
+  case 202: {
+    if (a > UINT32_MAX || (a & 3)) {
+      result = -22;
+      break;
+    }
+    uint32_t value;
+    if (!process_copyin(t, &value, a, 4)) {
+      result = -14;
+      break;
+    }
+    unsigned operation = b & 127;
+    bool private = b & 128;
+    uint32_t mask = (operation == 9 || operation == 10) ? f->r9 : UINT32_MAX;
+    if (b & ~UINT64_C(511) || !mask) {
+      result = -22;
+      break;
+    }
+    uint64_t *pte = process_pte(t, a);
+    uint64_t key = private ? ((uint64_t)(unsigned)t->pid << 32) | a
+                           : (*pte & PROCESS_PHYSICAL_MASK) + (a & 4095);
+    if (operation == 1 || operation == 10) {
+      result = c > INT32_MAX ? -22 : process_futex_wake(key, private, c, mask);
+      break;
+    }
+    if (operation != 0 && operation != 9) {
+      result = -38;
+      break;
+    }
+    if (value != (uint32_t)c) {
+      result = -11;
+      break;
+    }
+    t->futex_timed = false;
+    if (d) {
+      uint64_t ts[2];
+      if (d > UINT32_MAX || !process_copyin(t, ts, d, 16)) {
+        result = -14;
+        break;
+      }
+      if (ts[1] >= 1000000000 || ts[0] > UINT64_MAX / 100) {
+        result = -22;
+        break;
+      }
+      uint64_t ticks = ts[0] * 100 + (ts[1] + 9999999) / 10000000;
+      if (operation == 9) {
+        uint64_t now = clock_ticks();
+        if (b & 256) {
+          uint32_t days, seconds;
+          if (!rtc_time(&days, &seconds) || days < 719528) {
+            result = -5;
+            break;
+          }
+          now = ((uint64_t)(days - 719528) * 86400 + seconds) * 100;
+        }
+        if (ticks <= now) {
+          result = -110;
+          break;
+        }
+        ticks -= now;
+      }
+      if (ticks > 8640000) {
+        result = -22;
+        break;
+      }
+      t->wake = clock_ticks() + ticks;
+      t->futex_timed = true;
+    }
+    t->futex_key = key;
+    t->futex_mask = mask;
+    t->futex_private = private;
+    t->state = TASK_FUTEX;
+    result = 0;
+    break;
+  }
+  case 267:
+    if ((int32_t)a != -100)
+      result = -9;
+    else if (b > UINT32_MAX || c > UINT32_MAX || d > UINT32_MAX)
+      result = -14;
+    else {
+      struct trap_frame compat = *f;
+      compat.eax = 85;
+      compat.ebx = b;
+      compat.ecx = c;
+      compat.edx = d;
+      linux_syscall(&compat);
+      result = (int64_t)compat.eax;
+    }
+    break;
+  case 7:
+    result = a > UINT32_MAX ? -14 : poll_start(t, a, b, (int)c);
+    break;
+  case 41:
+    result = socket_create(t, a, b, c);
+    break;
+  case 42:
+    result = b > UINT32_MAX ? -14 : socket_connect(t, a, b, c);
+    break;
+  case 44:
+    if (d & ~UINT64_C(0xc040))
+      result = -95;
+    else if (f->r8 || f->r9)
+      result = -106;
+    else
+      result = b > UINT32_MAX || c > INT32_MAX ? -14 : write_fd(t, a, b, c);
+    break;
+  case 45:
+    if (d & ~UINT64_C(0x40))
+      result = -95;
+    else if (b > UINT32_MAX || c > INT32_MAX || f->r8 > UINT32_MAX ||
+             f->r9 > UINT32_MAX)
+      result = -14;
+    else {
+      result = f->r8 ? socket_address(t, a, f->r8, f->r9, true) : 0;
+      if (!result)
+        result = read_fd(t, a, b, c);
+    }
+    break;
+  case 51:
+  case 52:
+    result = b > UINT32_MAX || c > UINT32_MAX
+                 ? -14
+                 : socket_address(t, a, b, c, f->eax == 52);
+    break;
+  case 54: {
+    struct handle *h = get_handle(t, a);
+    uint32_t value;
+    if (!h || h->kind != H_SOCKET)
+      result = -88;
+    else if (d > UINT32_MAX || f->r8 < 4 || !process_copyin(t, &value, d, 4))
+      result = -14;
+    else if (b == 6 && c == 1 && value == 1)
+      result = 0; /* TCP transmits immediately, without Nagle aggregation. */
+    else
+      result = -92;
+    break;
+  }
+  case 55: {
+    struct handle *h = get_handle(t, a);
+    uint32_t cap, value = 0;
+    if (!h || h->kind != H_SOCKET) {
+      result = -88;
+      break;
+    }
+    if (b != 1) {
+      result = -92;
+      break;
+    }
+    struct tcp_snapshot state;
+    net_tcp_snapshot(&state);
+    if (c == 4)
+      value = h->socket_error                 ? h->socket_error
+              : (h->connected && state.reset) ? 104
+                                              : 0;
+    else if (c == 3)
+      value = 1;
+    else if (c == 8)
+      value = 8192;
+    else {
+      result = -92;
+      break;
+    }
+    if (d > UINT32_MAX || f->r8 > UINT32_MAX ||
+        !process_copyin(t, &cap, f->r8, 4) || cap < 4 ||
+        !process_copyout(t, d, &value, 4))
+      result = -14;
+    else {
+      cap = 4;
+      result = process_copyout(t, f->r8, &cap, 4) ? 0 : -14;
+      if (!result && c == 4)
+        h->socket_error = 0;
+    }
+    break;
+  }
+  case 4100: {
+    char hostname[256];
+    uint32_t ip;
+    if (a > UINT32_MAX || b > UINT32_MAX ||
+        !process_string(t, a, hostname, sizeof(hostname)))
+      result = -14;
+    else {
+      struct network_info info;
+      net_snapshot(&info);
+      result = !info.ip ? net_dhcp() : 0;
+      if (!result)
+        result = net_dns(hostname, &ip);
+      if (!result && !process_copyout(t, b, &ip, 4))
+        result = -14;
+    }
+    break;
+  }
   case 0:
     alias = 3;
     break;
@@ -996,7 +1496,7 @@ void linux_syscall64(struct trap_frame *f) {
     if ((a & ~UINT64_C(0x12000ff)) || (a & 255) != 17 || b)
       result = -38;
     else if ((a & 0x1200000) &&
-             (d > UINT32_MAX || !process_range(t,d,4,true)))
+             (d > UINT32_MAX || !process_range(t, d, 4, true)))
       result = -14;
     else
       result = process_fork(f);
@@ -1136,24 +1636,36 @@ void linux_syscall64(struct trap_frame *f) {
     break;
   case 230: {
     uint64_t ts[2];
-    if (c>UINT32_MAX || d>UINT32_MAX || !process_copyin(t,ts,c,16)) result=-14;
-    else if ((a!=0 && a!=1) || b>1 || ts[1]>=1000000000) result=-22;
-    else if (d && !process_range(t,d,16,true)) result=-14;
+    if (c > UINT32_MAX || d > UINT32_MAX || !process_copyin(t, ts, c, 16))
+      result = -14;
+    else if ((a != 0 && a != 1) || b > 1 || ts[1] >= 1000000000)
+      result = -22;
+    else if (d && !process_range(t, d, 16, true))
+      result = -14;
     else {
-      uint64_t ticks=ts[0]*100+(ts[1]+9999999)/10000000;
+      uint64_t ticks = ts[0] * 100 + (ts[1] + 9999999) / 10000000;
       if (b) {
-        uint64_t now=clock_ticks();
-        if(!a) {
-          uint32_t days,seconds;
-          if(!rtc_time(&days,&seconds) || days<719528) {result=-5;break;}
-          now=((uint64_t)(days-719528)*86400+seconds)*100;
+        uint64_t now = clock_ticks();
+        if (!a) {
+          uint32_t days, seconds;
+          if (!rtc_time(&days, &seconds) || days < 719528) {
+            result = -5;
+            break;
+          }
+          now = ((uint64_t)(days - 719528) * 86400 + seconds) * 100;
         }
-        ticks=ticks>now ? ticks-now : 0;
+        ticks = ticks > now ? ticks - now : 0;
       }
-      if(ticks>360000) result=-22;
+      if (ticks > 360000)
+        result = -22;
       else {
-        if(d) {uint64_t zero[2]={0};process_copyout(t,d,zero,16);}
-        t->wake=clock_ticks()+ticks;t->state=TASK_SLEEP;result=0;
+        if (d) {
+          uint64_t zero[2] = {0};
+          process_copyout(t, d, zero, 16);
+        }
+        t->wake = clock_ticks() + ticks;
+        t->state = TASK_SLEEP;
+        result = 0;
       }
     }
     break;
@@ -1222,11 +1734,16 @@ void linux_syscall64(struct trap_frame *f) {
         valid = false;
     /* Signed descriptors and process IDs may be sign-extended. Pointers may
        not: a high address must never alias a mapped lower address. */
-    if ((alias==3 || alias==4 || alias==85 || alias==220 || alias==295) && b>UINT32_MAX)
-      valid=false;
-    if ((alias==5 || alias==10 || alias==45 || alias==91 || alias==125 || alias==258) && a>UINT32_MAX)
-      valid=false;
-    if (alias==54 && c>UINT32_MAX) valid=false;
+    if ((alias == 3 || alias == 4 || alias == 85 || alias == 220 ||
+         alias == 295) &&
+        b > UINT32_MAX)
+      valid = false;
+    if ((alias == 5 || alias == 10 || alias == 45 || alias == 91 ||
+         alias == 125 || alias == 258) &&
+        a > UINT32_MAX)
+      valid = false;
+    if (alias == 54 && c > UINT32_MAX)
+      valid = false;
     if (!valid)
       result = -14;
     else {
@@ -1240,4 +1757,11 @@ void linux_syscall64(struct trap_frame *f) {
     }
   }
   f->eax = result;
+  if (trace_enabled && result < 0 && trace_count++ < 256) {
+    console_write("Linux64 syscall error ");
+    print_uint(syscall_number);
+    console_putc(' ');
+    print_uint(-result);
+    console_putc('\n');
+  }
 }

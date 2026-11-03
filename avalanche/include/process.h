@@ -21,7 +21,9 @@ enum process_state {
   TASK_SLEEP,
   TASK_INPUT,
   TASK_WAIT,
-  TASK_ZOMBIE
+  TASK_ZOMBIE,
+  TASK_POLL,
+  TASK_FUTEX
 };
 struct process {
   uint64_t root[512] __attribute__((aligned(4096)));
@@ -43,6 +45,11 @@ struct process {
   uint32_t heap_min, heap_break, mmap_next, clear_tid;
   uint64_t tls[3];
   uint64_t fs_base;
+  uint32_t poll_address, poll_count, poll_deadline;
+  bool poll_infinite;
+  uint64_t futex_key, ignored_signals, blocked_signals, pending_signals;
+  uint32_t futex_mask;
+  bool futex_private, futex_timed;
   uint8_t fpu[512] __attribute__((aligned(16)));
   int fds[PROCESS_FDS];
   uint16_t cloexec;
@@ -71,6 +78,11 @@ int process_wait(struct process *, int, uint32_t, bool);
 int process_fork(struct trap_frame *);
 int process_execve(uint32_t, uint32_t, uint32_t);
 void linux_syscall(struct trap_frame *);
+void linux_poll_wake(struct process *);
+int process_tcp_claim(int);
+int process_futex_wake(uint64_t, bool, unsigned, uint32_t);
+void process_pending_signals(struct process *);
+void process_tcp_release(int);
 void linux_init_fds(struct process *);
 void linux_close_fds(struct process *);
 void linux_clone_fds(struct process *, struct process *);

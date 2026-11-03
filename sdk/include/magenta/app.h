@@ -1,6 +1,18 @@
 #ifndef MAGENTA_APP_H
 #define MAGENTA_APP_H
 #include "lib.h"
+static inline int mg_window_open(const struct av_gui_open *request) {
+  return av_call(AV_GUI_OPEN, (uintptr_t)request, 0, 0, 0);
+}
+static inline int mg_window_draw(const struct av_gui_draw *request) {
+  return av_call(AV_GUI_DRAW, (uintptr_t)request, 0, 0, 0);
+}
+static inline int mg_window_event(struct av_gui_event *event) {
+  return av_call(AV_GUI_EVENT, (uintptr_t)event, 0, 0, 0);
+}
+static inline int mg_window_close(void) {
+  return av_call(AV_GUI_CLOSE, 0, 0, 0, 0);
+}
 static inline int mg_write(const char *text) {
   unsigned used = 0;
   while (text[used])

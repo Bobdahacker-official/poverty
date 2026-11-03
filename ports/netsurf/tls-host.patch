@@ -1,0 +1,22 @@
+--- a/netsurf/content/fetchers/curl.c
++++ b/netsurf/content/fetchers/curl.c
+@@ -782,11 +782,16 @@
+ 
+ 	/* Configure the verification parameters to include hostname */
+ 	vparam = X509_STORE_CTX_get0_param(x509_ctx);
+ 	X509_VERIFY_PARAM_set_hostflags(vparam, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+ 
+-	ok = X509_VERIFY_PARAM_set1_host(vparam,
+-					 lwc_string_data(f->host),
+-					 lwc_string_length(f->host));
++	/* OpenSSL distinguishes IP subjectAltNames from DNS subjectAltNames. */
++	ok = X509_VERIFY_PARAM_set1_ip_asc(vparam, lwc_string_data(f->host));
++	if (ok != 1) {
++		/* A nonnumeric URL host uses the ordinary DNS verification path. */
++		ok = X509_VERIFY_PARAM_set1_host(vparam,
++					 lwc_string_data(f->host),
++					 lwc_string_length(f->host));
++	}
+ 
+ 	/* Store fetch struct in context for verify callback */
+ 	if (ok) {
