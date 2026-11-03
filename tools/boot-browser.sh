@@ -85,7 +85,7 @@ if ! running "$runtime/upload.pid"; then
 fi
 
 if ! running "$runtime/qemu.pid"; then
-  if command -v ss >/dev/null && ss -ltn '( sport = :5901 )' | rg -q 'LISTEN'; then
+  if command -v ss >/dev/null && ss -ltn '( sport = :5901 )' | grep -q 'LISTEN'; then
     printf 'Port 5901 is occupied by another QEMU session; close that session before starting Magenta.\n' >&2
     exit 1
   fi
@@ -136,7 +136,7 @@ PYEXTRACT
 fi
 
 if ! running "$runtime/websockify.pid"; then
-  if command -v ss >/dev/null && ss -ltn '( sport = :6080 )' | rg -q 'LISTEN'; then
+  if command -v ss >/dev/null && ss -ltn '( sport = :6080 )' | grep -q 'LISTEN'; then
     printf 'Port 6080 is occupied by another viewer; close that session before starting Magenta.\n' >&2
     exit 1
   fi
