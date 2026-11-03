@@ -201,6 +201,26 @@ try:
         Image.open(path).save(os.environ['GAMES_SCREENSHOT'])
     click_label('New game')
     print('PASS native Games rendering, keyboard moves, merges, undo and score save',flush=True)
+    open_app('ctrl-b',7)
+    click_label('Notes')
+    wait(lambda:any(item[0]=='Save note' for item in labels()),'bundled browser Notes page')
+    _,x,y,w,h=next(item for item in labels() if item[0]=='Save note')
+    click(x+w/2,y-65)
+    for character in 'browser note': key('spc' if character==' ' else character,.18)
+    click_label('Save note')
+    wait(lambda:any(item[0]=='Saved on disk' for item in labels()),'browser Notes saves through JavaScript')
+    key('ctrl-r',.8)
+    wait(lambda:any(item[0]=='Ready' for item in labels()),'browser Notes reload')
+    context=symbols['contexts'][0]+value('browser_active')*layout['web_context_size']
+    raw=memory(context,layout['web_node_size']*256)
+    fields=[raw[i*layout['web_node_size']+layout['web_value']:i*layout['web_node_size']+layout['web_value']+2048].split(b'\0')[0]
+            for i in range(256) if raw[i*layout['web_node_size']+layout['web_id']:i*layout['web_node_size']+layout['web_id']+64].split(b'\0')[0]==b'note']
+    assert fields==[b'browser note'],fields
+    path=folder/'browser-notes.ppm';qmp('screendump',{'filename':str(path)})
+    if os.environ.get('BROWSER_SCREENSHOT'):
+        from PIL import Image
+        Image.open(path).save(os.environ['BROWSER_SCREENSHOT'])
+    print('PASS native browser textarea input and persisted value after reload',flush=True)
     open_app('ctrl-e',editor);key('x');key('esc')
     wait(lambda:bool(value('editor_discard','B')),'unsaved document exit protection')
     click_label('Discard',last=True);machine.until(b'Magenta> ')
@@ -209,6 +229,21 @@ try:
     storage.report('graphical editor persisted file',lambda:storage.contains(machine.command('cat notes'),b'guitest'))
     storage.report('graphical package removal persisted',lambda:storage.contains(machine.command('pkg search hello'),b'hello 1.0.0 available'))
     storage.report('Games scores persisted to disk',lambda:storage.contains(machine.command('ls'),b'games.scores'))
+    if 'webnotes_start' in symbols: machine.command('rm webnotes')
+    connection.close();machine.stop()
+    machine=storage.Machine(args,data,extra,folder)
+    machine.until(b'Magenta graphical desktop ready')
+    connection=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);connection.settimeout(15)
+    connection.connect(str(folder/'qmp.sock'));stream=connection.makefile('rwb',buffering=0)
+    json.loads(stream.readline());qmp('qmp_capabilities')
+    open_app('ctrl-b',7);click_label('Notes')
+    wait(lambda:any(item[0]=='Save note' for item in labels()),'Notes opens after cold reboot')
+    context=symbols['contexts'][0]+value('browser_active')*layout['web_context_size']
+    raw=memory(context,layout['web_node_size']*256)
+    fields=[raw[i*layout['web_node_size']+layout['web_value']:i*layout['web_node_size']+layout['web_value']+2048].split(b'\0')[0]
+            for i in range(256) if raw[i*layout['web_node_size']+layout['web_id']:i*layout['web_node_size']+layout['web_id']+64].split(b'\0')[0]==b'note']
+    assert fields==[b'browser note'],fields
+    print('PASS browser localStorage survives a full QEMU cold reboot',flush=True)
 finally:
     if connection: connection.close()
     machine.stop()

@@ -26,6 +26,8 @@ test:
 	avalanche/build/test-sha256
 	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/src/games.c avalanche/tools/test-games.c -o avalanche/build/test-games
 	avalanche/build/test-games
+	$(CC) -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/tools/test-web.c avalanche/src/sha256.c avalanche/src/platform.c avalanche/vendor/elk/elk.c avalanche/vendor/printf/printf.c -lm -o avalanche/build/test-web
+	@web_test_dir=$$(mktemp -d); trap 'rm -rf "$$web_test_dir"' EXIT; cd "$$web_test_dir" && "$(CURDIR)/avalanche/build/test-web" "$(CURDIR)/magenta/files/webnotes.html"
 	$(CC) -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/src/devices.c avalanche/tools/test-pci-bars.c -o avalanche/build/test-pci-bars
 	avalanche/build/test-pci-bars
 	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-usb-storage.c -o avalanche/build/test-usb-storage

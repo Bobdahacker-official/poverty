@@ -1362,7 +1362,10 @@ int js_getbool(jsval_t value) { return vdata(value) & 1 ? 1 : 0; }
 jsval_t js_glob(struct js *js) { (void) js; return mkval(T_OBJ, 0); }
 
 void js_set(struct js *js, jsval_t obj, const char *key, jsval_t val) {
-  if (vtype(obj) == T_OBJ) setprop(js, obj, js_mkstr(js, key, strlen(key)), val);
+  if (vtype(obj) != T_OBJ) return;
+  jsoff_t off = lkp(js, obj, key, strlen(key));
+  if (off) saveval(js, off + 2 * sizeof(jsoff_t), val);
+  else setprop(js, obj, js_mkstr(js, key, strlen(key)), val);
 }
 
 char *js_getstr(struct js *js, jsval_t value, size_t *len) {

@@ -2142,6 +2142,11 @@ static void browser_load(void) {
   }
   if (starts_with(browser_url, "file:")) {
     int n = fs_read(browser_url + 5, browser_source, sizeof(browser_source) - 1);
+    if(n<0 && str_eq(browser_url,"file:/webnotes")) {
+      extern const char webnotes_start[],webnotes_end[];
+      size_t size=webnotes_end-webnotes_start;
+      if(size<sizeof(browser_source)) {memcpy(browser_source,webnotes_start,size);n=size;}
+    }
     if (n < 0) {
       copy(browser_status, "Could not open the local document", sizeof(browser_status));
       browser_title();
@@ -2243,6 +2248,11 @@ static void browser_view(void) {
       nk_layout_row_dynamic(&ui, 54, 1);
       nk_label_wrap(&ui, "Keep pages together in tabs. Enter a web address above, or open a saved document with file:/path.");
       nk_layout_row_dynamic(&ui, 42, 2);
+      if (accent_button("Notes")) {
+        copy(browser_url,"file:/webnotes",sizeof(browser_url));
+        browser_load_requested=true;
+      }
+      if (nk_button_label(&ui,"Text editor")) open_app(EDITOR);
       if (accent_button("Open Local Files")) open_app(FILES);
       if (nk_button_label(&ui, "Network Settings")) open_app(NETWORK);
       nk_layout_row_dynamic(&ui, 34, 1); caption("Ctrl+T   New tab     Ctrl+W   Close tab     Ctrl+L   Address");
@@ -2256,24 +2266,34 @@ static void browser_view(void) {
     }
     for (unsigned i = 0; i < web_count; i++) {
       struct web_node *node = &web_nodes[i];
-      if (node->style.hidden || !*node->text)
+      if (node->style.hidden || str_eq(node->input_type,"hidden") ||
+          (!*node->text && !str_eq(node->tag,"input") && !str_eq(node->tag,"textarea")))
         continue;
       web_fonts[i] = body_font;
       web_fonts[i].height = node->style.size;
       nk_style_push_font(&ui, &web_fonts[i]);
-      struct nk_color fg = nk_rgb(node->style.color >> 16,
-                                  node->style.color >> 8, node->style.color);
+      struct nk_color fg = nk_rgb((node->style.color >> 16)&255,
+                                  (node->style.color >> 8)&255, node->style.color&255);
       struct nk_color bg = nk_rgb(255, 255, 255);
       int parent = i;
       while (parent >= 0) {
         uint32_t c = web_nodes[parent].style.background;
         if (c != 0xffffffffu) {
-          bg = nk_rgb(c >> 16, c >> 8, c);
+          bg = nk_rgb((c >> 16)&255, (c >> 8)&255, c&255);
           break;
         }
         parent = web_nodes[parent].parent;
       }
-      if (*node->href || *node->onclick || str_eq(node->tag, "button")) {
+      if (str_eq(node->tag,"input") || str_eq(node->tag,"textarea")) {
+        bool multiline=str_eq(node->tag,"textarea");
+        nk_layout_row_dynamic(&ui,multiline ? 130 : 36,1);
+        char previous[2048];copy(previous,node->value,sizeof(previous));
+        nk_flags edited=nk_edit_string_zero_terminated(&ui,
+          multiline ? NK_EDIT_BOX : NK_EDIT_FIELD|NK_EDIT_SIG_ENTER,
+          node->value,sizeof(node->value),nk_filter_default);
+        if(!str_eq(previous,node->value)) web_input(i,false);
+        if(edited&(NK_EDIT_COMMITTED|NK_EDIT_DEACTIVATED)) web_input(i,true);
+      } else if (*node->href || *node->onclick || str_eq(node->tag, "button")) {
         nk_layout_row_dynamic(&ui, node->style.size + 16, 1);
         if (nk_button_label(&ui, node->text)) {
           web_click(i);

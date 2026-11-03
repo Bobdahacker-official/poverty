@@ -37,6 +37,12 @@ Music opens PCM16 WAV files from Files or a typed path. Ctrl-D opens the player.
 
 ![Music player](Images/music.png)
 
+Browser supports editable text fields and text areas, JavaScript `value` properties, and inline `oninput` and `onchange` handlers. `localStorage.getItem`, `setItem`, and `removeItem` save strings on disk, with separate storage for each web origin. Values hold up to 4095 bytes; editable fields hold up to 2047 bytes. HTTP and HTTPS storage are separate, default ports are normalized, and local documents keep separate storage by URL.
+
+Open Browser and choose Notes to use the bundled web app. Save note keeps the text across reloads and restarts; Delete note removes it. The packaged Magenta data disk includes this page as `/webnotes`. The boot image also carries a copy so Notes opens on existing data disks. A saved `/webnotes` document takes precedence over the bundled copy.
+
+![Browser Notes](Images/browser-notes.png)
+
 ![Application launcher](Images/launcher.png)
 
 Right-click the desktop for file creation, Files, Terminal, appearance settings, desktop icon visibility, System Monitor, and refresh. New files and folders are created in Home through Files. Right-click an app icon to manage its desktop shortcut.

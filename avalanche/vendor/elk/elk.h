@@ -63,4 +63,5 @@ char *js_getstr(struct js *js, jsval_t val, size_t *len);  // Get string
 #endif
 
 void js_budget(unsigned);
+void js_gc(struct js *);
 jsval_t js_get(struct js *, jsval_t, const char *);

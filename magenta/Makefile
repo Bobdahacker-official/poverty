@@ -8,5 +8,5 @@ package: all
 	cp ../avalanche/build/magenta.iso ../Images/magenta.iso
 	@set -eu; release_dir=$$(mktemp -d ../avalanche/build/magenta-release.XXXXXX); \
 	trap 'rm -rf "$$release_dir"' EXIT; \
-	python3 ../avalanche/tools/mkdisk.py "$$release_dir/magenta-data.img" $(APP_FILES) files/welcome.txt; \
+	python3 ../avalanche/tools/mkdisk.py "$$release_dir/magenta-data.img" $(APP_FILES) files/welcome.txt files/webnotes.html; \
 	cp "$$release_dir/magenta-data.img" ../Images/magenta-data.img

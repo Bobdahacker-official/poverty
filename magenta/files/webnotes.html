@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><title>Notes</title><style>
+body { color: #dce0ef; background: #1e1e2e; font-size: 18px; }
+h1 { color: #ed74b4; font-size: 30px; }
+p { margin: 12px; }
+</style></head><body>
+<h1>Notes</h1>
+<p>Your notes stay on this disk. Save before closing the tab.</p>
+<textarea id="note" oninput="document.getElementById('status').textContent='Unsaved changes';"></textarea>
+<button onclick="localStorage.setItem('note',document.getElementById('note').value);document.getElementById('status').textContent='Saved on disk';">Save note</button>
+<button onclick="localStorage.removeItem('note');document.getElementById('note').value='';document.getElementById('status').textContent='Note deleted';">Delete note</button>
+<p id="status">Ready</p>
+<script>
+document.getElementById('note').value=localStorage.getItem('note') || '';
+</script>
+</body></html>

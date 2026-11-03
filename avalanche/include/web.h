@@ -11,15 +11,17 @@ struct web_style {
 struct web_node {
   char tag[16], id[64], classes[128], text[1024], href[512], onclick[512],
       inline_style[512];
+  char value[2048], oninput[512], onchange[512], input_type[16];
   int parent;
   struct web_style style;
   uint64_t object;
+  bool input_dirty;
 };
 /* Each tab owns its DOM, script heap and resources. Switching never reparses
  * a page or re-runs its scripts. */
 struct web_context {
   struct web_node nodes[WEB_NODES];
-  unsigned count, css_used, script_used;
+  unsigned count, css_used, script_used, updates;
   char message[128], url[512], css_text[16384], script_text[32768];
   unsigned char js_heap[262144] __attribute__((aligned(8)));
   struct js *js_engine;
@@ -33,4 +35,5 @@ void web_reset(unsigned tab);
 void web_set_url(const char *url);
 void web_parse(const char *html);
 void web_click(unsigned node);
+void web_input(unsigned node, bool committed);
 #endif

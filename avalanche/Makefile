@@ -46,7 +46,7 @@ build/user/linuxhello.elf: build/user/linuxhello.o user/linux.ld
 	$(LD) -m elf_i386 -T user/linux.ld -nostdlib -o $@ $<
 build/user/linuxfork.elf: build/user/linuxfork.o user/linux.ld
 	$(LD) -m elf_i386 -T user/linux.ld -nostdlib -o $@ $<
-build/embed.o: user/embed.S $(APP_ELFS)
+build/embed.o: user/embed.S $(APP_ELFS) ../magenta/files/webnotes.html
 	$(CC) -m64 -ffreestanding -fno-pie -c $< -o $@
 build/bearssl/%.o: vendor/bearssl/%.c vendor/bearssl/config.h
 	mkdir -p build/bearssl
@@ -72,8 +72,8 @@ package: all iso
 	cp "$$release_dir/avalanche-data.img" ../Images/avalanche-data.img
 build/magenta.iso: build/avalanche.elf ../magenta/boot/grub.cfg tools/mkiso.sh
 	sh tools/mkiso.sh build/magenta-iso ../magenta/boot/grub.cfg build/magenta.iso MAGENTA
-build/magenta-data.img: tools/mkdisk.py $(APP_ELFS) ../magenta/files/welcome.txt
-	python3 tools/mkdisk.py $@ $(APP_ELFS) ../magenta/files/welcome.txt
+build/magenta-data.img: tools/mkdisk.py $(APP_ELFS) ../magenta/files/welcome.txt ../magenta/files/webnotes.html
+	python3 tools/mkdisk.py $@ $(APP_ELFS) ../magenta/files/welcome.txt ../magenta/files/webnotes.html
 clean:
 	rm -rf build
 

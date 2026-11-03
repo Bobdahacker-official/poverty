@@ -43,3 +43,7 @@ app_linuxfork_end:
 .global app_magenta_start,app_magenta_end
 app_magenta_start: .incbin "build/user/magenta.elf"
 app_magenta_end:
+.balign 16
+.global webnotes_start,webnotes_end
+webnotes_start: .incbin "../magenta/files/webnotes.html"
+webnotes_end:

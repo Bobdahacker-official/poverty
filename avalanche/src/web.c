@@ -1,6 +1,7 @@
 #include "web.h"
 #include "../vendor/elk/elk.h"
 #include "http.h"
+#include "package.h"
 #include "system.h"
 static struct web_context contexts[WEB_TABS];
 static unsigned current_tab;
@@ -268,6 +269,103 @@ static jsval_t document_get(struct js *js, jsval_t *args, int count) {
       return web_nodes[i].object;
   return js_mknull();
 }
+struct stored_value {
+  uint8_t digest[32];
+  uint32_t length, checksum;
+  char value[4096];
+};
+static bool storage_key(struct js *js, jsval_t key, uint8_t digest[32],
+                        char path[32]) {
+  size_t length;
+  const char *s = js_getstr(js, key, &length);
+  if (!s || length > 256)
+    return false;
+  char identity[1024];
+  unsigned n = 0;
+  const char *url = document_url;
+  bool network = !__builtin_memcmp(url, "http://", 7) ||
+                 !__builtin_memcmp(url, "https://", 8);
+  if (network) {
+    unsigned prefix = url[4] == 's' ? 8 : 7;
+    while (url[n] &&
+           (n < prefix || (url[n] != '/' && url[n] != '?' && url[n] != '#')) &&
+           n < 512) {
+      char c = url[n];
+      identity[n] = c >= 'A' && c <= 'Z' ? c + 32 : c;
+      n++;
+    }
+    const char *port = prefix == 8 ? ":443" : ":80";
+    unsigned plen = strlen(port);
+    if (n >= plen && !__builtin_memcmp(identity + n - plen, port, plen))
+      n -= plen;
+  } else {
+    n = strlen(url);
+    if (!n || n > 512)
+      return false;
+    memcpy(identity, url, n);
+  }
+  identity[n++] = 0;
+  memcpy(identity + n, s, length);
+  n += length;
+  sha256(identity, n, digest);
+  memcpy(path, "ws-", 3);
+  const char hex[] = "0123456789abcdef";
+  for (unsigned i = 0; i < 12; i++) {
+    path[3 + i * 2] = hex[digest[i] >> 4];
+    path[4 + i * 2] = hex[digest[i] & 15];
+  }
+  path[27] = 0;
+  return true;
+}
+static jsval_t storage_get(struct js *js, jsval_t *args, int count) {
+  uint8_t digest[32];
+  char path[32];
+  struct stored_value record;
+  if (count != 1 || !storage_key(js, args[0], digest, path))
+    return js_mkerr(js, "Invalid storage key");
+  int r = fs_read(path, &record, sizeof(record));
+  if (r < 0)
+    return js_mknull();
+  if (r < (int)offsetof(struct stored_value, value) ||
+      record.length >= sizeof(record.value) ||
+      r != (int)(offsetof(struct stored_value, value) + record.length) ||
+      __builtin_memcmp(record.digest, digest, 32) ||
+      crc32(record.value, record.length) != record.checksum)
+    return js_mkerr(js, "Stored value is damaged");
+  return js_mkstr(js, record.value, record.length);
+}
+static jsval_t storage_set(struct js *js, jsval_t *args, int count) {
+  struct stored_value record;
+  char path[32];
+  size_t length;
+  if (count != 2 || !storage_key(js, args[0], record.digest, path))
+    return js_mkerr(js, "Invalid storage key");
+  const char *value = js_getstr(js, args[1], &length);
+  if (!value || length >= sizeof(record.value))
+    return js_mkerr(js, "Storage value exceeds 4095 bytes");
+  record.length = length;
+  memcpy(record.value, value, length);
+  record.checksum = crc32(value, length);
+  unsigned size = offsetof(struct stored_value, value) + length;
+  if (fs_write(path, &record, size) != (int)size)
+    return js_mkerr(js, "Could not save storage");
+  return js_mkundef();
+}
+static jsval_t storage_remove(struct js *js, jsval_t *args, int count) {
+  uint8_t digest[32];
+  char path[32];
+  struct stored_value record;
+  if (count != 1 || !storage_key(js, args[0], digest, path))
+    return js_mkerr(js, "Invalid storage key");
+  int r = fs_read(path, &record, sizeof(record));
+  if (r < 0)
+    return js_mkundef();
+  if (r < 32 || __builtin_memcmp(record.digest, digest, 32))
+    return js_mkerr(js, "Storage identity mismatch");
+  if (fs_remove(path) < 0)
+    return js_mkerr(js, "Could not remove storage");
+  return js_mkundef();
+}
 static void sync_dom(void) {
   for (unsigned i = 0; i < web_count; i++) {
     struct web_node *n = &web_nodes[i];
@@ -278,9 +376,32 @@ static void sync_dom(void) {
     char *s = js_getstr(engine, v, &len);
     if (s)
       copy_n(n->text, sizeof(n->text), s, len);
+    v = js_get(engine, n->object, "value");
+    s = js_getstr(engine, v, &len);
+    if (s)
+      copy_n(n->value, sizeof(n->value), s, len);
+  }
+}
+static void collect(void) {
+  if (++web_current()->updates % 16)
+    return;
+  js_gc(engine);
+  jsval_t document = js_get(engine, js_glob(engine), "document");
+  for (unsigned i = 0; i < web_count; i++) {
+    if (!web_nodes[i].object)
+      continue;
+    char key[16] = {'n'};
+    unsigned at = 1, value = i;
+    do {
+      key[at++] = '0' + value % 10;
+      value /= 10;
+    } while (value);
+    key[at] = 0;
+    web_nodes[i].object = js_get(engine, document, key);
   }
 }
 static void evaluate(const char *code, unsigned n) {
+  collect();
   js_budget(50000);
   jsval_t value = js_eval(engine, code, n);
   if (js_type(value) == JS_ERR) {
@@ -399,6 +520,14 @@ void web_parse(const char *html) {
         decode(node.href, sizeof(node.href), value, n);
       if (equal(key, "onclick"))
         decode(node.onclick, sizeof(node.onclick), value, n);
+      if (equal(key, "value"))
+        decode(node.value, sizeof(node.value), value, n);
+      if (equal(key, "type"))
+        decode(node.input_type, sizeof(node.input_type), value, n);
+      if (equal(key, "oninput"))
+        decode(node.oninput, sizeof(node.oninput), value, n);
+      if (equal(key, "onchange"))
+        decode(node.onchange, sizeof(node.onchange), value, n);
       if (equal(key, "style"))
         decode(node.inline_style, sizeof(node.inline_style), value, n);
       if (quote && *s)
@@ -464,6 +593,11 @@ void web_parse(const char *html) {
   jsval_t console = js_mkobj(engine);
   js_set(engine, js_glob(engine), "console", console);
   js_set(engine, console, "log", js_mkfun(document_write));
+  jsval_t storage = js_mkobj(engine);
+  js_set(engine, js_glob(engine), "localStorage", storage);
+  js_set(engine, storage, "getItem", js_mkfun(storage_get));
+  js_set(engine, storage, "setItem", js_mkfun(storage_set));
+  js_set(engine, storage, "removeItem", js_mkfun(storage_remove));
   for (unsigned i = 0; i < web_count; i++) {
     char key[16];
     key[0] = 'n';
@@ -477,6 +611,11 @@ void web_parse(const char *html) {
     js_set(engine, document, key, web_nodes[i].object);
     js_set(engine, web_nodes[i].object, "textContent",
            js_mkstr(engine, web_nodes[i].text, length(web_nodes[i].text)));
+    if (equal(web_nodes[i].tag, "textarea"))
+      copy_n(web_nodes[i].value, sizeof(web_nodes[i].value), web_nodes[i].text,
+             length(web_nodes[i].text));
+    js_set(engine, web_nodes[i].object, "value",
+           js_mkstr(engine, web_nodes[i].value, length(web_nodes[i].value)));
   }
   if (script_size)
     evaluate(scripts, script_size);
@@ -484,4 +623,20 @@ void web_parse(const char *html) {
 void web_click(unsigned node) {
   if (node < web_count && *web_nodes[node].onclick)
     evaluate(web_nodes[node].onclick, length(web_nodes[node].onclick));
+}
+void web_input(unsigned node, bool committed) {
+  if (node >= web_count || !engine)
+    return;
+  collect();
+  struct web_node *n = &web_nodes[node];
+  js_set(engine, n->object, "value",
+         js_mkstr(engine, n->value, length(n->value)));
+  if (!committed)
+    n->input_dirty = true;
+  if (!committed && *n->oninput)
+    evaluate(n->oninput, length(n->oninput));
+  if (committed && n->input_dirty && *n->onchange)
+    evaluate(n->onchange, length(n->onchange));
+  if (committed)
+    n->input_dirty = false;
 }
