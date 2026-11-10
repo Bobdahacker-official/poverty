@@ -54,6 +54,10 @@ static const char *app_summaries[APP_COUNT] = {
     "Calculate expressions, recall answers and use memory"};
 static char music_path[256];
 static bool music_focus, music_play_requested;
+static bool music_record_view, music_bluetooth_view;
+static char bluetooth_track[256];
+static char recording_path[256] = "/recording.wav";
+static int microphone_selection;
 static int music_result;
 static struct image_document picture;
 static char picture_path[256];
@@ -980,6 +984,13 @@ static void open_file(unsigned index) {
     return;
   }
   unsigned length = strlen(path);
+  if (length >= 4 && str_eq(path + length - 4, ".sbc")) {
+    copy(bluetooth_track, path, sizeof(bluetooth_track));
+    music_bluetooth_view = true;
+    music_record_view = false;
+    open_app(MUSIC);
+    return;
+  }
   bool manifest = length >= 15 && str_eq(path + length - 15, ".mgnta.manifest");
   bool bundle = length >= 10 && str_eq(path + length - 10, ".mgnta.zip");
   bool application = length >= 6 && str_eq(path + length - 6, ".mgnta");
@@ -2701,12 +2712,81 @@ static void ip_string(char out[32], uint32_t address) {
     append(out, value, 32);
   }
 }
+static bool bluetooth_parse_address(const char *text, uint8_t address[6]) {
+  if (strlen(text) != 17) return false;
+  for (unsigned i = 0; i < 6; i++) {
+    unsigned byte = 0;
+    for (unsigned n = 0; n < 2; n++) {
+      char c = text[i * 3 + n];
+      unsigned digit = c >= '0' && c <= '9' ? c - '0'
+                       : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                       : c >= 'a' && c <= 'f' ? c - 'a' + 10 : 16;
+      if (digit >= 16) return false;
+      byte = (byte << 4) | digit;
+    }
+    if (i < 5 && text[i * 3 + 2] != ':') return false;
+    address[5 - i] = byte;
+  }
+  return true;
+}
+static void bluetooth_pair_view(unsigned controller) {
+  static char address[18];
+  uint32_t value;
+  unsigned error;
+  unsigned state = usb_bluetooth_pair_state(&value, &error);
+  heading("Classic Bluetooth pairing");
+  if (state == BT_PAIR_IDLE || state == BT_PAIR_FAILED) {
+    nk_layout_row_dynamic(&ui, 30, 1);
+    caption("Put the device in pairing mode and enter its Classic address.");
+    nk_layout_row_dynamic(&ui, 34, 2);
+    nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, address,
+                                   sizeof(address), nk_filter_default);
+    if (quiet_button("Pair", "Connect to this Bluetooth Classic device",
+                     controller == 1 || controller == 5)) {
+      uint8_t peer[6];
+      if (!bluetooth_parse_address(address, peer))
+        notify("Enter six hexadecimal pairs separated by colons");
+      else if (usb_bluetooth_pair(peer) < 0)
+        notify("Could not start Bluetooth pairing");
+    }
+    if (error) {
+      nk_layout_row_dynamic(&ui, 28, 1);
+      label_value("Pairing error: ", error, "");
+    }
+    return;
+  }
+  if (state == BT_PAIR_CONFIRM) {
+    char digits[7] = "000000";
+    for (unsigned i = 0; i < 6; i++) {
+      digits[5 - i] = '0' + value % 10;
+      value /= 10;
+    }
+    nk_layout_row_dynamic(&ui, 54, 1);
+    nk_label_wrap(&ui, "Confirm only if this code matches, or if you initiated "
+                       "pairing on a device with no display.");
+    nk_layout_row_dynamic(&ui, 30, 1);
+    nk_label(&ui, digits, NK_TEXT_CENTERED);
+    nk_layout_row_dynamic(&ui, 34, 2);
+    if (accent_button("Confirm")) usb_bluetooth_confirm(true);
+    if (nk_button_label(&ui, "Reject")) usb_bluetooth_confirm(false);
+    return;
+  }
+  nk_layout_row_dynamic(&ui, 32, 2);
+  caption(state == BT_PAIR_CONNECTED ? "Encrypted connection"
+          : state == BT_PAIR_DISCONNECTING ? "Disconnecting"
+                                          : "Pairing in progress");
+  if (quiet_button(state == BT_PAIR_CONNECTED ? "Disconnect" : "Cancel",
+                   "Close this Bluetooth connection", state != BT_PAIR_DISCONNECTING))
+    usb_bluetooth_disconnect();
+}
 static void bluetooth_view(void) {
-  heading("Bluetooth LE");
+  heading("Bluetooth");
   static const char *states[] = {
       "No compatible USB Bluetooth controller", "Ready", "Starting scan",
       "Scanning for advertisements", "Stopping scan", "Controller did not accept scanning"};
   unsigned state = usb_bluetooth_state();
+  bluetooth_pair_view(state);
+  heading("Nearby LE advertisements");
   nk_layout_row_dynamic(&ui, 28, 1);
   caption(states[state < sizeof(states) / sizeof(states[0]) ? state : 0]);
   nk_layout_row_dynamic(&ui, 34, 2);
@@ -2745,7 +2825,7 @@ static void network_view(void) {
   static bool showing_bluetooth;
   nk_layout_row_dynamic(&ui, 32, 2);
   if (nk_button_label(&ui, "Ethernet")) showing_bluetooth = false;
-  if (nk_button_label(&ui, "Bluetooth LE")) showing_bluetooth = true;
+  if (nk_button_label(&ui, "Bluetooth")) showing_bluetooth = true;
   if (showing_bluetooth) {
     bluetooth_view();
     return;
@@ -4325,6 +4405,86 @@ static void calculator_view(void) {
     nk_label(&ui, calculator_values[i - 1], NK_TEXT_RIGHT);
   }
 }
+static const char *music_output_name(unsigned type) {
+  static const char *names[] = {"Line out", "Speaker", "Headphones"};
+  if (type < 3) return names[type];
+  if (type == 16) return "HDMI";
+  if (type == 17) return "DisplayPort / HDMI";
+  if (type == 18) return "USB Audio";
+  return "Audio output";
+}
+static void music_recorder(void) {
+  unsigned inputs = audio_capture_count();
+  bool recording = audio_capture_active();
+  nk_layout_row_dynamic(&ui, 32, 1);
+  caption(inputs ? "48 kHz PCM recording" : "No compatible HDA microphone found");
+  if (!inputs) return;
+  if (!recording) {
+    nk_layout_row_dynamic(&ui, 32, 1);
+    nk_property_int(&ui, "Microphone", 1, &microphone_selection, inputs, 1, 1);
+  }
+  nk_layout_row_dynamic(&ui, 34, 1);
+  if (accent_button(recording ? "Stop recording" : "Start recording")) {
+    if (recording)
+      audio_capture_stop();
+    else {
+      int r = audio_capture_start(microphone_selection - 1);
+      if (r < 0)
+        notify(r == -16 ? "Stop audio playback before recording"
+                         : "Could not start this microphone");
+    }
+  }
+  unsigned bytes = audio_capture_bytes();
+  nk_layout_row_dynamic(&ui, 28, 1);
+  label_value(recording ? "Recording: " : "Captured: ", bytes, " bytes");
+  if (audio_capture_error() < 0) {
+    nk_layout_row_dynamic(&ui, 28, 1);
+    caption("Capture stopped after an input error");
+  }
+  if (bytes && !recording) {
+    nk_layout_row_dynamic(&ui, 34, 2);
+    nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, recording_path,
+                                   sizeof(recording_path), nk_filter_default);
+    if (nk_button_label(&ui, "Save WAV")) {
+      int r = audio_capture_save(recording_path);
+      if (r < 0) file_error("Recording save failed", r);
+      else {
+        refresh_files();
+        notify("Recording saved");
+      }
+    }
+  }
+}
+static void music_bluetooth_player(void) {
+  int state = bluetooth_audio_status();
+  bool connected = usb_bluetooth_acl_capacity() >= 48;
+  nk_layout_row_dynamic(&ui, 44, 1);
+  nk_label_wrap(&ui, connected ? "Choose a pre-encoded .sbc track."
+                               : "Pair a Classic Bluetooth audio device in Network.");
+  nk_layout_row_dynamic(&ui, 34, 1);
+  nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, bluetooth_track,
+                                 sizeof(bluetooth_track), nk_filter_default);
+  nk_layout_row_dynamic(&ui, 34, 2);
+  if (quiet_button("Stream SBC", "Send this track to the paired Bluetooth sink",
+                   connected && state <= 0 && *bluetooth_track)) {
+    if (audio_status() > 0 || audio_capture_active())
+      notify("Stop the current playback or recording first");
+    else {
+      int result = bluetooth_audio_start(bluetooth_track);
+      if (result < 0)
+        notify("Could not start streaming this SBC file");
+    }
+  }
+  if (quiet_button("Stop", "Close the Bluetooth audio stream", state > 0))
+    bluetooth_audio_stop();
+  nk_layout_row_dynamic(&ui, 30, 1);
+  if (state < 0)
+    label_value("Bluetooth audio error: ", -state, "");
+  else if (state > 0)
+    label_value("Queued audio: ", bluetooth_audio_bytes(), " bytes");
+  else
+    caption("Bluetooth audio is idle");
+}
 static void application(unsigned id) {
   if (app_close_requested[id]) {
     app_close_requested[id] = false;
@@ -4335,6 +4495,10 @@ static void application(unsigned id) {
       if (active_app == (int)id) active_app = -1;
       nk_window_show(&ui, app_names[id], NK_HIDDEN);
       if (id == GAMES) games_ui_save();
+      if (id == MUSIC) {
+        audio_capture_stop();
+        bluetooth_audio_stop();
+      }
       if (id == TERMINAL && terminal_pid) user_tty_input(3);
     }
   }
@@ -4387,17 +4551,32 @@ static void application(unsigned id) {
       struct av_audio_status status;
       audio_snapshot(&status);
       heading("Music");
+      nk_layout_row_dynamic(&ui, 30, 3);
+      if (nk_button_label(&ui, "Player"))
+        music_record_view = music_bluetooth_view = false;
+      if (nk_button_label(&ui, "Recorder")) {
+        music_record_view = true;
+        music_bluetooth_view = false;
+      }
+      if (nk_button_label(&ui, "Bluetooth Audio")) {
+        music_record_view = false;
+        music_bluetooth_view = true;
+      }
+      if (music_record_view) {
+        music_recorder();
+      } else if (music_bluetooth_view) {
+        music_bluetooth_player();
+      } else {
       unsigned outputs = audio_output_count();
       if (outputs) {
         unsigned selected = audio_output_selected();
-        static const char *types[] = {"Line out", "Speaker", "Headphones"};
         char label[64], index[32];
         number(index, selected + 1);
         copy(label, "Output ", sizeof(label));
         append(label, index, sizeof(label));
         append(label, " (", sizeof(label));
         unsigned type = audio_output_type(selected);
-        append(label, type < 3 ? types[type] : "Analogue", sizeof(label));
+        append(label, music_output_name(type), sizeof(label));
         append(label, ")", sizeof(label));
         nk_layout_row_dynamic(&ui, 30, 1);
         if (nk_combo_begin_label(&ui, label, nk_vec2(250, 240))) {
@@ -4407,7 +4586,7 @@ static void application(unsigned id) {
             number(index, i + 1);
             copy(label, index, sizeof(label));
             append(label, ". ", sizeof(label));
-            append(label, type < 3 ? types[type] : "Analogue", sizeof(label));
+            append(label, music_output_name(type), sizeof(label));
             if (nk_button_label(&ui, label)) {
               int result = audio_output_select(i);
               if (result < 0)
@@ -4419,13 +4598,15 @@ static void application(unsigned id) {
           }
           nk_combo_end(&ui);
         }
-        nk_layout_row_dynamic(&ui, 26, 2);
-        int volume = audio_volume();
-        nk_bool mute = audio_muted();
-        bool changed = nk_slider_int(&ui, 0, &volume, 100, 1);
-        if (nk_checkbox_label(&ui, "Mute", &mute)) changed = true;
-        if (changed && audio_set_volume(volume, mute) < 0)
-          notify("This output does not expose adjustable gain");
+        if (audio_output_type(audio_output_selected()) < 16) {
+          nk_layout_row_dynamic(&ui, 26, 2);
+          int volume = audio_volume();
+          nk_bool mute = audio_muted();
+          bool changed = nk_slider_int(&ui, 0, &volume, 100, 1);
+          if (nk_checkbox_label(&ui, "Mute", &mute)) changed = true;
+          if (changed && audio_set_volume(volume, mute) < 0)
+            notify("This output does not expose adjustable gain");
+        }
       }
       nk_layout_row_dynamic(&ui, 34, 1);
       if (music_focus) {
@@ -4489,6 +4670,7 @@ static void application(unsigned id) {
         label_value("Playback error: ",
                     -(music_result < 0 ? music_result : status.error), "");
       }
+      }
     } else if (id == CALCULATOR)
       calculator_view();
     else if (id == IMAGES)
@@ -4513,6 +4695,10 @@ static void application(unsigned id) {
     if (active_app == (int)id) active_app = -1;
     if (id == GAMES)
       games_ui_save();
+    if (id == MUSIC) {
+      audio_capture_stop();
+      bluetooth_audio_stop();
+    }
     if (id == EDITOR && editor_dirty) {
       open_app(EDITOR);
       editor_discard = true;
@@ -5368,6 +5554,8 @@ int gui_run(void) {
   preferences_dirty = theme_dirty = false;
   running = true;
   music_focus = false;
+  music_record_view = music_bluetooth_view = false;
+  microphone_selection = 1;
   music_play_requested = false;
   music_result = 0;
   graphics_console_capture(terminal_character);
@@ -5506,6 +5694,8 @@ int gui_run(void) {
   clipboard_save();
   if (workspace_dirty) workspace_save();
   if (resume_desktop) desktop_session_save();
+  audio_capture_stop();
+  bluetooth_audio_stop();
   if (preferences_dirty)
     preference_save(false);
   graphics_console_capture(NULL);

@@ -20,7 +20,7 @@ struct device {
   uint8_t output[2048] __attribute__((aligned(64)));
   uint8_t input[2112] __attribute__((aligned(64)));
   struct endpoint ep[32];
-  uint8_t descriptor[512] __attribute__((aligned(64)));
+  uint8_t descriptor[2048] __attribute__((aligned(4096)));
   uint8_t report[272] __attribute__((aligned(64)));
   uint8_t old_keys[6], modifiers;
   unsigned slot, port, speed, packet, hid, hid_ep, hid_packet;
@@ -51,6 +51,16 @@ static struct {
   uint8_t mac[6];
 } ethernet;
 static uint8_t ethernet_rx[1536] __attribute__((aligned(4096)));
+#define USB_AUDIO_PACKETS 32
+#define USB_AUDIO_BYTES 192
+static struct {
+  unsigned slot, interface, alternate, endpoint, packet;
+  unsigned head, tail, pending, completed;
+  bool rate_control, active, unusable;
+  int error;
+  struct { uint64_t address; unsigned bytes; } transfers[USB_AUDIO_PACKETS];
+} uac;
+static uint8_t uac_packets[USB_AUDIO_PACKETS][256] __attribute__((aligned(4096)));
 enum { BT_MISSING, BT_IDLE, BT_STARTING, BT_SCANNING, BT_STOPPING, BT_FAILED };
 static struct {
   unsigned slot, state, phase, count;
@@ -59,11 +69,239 @@ static struct {
   bool requested, waiting;
   unsigned event_used;
   uint8_t event[257];
+  unsigned acl_in, acl_out, acl_in_packet, acl_out_packet;
+  unsigned acl_limit, acl_credits, acl_outstanding, acl_used;
+  bool acl_query;
+  uint8_t acl_data[1028];
   struct bluetooth_peer peers[24];
 } bluetooth;
+static struct {
+  enum bluetooth_pair_state state;
+  uint8_t address[6], key_address[6], key[16], next[25];
+  uint8_t candidate_key[16];
+  bool have_key, have_candidate_key, link;
+  unsigned handle, error, next_size, phase;
+  uint16_t opcode;
+  uint32_t deadline, number;
+} pairing;
+static uint8_t acl_chunk[1024] __attribute__((aligned(4096)));
+static void pair_queue(unsigned opcode, const uint8_t *data, unsigned length) {
+  pairing.next[0] = opcode;
+  pairing.next[1] = opcode >> 8;
+  pairing.next[2] = length;
+  if (length) memcpy(pairing.next + 3, data, length);
+  pairing.next_size = length + 3;
+}
+static void pair_deadline(unsigned ticks) { pairing.deadline = clock_ticks() + ticks; }
+static void pair_close(unsigned error) {
+  pairing.error = error;
+  pairing.have_candidate_key = false;
+  if (pairing.link) {
+    uint8_t parameters[] = {pairing.handle, pairing.handle >> 8, 0x13};
+    pair_queue(0x0406, parameters, sizeof(parameters));
+    pairing.state = BT_PAIR_DISCONNECTING;
+    pair_deadline(300);
+  } else {
+    pairing.next_size = 0;
+    pairing.state = error ? BT_PAIR_FAILED : BT_PAIR_IDLE;
+  }
+}
+int usb_bluetooth_pair(const uint8_t address[6]) {
+  if (!bluetooth.slot) return -19;
+  if ((bluetooth.state != BT_IDLE && bluetooth.state != BT_FAILED) ||
+      bluetooth.requested || bluetooth.waiting ||
+      (pairing.state != BT_PAIR_IDLE && pairing.state != BT_PAIR_FAILED))
+    return -16;
+  bool nonzero = false;
+  for (unsigned i = 0; i < 6; i++) nonzero |= address[i] != 0;
+  if (!nonzero) return -22;
+  memcpy(pairing.address, address, 6);
+  pairing.error = pairing.phase = 0;
+  pairing.have_candidate_key = pairing.link = false;
+  pairing.state = BT_PAIR_STARTING;
+  pair_queue(0x0c03, NULL, 0);
+  pair_deadline(300);
+  return 0;
+}
+unsigned usb_bluetooth_pair_state(uint32_t *number, unsigned *error) {
+  if (number) *number = pairing.number;
+  if (error) *error = pairing.error;
+  return pairing.state;
+}
+void usb_bluetooth_confirm(bool accept) {
+  if (pairing.state != BT_PAIR_CONFIRM) return;
+  pair_queue(accept ? 0x042c : 0x042d, pairing.address, 6);
+  pairing.state = BT_PAIR_AUTHENTICATING;
+  pair_deadline(3000);
+}
+void usb_bluetooth_disconnect(void) {
+  if (pairing.state == BT_PAIR_CONNECTING && !pairing.link) {
+    pair_queue(0x0408, pairing.address, 6);
+    pairing.error = 0;
+    pairing.state = BT_PAIR_DISCONNECTING;
+    pair_deadline(300);
+  } else if (pairing.state != BT_PAIR_IDLE && pairing.state != BT_PAIR_DISCONNECTING)
+    pair_close(0);
+}
+static void pair_command_event(const uint8_t *event, unsigned size) {
+  bool complete = event[0] == 0x0e;
+  if (size < 6) return;
+  unsigned opcode = complete ? event[3] | (event[4] << 8)
+                             : event[4] | (event[5] << 8);
+  unsigned status = event[complete ? 5 : 2];
+  if (opcode != pairing.opcode) return;
+  if (status) {
+    if (pairing.state == BT_PAIR_DISCONNECTING) {
+      pairing.error = status;
+      return;
+    }
+    pair_close(status);
+    return;
+  }
+  if (pairing.state == BT_PAIR_DISCONNECTING && opcode == 0x0408) {
+    pairing.state = pairing.error ? BT_PAIR_FAILED : BT_PAIR_IDLE;
+    return;
+  }
+  if (pairing.state != BT_PAIR_STARTING || !complete) return;
+  if (pairing.phase++ == 0) {
+    const uint8_t events[] = {3, 5, 6, 8, 0x16, 0x17, 0x18, 0x31, 0x32,
+                             0x33, 0x34, 0x36};
+    uint8_t mask[8] = {0};
+    for (unsigned i = 0; i < sizeof(events); i++) {
+      unsigned bit = events[i] - 1;
+      mask[bit / 8] |= 1u << (bit % 8);
+    }
+    pair_queue(0x0c01, mask, sizeof(mask));
+  } else if (pairing.phase == 2) {
+    const uint8_t enabled = 1;
+    pair_queue(0x0c56, &enabled, 1);
+  } else {
+    uint8_t parameters[13] = {0};
+    memcpy(parameters, pairing.address, 6);
+    parameters[6] = 0x18;
+    parameters[7] = 0xcc;
+    parameters[8] = 1;
+    parameters[12] = 1;
+    pair_queue(0x0405, parameters, sizeof(parameters));
+    pairing.state = BT_PAIR_CONNECTING;
+    pair_deadline(1500);
+  }
+}
+static void pairing_event(const uint8_t *event, unsigned size) {
+  if (pairing.state == BT_PAIR_IDLE || pairing.state == BT_PAIR_FAILED) return;
+  unsigned code = event[0];
+  if (code == 0x0e || code == 0x0f) {
+    pair_command_event(event, size);
+    return;
+  }
+  if (code == 3 && size == 13 &&
+      (pairing.state == BT_PAIR_CONNECTING || pairing.state == BT_PAIR_DISCONNECTING) &&
+      !__builtin_memcmp(event + 5, pairing.address, 6)) {
+    if (event[2] || event[11] != 1) {
+      pair_close(event[2] ? event[2] : 0x12);
+      return;
+    }
+    pairing.handle = (event[3] | (event[4] << 8)) & 0x0fff;
+    pairing.link = true;
+    if (pairing.state == BT_PAIR_DISCONNECTING) {
+      pair_close(pairing.error);
+      return;
+    }
+    pair_queue(0x0411, event + 3, 2);
+    pairing.state = BT_PAIR_AUTHENTICATING;
+    pair_deadline(3000);
+  } else if (code == 5 && size >= 6 && pairing.link &&
+             (event[3] | (event[4] << 8)) == pairing.handle) {
+    pairing.link = false;
+    bluetooth.acl_limit = bluetooth.acl_credits =
+        bluetooth.acl_outstanding = bluetooth.acl_used = 0;
+    bluetooth.acl_query = false;
+    pair_close(pairing.error);
+  } else if (code == 6 && size >= 5 && pairing.state == BT_PAIR_AUTHENTICATING &&
+             (event[3] | (event[4] << 8)) == pairing.handle) {
+    if (event[2]) pair_close(event[2]);
+    else {
+      uint8_t parameters[] = {pairing.handle, pairing.handle >> 8, 1};
+      pair_queue(0x0413, parameters, sizeof(parameters));
+      pairing.state = BT_PAIR_ENCRYPTING;
+      pair_deadline(500);
+    }
+  } else if ((code == 8 || code == 0x59) && size >= 6 &&
+             pairing.state == BT_PAIR_ENCRYPTING &&
+             (event[3] | (event[4] << 8)) == pairing.handle) {
+    if (event[2] || !event[5]) pair_close(event[2] ? event[2] : 0x05);
+    else {
+      if (pairing.have_candidate_key) {
+        memcpy(pairing.key, pairing.candidate_key, 16);
+        memcpy(pairing.key_address, pairing.address, 6);
+        pairing.have_key = true;
+        pairing.have_candidate_key = false;
+      }
+      pairing.state = BT_PAIR_CONNECTED;
+    }
+  } else if (code == 0x18 && size == 25 &&
+             (pairing.state == BT_PAIR_AUTHENTICATING ||
+              pairing.state == BT_PAIR_ENCRYPTING) &&
+             !__builtin_memcmp(event + 2, pairing.address, 6)) {
+    memcpy(pairing.candidate_key, event + 8, 16);
+    pairing.have_candidate_key = true;
+  } else if (pairing.state == BT_PAIR_AUTHENTICATING && size >= 8 &&
+             !__builtin_memcmp(event + 2, pairing.address, 6)) {
+    if (code == 0x17) {
+      uint8_t reply[22];
+      memcpy(reply, pairing.address, 6);
+      if (pairing.have_key && !__builtin_memcmp(pairing.key_address, pairing.address, 6)) {
+        memcpy(reply + 6, pairing.key, 16);
+        pair_queue(0x040b, reply, sizeof(reply));
+      } else pair_queue(0x040c, reply, 6);
+    } else if (code == 0x31) {
+      uint8_t reply[9];
+      memcpy(reply, pairing.address, 6);
+      reply[6] = 1;
+      reply[7] = 0;
+      reply[8] = 4;
+      pair_queue(0x042b, reply, sizeof(reply));
+    } else if (code == 0x33 && size == 12) {
+      pairing.number = event[8] | ((uint32_t)event[9] << 8) |
+                       ((uint32_t)event[10] << 16) | ((uint32_t)event[11] << 24);
+      pairing.state = BT_PAIR_CONFIRM;
+      pair_deadline(2500);
+    } else if (code == 0x16) {
+      pair_queue(0x040e, pairing.address, 6);
+    } else if (code == 0x34) {
+      pair_queue(0x042f, pairing.address, 6);
+    }
+  }
+}
+static void service_pairing(void) {
+  if (!bluetooth.slot || pairing.state == BT_PAIR_IDLE ||
+      pairing.state == BT_PAIR_FAILED || pairing.state == BT_PAIR_CONNECTED)
+    return;
+  if ((int32_t)(clock_ticks() - pairing.deadline) >= 0) {
+    if (pairing.state == BT_PAIR_DISCONNECTING) {
+      pairing.error = 0x08;
+      pairing.state = BT_PAIR_FAILED;
+      pairing.next_size = 0;
+    } else if (pairing.state == BT_PAIR_CONNECTING && !pairing.link) {
+      usb_bluetooth_disconnect();
+      pairing.error = 0x08;
+    } else
+      pair_close(0x08);
+  }
+  if (!pairing.next_size) return;
+  uint8_t command_data[sizeof(pairing.next)];
+  unsigned size = pairing.next_size;
+  memcpy(command_data, pairing.next, size);
+  pairing.next_size = 0;
+  pairing.opcode = command_data[0] | (command_data[1] << 8);
+  if (!xhci_control(bluetooth.slot, 0x20, 0, 0, 0, command_data, size))
+    pair_close(0x03);
+}
 unsigned usb_bluetooth_state(void) { return bluetooth.state; }
 bool usb_bluetooth_scan(bool enabled) {
   if (!bluetooth.slot) return false;
+  if (enabled && pairing.state != BT_PAIR_IDLE && pairing.state != BT_PAIR_FAILED)
+    return false;
   bluetooth.requested = enabled;
   if (enabled && bluetooth.state == BT_FAILED) bluetooth.state = BT_IDLE;
   return true;
@@ -124,6 +362,23 @@ static void bluetooth_advertisement(const uint8_t *data, unsigned length) {
 }
 static void bluetooth_event(const uint8_t *event, unsigned size) {
   if (size < 2 || event[1] != size - 2) return;
+  pairing_event(event, size);
+  if (event[0] == 0x0e && size >= 13 && event[3] == 5 && event[4] == 0x10 &&
+      !event[5] && event[9] + event[10]) {
+    unsigned limit = event[6] | (event[7] << 8);
+    unsigned packets = event[9] | (event[10] << 8);
+    bluetooth.acl_limit = limit < 1024 ? limit : 1024;
+    bluetooth.acl_credits = packets < 8 ? packets : 8;
+  }
+  if (event[0] == 0x13 && size >= 3 && event[2] <= (size - 3) / 4)
+    for (unsigned i = 0; i < event[2]; i++) {
+      const uint8_t *entry = event + 3 + i * 4;
+      if ((entry[0] | (entry[1] << 8)) == pairing.handle) {
+        unsigned done = entry[2] | (entry[3] << 8);
+        bluetooth.acl_outstanding -= done < bluetooth.acl_outstanding
+                                         ? done : bluetooth.acl_outstanding;
+      }
+    }
   if (event[0] == 0x3e) {
     bluetooth_advertisement(event + 2, size - 2);
     return;
@@ -271,7 +526,18 @@ void xhci_poll(void) {
     } else if (type == 32) {
       struct device *device = find(control >> 24);
       unsigned endpoint = (control >> 16) & 31;
-      if (device && endpoint) {
+      if (device && uac.active && device->slot == uac.slot &&
+          endpoint == uac.endpoint * 2) {
+        if (uac.pending && event->parameter == uac.transfers[uac.head].address) {
+          if (code == 1)
+            uac.completed += uac.transfers[uac.head].bytes;
+          else
+            uac.error = -5;
+          uac.head = (uac.head + 1) % USB_AUDIO_PACKETS;
+          uac.pending--;
+        } else if (code != 14 && code != 15)
+          uac.error = -5;
+      } else if (device && endpoint) {
         struct endpoint *ep = &device->ep[endpoint];
         if (!ep->pending ||
             (event->parameter != ep->awaited && (code == 1 || code == 13))) {
@@ -364,7 +630,7 @@ static bool complete(struct device *device, unsigned endpoint) {
 bool xhci_control(unsigned slot, uint8_t type, uint8_t request, uint16_t value,
                   uint16_t index, void *data, unsigned size) {
   struct device *device = find(slot);
-  if (!running || !device || size > 512)
+  if (!running || !device || size > sizeof(device->descriptor))
     return false;
   struct endpoint *ep = &device->ep[1];
   ep->expected = size;
@@ -444,6 +710,201 @@ static bool descriptor(struct device *device, unsigned kind, unsigned size) {
   return xhci_control(device->slot, 0x80, 6, kind << 8, 0, device->descriptor,
                       size);
 }
+unsigned usb_bluetooth_acl_capacity(void) {
+  return pairing.state == BT_PAIR_CONNECTED && bluetooth.acl_in && bluetooth.acl_out
+             ? bluetooth.acl_limit : 0;
+}
+int usb_bluetooth_acl_send(const void *payload, unsigned size) {
+  unsigned limit = usb_bluetooth_acl_capacity();
+  if (!limit) return -19;
+  if (size > limit) return -27;
+  if (bluetooth.acl_outstanding >= bluetooth.acl_credits) return 0;
+  uint8_t packet[1028];
+  unsigned handle = pairing.handle | (2u << 12);
+  packet[0] = handle;
+  packet[1] = handle >> 8;
+  packet[2] = size;
+  packet[3] = size >> 8;
+  memcpy(packet + 4, payload, size);
+  bluetooth.acl_outstanding++;
+  if (xhci_bulk(bluetooth.slot, bluetooth.acl_out, packet, size + 4, false)
+      != (int)(size + 4))
+    return -5;
+  if (!((size + 4) % bluetooth.acl_out_packet) &&
+      xhci_bulk(bluetooth.slot, bluetooth.acl_out, packet, 0, false) < 0)
+    return -5;
+  return size;
+}
+static void service_bt_acl(void) {
+  if (pairing.state != BT_PAIR_CONNECTED || !bluetooth.acl_in || !bluetooth.acl_out)
+    return;
+  struct device *device = find(bluetooth.slot);
+  if (!device) return;
+  if (!bluetooth.acl_query) {
+    bluetooth.acl_query = true;
+    uint8_t command_data[] = {5, 0x10, 0};
+    (void)xhci_control(bluetooth.slot, 0x20, 0, 0, 0, command_data, 3);
+  }
+  unsigned dci = bluetooth.acl_in * 2 + 1;
+  struct endpoint *endpoint = &device->ep[dci];
+  if (!endpoint->pending) {
+    if (endpoint->code == 1 || endpoint->code == 13)
+      for (unsigned i = 0; i < endpoint->actual; i++) {
+        uint8_t *packet = bluetooth.acl_data;
+        packet[bluetooth.acl_used++] = acl_chunk[i];
+        if (bluetooth.acl_used >= 4) {
+          unsigned length = packet[2] | (packet[3] << 8);
+          if (length > sizeof(bluetooth.acl_data) - 4) {
+            bluetooth.acl_used = 0;
+            break;
+          }
+          if (bluetooth.acl_used == length + 4) {
+            if (((packet[0] | (packet[1] << 8)) & 0x0fff) == pairing.handle)
+              bluetooth_audio_receive(packet, length + 4);
+            bluetooth.acl_used = 0;
+          }
+        }
+      }
+    endpoint->expected = bluetooth.acl_in_packet;
+    endpoint->pending = true;
+    endpoint->code = 0;
+    endpoint->awaited = enqueue(&endpoint->ring, page_physical(acl_chunk),
+                                 bluetooth.acl_in_packet, (1u << 10) | 32 | 4);
+    __asm__ volatile("sfence" ::: "memory");
+    doorbells[bluetooth.slot] = dci;
+  }
+}
+static bool uac1_find(struct device *device, unsigned total) {
+  if (uac.slot || (device->speed != 1 && device->speed != 3)) return false;
+  unsigned interface = 0, alternate = 0, endpoint = 0, packet = 0;
+  bool stream = false, pcm = false, format = false, rate_control = false;
+  for (unsigned at = 0; at <= total;) {
+    const uint8_t *d = device->descriptor + at;
+    if (at == total || (at + 2 <= total && d[1] == 4)) {
+      if (stream && pcm && format && endpoint) break;
+      stream = pcm = format = rate_control = false;
+      endpoint = 0;
+      if (at == total) break;
+      if (d[0] >= 9 && d[0] <= total - at) {
+        interface = d[2];
+        alternate = d[3];
+        stream = alternate && d[4] == 1 && d[5] == 1 && d[6] == 2 && !d[7];
+      }
+    }
+    if (total - at < 2 || d[0] < 2 || d[0] > total - at) return false;
+    if (stream && d[1] == 0x24 && d[0] >= 7 && d[2] == 1)
+      pcm = d[5] == 1 && !d[6];
+    if (stream && d[1] == 0x24 && d[0] >= 8 && d[2] == 2 &&
+        d[3] == 1 && d[4] == 2 && d[5] == 2 && d[6] == 16) {
+      unsigned entries = d[7];
+      if (entries && entries <= (unsigned)(d[0] - 8) / 3)
+        for (unsigned i = 0; i < entries; i++) {
+          const uint8_t *frequency = d + 8 + i * 3;
+          unsigned rate = frequency[0] | (frequency[1] << 8) | (frequency[2] << 16);
+          if (rate == 48000) format = true;
+        }
+      else if (!entries && d[0] >= 14) {
+        unsigned minimum = d[8] | (d[9] << 8) | (d[10] << 16);
+        unsigned maximum = d[11] | (d[12] << 8) | (d[13] << 16);
+        format = minimum <= 48000 && maximum >= 48000;
+      }
+    }
+    if (stream && d[1] == 5 && d[0] >= 7) {
+      unsigned sync = (d[3] >> 2) & 3;
+      unsigned max_packet = d[4] | (d[5] << 8);
+      if ((d[3] & 0x33) == 1 && (sync == 2 || sync == 3) &&
+          !(d[2] & 0x80) && (d[2] & 15) &&
+          max_packet >= USB_AUDIO_BYTES && max_packet <= 1024 &&
+          d[6] == (device->speed == 1 ? 1 : 4)) {
+        endpoint = d[2] & 15;
+        packet = max_packet;
+      }
+    }
+    if (stream && endpoint && d[1] == 0x25 && d[0] >= 4 && d[2] == 1)
+      rate_control = d[3] & 1;
+    at += d[0];
+  }
+  if (!stream || !pcm || !format || !endpoint) return false;
+  if (!xhci_control(device->slot, 0, 9, device->descriptor[5], 0, NULL, 0))
+    return false;
+  uac.slot = device->slot;
+  uac.interface = interface;
+  uac.alternate = alternate;
+  uac.endpoint = endpoint;
+  uac.packet = packet;
+  uac.rate_control = rate_control;
+  return true;
+}
+bool usb_audio_available(void) { return uac.slot && !uac.unusable; }
+static bool uac_endpoint(struct device *device, bool enable) {
+  unsigned dci = uac.endpoint * 2;
+  memset(device->input, 0, sizeof(device->input));
+  uint32_t *flags = (void *)device->input;
+  flags[0] = enable ? 0 : 1u << dci;
+  flags[1] = enable ? 1u | (1u << dci) : 1u;
+  uint32_t *ctx = input_context(device, 0);
+  memcpy(ctx, device->output, context_bytes);
+  ctx[0] = (ctx[0] & ~(31u << 27)) | ((enable ? dci : 1u) << 27);
+  if (enable) {
+    endpoint_context(device, dci, 1, uac.packet, 3);
+    uint32_t *endpoint = input_context(device, dci);
+    endpoint[1] &= ~(3u << 1);
+    endpoint[4] = USB_AUDIO_BYTES | (uac.packet << 16);
+  }
+  return command(page_physical(device->input), (12u << 10) | (device->slot << 24));
+}
+int usb_audio_start(void) {
+  if (!usb_audio_available()) return -19;
+  if (uac.active) return -16;
+  struct device *device = find(uac.slot);
+  if (!device || !uac_endpoint(device, true)) return -5;
+  uint8_t frequency[3] = {0x80, 0xbb, 0};
+  if (!xhci_control(uac.slot, 1, 11, uac.alternate, uac.interface, NULL, 0) ||
+      (uac.rate_control && !xhci_control(uac.slot, 0x22, 1, 0x0100,
+                                        uac.endpoint, frequency, 3))) {
+    (void)xhci_control(uac.slot, 1, 11, 0, uac.interface, NULL, 0);
+    if (!uac_endpoint(device, false)) uac.unusable = true;
+    return -5;
+  }
+  uac.head = uac.tail = uac.pending = uac.completed = 0;
+  uac.error = 0;
+  uac.active = true;
+  return 0;
+}
+void usb_audio_stop(void) {
+  if (!uac.active) return;
+  uac.active = false;
+  struct device *device = find(uac.slot);
+  if (!device) return;
+  unsigned dci = uac.endpoint * 2;
+  bool stopped = !uac.pending ||
+      command(0, (15u << 10) | (dci << 16) | (uac.slot << 24));
+  if (!stopped ||
+      !xhci_control(uac.slot, 1, 11, 0, uac.interface, NULL, 0) ||
+      !uac_endpoint(device, false))
+    uac.unusable = true;
+  uac.pending = 0;
+}
+int usb_audio_queue(const void *data, unsigned bytes) {
+  struct device *device = find(uac.slot);
+  if (!uac.active || !device) return -19;
+  if (uac.error) return uac.error;
+  if (!bytes || bytes > USB_AUDIO_BYTES) return -22;
+  if (uac.pending == USB_AUDIO_PACKETS) return 0;
+  unsigned dci = uac.endpoint * 2, at = uac.tail;
+  memcpy(uac_packets[at], data, bytes);
+  memset(uac_packets[at] + bytes, 0, USB_AUDIO_BYTES - bytes);
+  uac.transfers[at].bytes = bytes;
+  uac.transfers[at].address = enqueue(&device->ep[dci].ring,
+      page_physical(uac_packets[at]), USB_AUDIO_BYTES, (1u << 31) | (5u << 10) | 32);
+  uac.tail = (at + 1) % USB_AUDIO_PACKETS;
+  uac.pending++;
+  __asm__ volatile("sfence" ::: "memory");
+  doorbells[uac.slot] = dci;
+  return bytes;
+}
+unsigned usb_audio_completed(void) { return uac.completed; }
+int usb_audio_error(void) { return uac.active ? uac.error : -19; }
 static int ethernet_hex(uint8_t c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -658,13 +1119,16 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
   if (!descriptor(device, 2, 9))
     goto failed;
   unsigned total = device->descriptor[2] | (unsigned)device->descriptor[3] << 8;
-  if (total < 9 || total > 512 || !descriptor(device, 2, total))
+  if (total < 9 || total > sizeof(device->descriptor) || !descriptor(device, 2, total))
     goto failed;
   if (ethernet_configure(device, total))
+    return true;
+  if (uac1_find(device, total))
     return true;
   unsigned configuration = device->descriptor[5], interface = 0, kind = 0,
            protocol = 0;
   unsigned in = 0, out = 0, in_packet = 0, out_packet = 0, max_dci = 1;
+  unsigned event_in = 0, event_packet = 0;
   memset(device->input, 0, sizeof(device->input));
   flags[1] = 1;
   memcpy(input_context(device, 0), device->output, context_bytes);
@@ -673,7 +1137,7 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
     if (d[0] < 2 || d[0] > total - at)
       goto failed;
     if (d[1] == 4 && d[0] >= 9) {
-      if (in || out)
+      if (in || out || event_in)
         break;
       interface = d[2];
       kind = 0;
@@ -696,7 +1160,7 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
         goto failed;
       if ((kind == 8 && type == 2) ||
           ((kind == 3 || kind == 9) && type == 3 && input && packet <= 16) ||
-          (kind == 0xe0 && type == 3 && input && packet <= 272)) {
+          (kind == 0xe0 && (type == 2 || (type == 3 && input && packet <= 272)))) {
         if (type == 3) {
           if (speed >= 3)
             interval = d[6] ? d[6] - 1 : 0;
@@ -716,7 +1180,10 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
         flags[1] |= 1u << dci;
         if (dci > max_dci)
           max_dci = dci;
-        if (input) {
+        if (kind == 0xe0 && type == 3) {
+          event_in = number;
+          event_packet = packet;
+        } else if (input) {
           in = number;
           in_packet = packet;
         } else {
@@ -727,7 +1194,7 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
     }
     at += d[0];
   }
-  if (!configuration || !in || (kind == 8 && !out))
+  if (!configuration || (kind == 0xe0 ? !event_in : !in) || (kind == 8 && !out))
     goto failed;
   ctx = input_context(device, 0);
   ctx[0] = (ctx[0] & ~(31u << 27)) | (max_dci << 27);
@@ -775,9 +1242,13 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
   } else if (kind == 0xe0) {
     bluetooth.slot = slot;
     bluetooth.state = BT_IDLE;
+    bluetooth.acl_in = in;
+    bluetooth.acl_out = out;
+    bluetooth.acl_in_packet = in_packet;
+    bluetooth.acl_out_packet = out_packet;
     device->hid = 3;
-    device->hid_ep = in * 2 + 1;
-    device->hid_packet = in_packet;
+    device->hid_ep = event_in * 2 + 1;
+    device->hid_packet = event_packet;
     arm_hid(device);
   } else {
     if (!xhci_control(slot, 0x21, 11, 0, interface, NULL, 0))
@@ -820,9 +1291,14 @@ static void detach_branch(unsigned port, unsigned route, unsigned depth) {
       device->hid_pending = false;
       device->hub_ports = 0;
       if (bluetooth.slot == device->slot)
-        memset(&bluetooth, 0, sizeof(bluetooth));
+        {
+          memset(&bluetooth, 0, sizeof(bluetooth));
+          memset(&pairing, 0, sizeof(pairing));
+        }
       if (ethernet.slot == device->slot)
         memset(&ethernet, 0, sizeof(ethernet));
+      if (uac.slot == device->slot)
+        memset(&uac, 0, sizeof(uac));
       usb_storage_detach(128 + device->slot);
       if (command(0, (10u << 10) | (device->slot << 24))) {
         dcbaa[device->slot] = 0;
@@ -883,6 +1359,9 @@ void xhci_service_ports(void) {
   }
   service_hubs();
   service_bluetooth();
+  service_pairing();
+  service_bt_acl();
+  bluetooth_audio_poll();
 }
 void xhci_init(void) {
   const struct pci_device *pci = pci_find_class(12, 3, 0x30);

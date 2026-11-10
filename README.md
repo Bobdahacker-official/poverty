@@ -92,7 +92,9 @@ System Monitor has live process and performance views, per-process CPU samples, 
 
 ## Networking
 
-Network can switch to a compatible USB CDC-ECM Ethernet adapter or tethering device connected through xHCI. Switching adapters starts a fresh IPv4 DHCP lease. **Network → Bluetooth LE** can discover nearby advertisers with a compatible USB HCI controller. The Bluetooth view lists advertisements and signal strength. It does not pair devices or provide Bluetooth audio. USB tethering supplies Ethernet frames to Magenta and does not configure the tethering device's Wi-Fi.
+Network can switch to a compatible USB CDC-ECM Ethernet adapter or tethering device connected through xHCI. Switching adapters starts a fresh IPv4 DHCP lease. USB tethering supplies Ethernet frames to Magenta and does not configure the tethering device's Wi-Fi.
+
+**Network → Bluetooth** lists nearby LE advertisements and supports outbound Classic Secure Simple Pairing with a compatible USB HCI controller. Put the peer in pairing mode and enter its Classic address, then respond to the confirmation prompt. Keys are retained for the current boot. **Music → Bluetooth Audio** streams pre-encoded, constant-format SBC files to a paired A2DP sink. The Bluetooth audio path does not encode WAV to SBC or implement headset microphone profiles.
 
 Connections start with DHCP or a saved static profile. DHCP runs in the background and handles lease renewal, rebinding, expiry, and negative acknowledgements. Addresses and DNS servers come from the selected profile or DHCP server. `netdiag` shows the adapter, PCI IDs, link state, lease details, and live TCP connections.
 
@@ -144,7 +146,9 @@ Keyboard and mouse reports continue to be processed during bulk disk transfers. 
 
 Intel HD Audio supplies analogue PCM playback. Codec discovery follows pin, selector, mixer, and DAC connections; it configures power, amplifiers, stream format, and the output stream. A DMA ring buffers playback while polling refills it from storage. Mono and stereo PCM16 WAV playback supports 8, 16, 22.05, 24, 32, 44.1, 48, and 96 kHz when the codec accepts the rate. Tests capture the emulated audio output and check the actual stereo samples, including playback from a ring-3 app and a responsive Music window.
 
-Music lists analogue output paths discovered across PCI HDA controllers and offers volume and mute where the codec exposes adjustable gain. Pause playback before switching jacks. HDMI/DisplayPort, USB audio, and microphone capture use separate driver paths and are outside this playback implementation.
+Music lists output paths discovered across PCI HDA controllers and offers volume and mute where an analogue codec exposes adjustable gain. HDMI and DisplayPort playback use a firmware-configured display link and require the sink to advertise support for stereo PCM16 in its ELD. Compatible xHCI USB Audio Class 1 devices can play 48 kHz stereo PCM16 over a one-millisecond synchronous or adaptive endpoint. This path does not handle asynchronous feedback or USB Audio Class 2.
+
+**Music → Recorder** records from an analogue HDA microphone at 48 kHz PCM16. Choose an input, start and stop recording explicitly, then save to a new WAV path. A clip can hold up to 1 MiB of PCM. Capture and HDA/USB playback share the Music audio engine and are used separately.
 
 The kernel maps physical addresses through 64 GiB. Allocated pages use a separate, supervisor-only memory mapping, so RAM above 4 GiB stays accessible while applications run. Native programs have a 64 MiB address window and up to 64 MiB of mapped pages, with 64 KiB reserved for the stack. Disk-backed ELF files can be up to 32 MiB. `mem` reports managed RAM, free pages, and allocations above 4 GiB. The memory checks boot with 256 MiB, 8 GiB, and 32 GiB and run an ext4 executable with 16 MiB of writable data.
 
