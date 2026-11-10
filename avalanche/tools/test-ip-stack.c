@@ -21,6 +21,8 @@ bool pcnet_send(const void *p,unsigned n) {(void)p;(void)n;assert(0);return fals
 void pcnet_poll(void (*receive)(const uint8_t *,uint32_t)) {(void)receive;assert(0);}
 bool rtl8169_send(const void *p,unsigned n) {(void)p;(void)n;assert(0);return false;}
 void rtl8169_poll(void (*receive)(const uint8_t *,uint32_t)) {(void)receive;assert(0);}
+bool rge_send(const void *p,unsigned n) {(void)p;(void)n;assert(0);return false;}
+void rge_poll(void (*receive)(const uint8_t *,uint32_t)) {(void)receive;assert(0);}
 static uint8_t *queue(unsigned size) {
   assert(qcount<16);unsigned at=(qhead+qcount++)%16;queue_sizes[at]=size;memset(queued[at],0,size);return queued[at];
 }

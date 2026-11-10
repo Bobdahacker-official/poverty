@@ -228,4 +228,11 @@ void platform_fpu_save(void *);
 void platform_fpu_restore(const void *);
 void platform_fpu_initial(void *);
 void user_syscall(struct trap_frame *);
+
+bool rge_init(uint8_t mac[6]);
+bool rge_link(void);
+bool rge_send(const void *,unsigned);
+void rge_poll(void (*)(const uint8_t *,uint32_t));
+void rge_diagnostics(void);
+
 #endif

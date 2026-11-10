@@ -4,7 +4,7 @@ MEMORY ?= 256
 EXT4_DISK ?= avalanche/build/ext4.img
 comma := ,
 EXT4_DRIVE = $(if $(EXT4_DISK),-drive file=$(EXT4_DISK)$(comma)format=raw$(comma)if=ide)
-.PHONY: all run ext4-image ext4-check test packages package sdk netsurf test-netsurf classicube test-classicube test-performance test-calculator test-network-core
+.PHONY: all run ext4-image ext4-check test packages package sdk netsurf test-netsurf classicube test-classicube test-performance test-calculator test-network-core test-rge
 netsurf: all
 	python3 ports/netsurf/build.py
 classicube: all
@@ -57,6 +57,7 @@ test-performance:
 	$(CC) -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/tools/test-canvas-present.c -o avalanche/build/test-canvas-present
 	avalanche/build/test-canvas-present
 test:
+	$(MAKE) test-rge
 	$(MAKE) test-network-core
 	$(MAKE) test-calculator
 	$(MAKE) test-performance
@@ -92,3 +93,9 @@ test:
 	QEMU=$(QEMU) python3 avalanche/tools/test-image-gui.py --ext4
 	$(MAKE) test-netsurf
 	$(MAKE) test-classicube
+
+# Exercise the native Realtek DMA path without requiring a physical adapter.
+test-rge:
+	mkdir -p avalanche/build
+	$(CC) -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/tools/test-rge.c -o avalanche/build/test-rge
+	avalanche/build/test-rge

@@ -5,7 +5,7 @@
 #include "ip_fragment.h"
 #include "virtio.h"
 /* Poll-driven Ethernet. DMA memory is identity mapped and supervisor-only. */
-static enum { NONE, RTL8139, E1000, VIRTIO, PCNET, RTL8169 } nic;
+static enum { NONE, RTL8139, E1000, VIRTIO, PCNET, RTL8169, RGE } nic;
 static uint16_t rtl_port;
 static volatile uint32_t *e1000;
 static uint8_t mac[6];
@@ -77,6 +77,9 @@ static bool same_mac(const uint8_t *a, const uint8_t *b) {
 static bool ethernet_send_raw(const void *frame, uint32_t n) {
   if (!link_ready || n > 1514 || n < 14)
     return false;
+  if (nic == RGE) {
+    bool ok=rge_send(frame,n);if(ok)tx_count++;else drop_count++;return ok;
+  }
   if (nic == RTL8169) {
     bool ok = rtl8169_send(frame, n);
     if (ok) tx_count++;
@@ -243,6 +246,7 @@ void net_init(void) {
     link_ready = true;
     return;
   }
+  if (rge_init(mac)) { nic = RGE; link_ready = true; return; }
   if (rtl8169_init(mac)) { nic = RTL8169; link_ready = true; return; }
   const struct pci_device *d = pci_find(0x10ec, 0x8139);
   if (d && rtl_init(d))
@@ -458,6 +462,7 @@ void net_poll(void) {
   devices_poll();
   if (!link_ready)
     return;
+  if (nic == RGE) { rge_poll(receive); net_service_poll(); tcp_poll(); return; }
   if (nic == RTL8169) { rtl8169_poll(receive); net_service_poll(); tcp_poll(); return; }
   if (nic == PCNET) {
     pcnet_poll(receive);
@@ -594,6 +599,7 @@ void net_info(void) {
                 : nic == RTL8139 ? "RTL8139"
                 : nic == E1000   ? "Intel E1000"
                 : nic == PCNET   ? "AMD PCnet"
+                : nic == RGE ? "Realtek RTL8125/8126/8127"
                 : nic == RTL8169 ? "Realtek RTL8169/8168"
                                  : "none supported");
   console_write(" MAC ");
@@ -627,6 +633,7 @@ void net_snapshot(struct network_info *out) {
                      : nic == RTL8139 ? "RTL8139"
                      : nic == E1000   ? "Intel E1000"
                      : nic == PCNET   ? "AMD PCnet"
+                : nic == RGE ? "Realtek RTL8125/8126/8127"
                 : nic == RTL8169 ? "Realtek RTL8169/8168"
                                       : "No Ethernet adapter";
   memcpy(out->adapter, name, strlen(name) + 1);
@@ -789,7 +796,8 @@ int net_dhcp(void) {
 void net_diagnostics(void) {
   net_info();
   console_write("Ethernet link: ");
-  if(nic==RTL8169)console_write(rtl8169_link()?"up\n":"down\n");
+  if(nic==RGE)console_write(rge_link()?"up\n":"down\n");
+  else if(nic==RTL8169)console_write(rtl8169_link()?"up\n":"down\n");
   else if(nic==E1000)console_write(rd(8)&2?"up\n":"down\n");
   else console_write(link_ready?"driver initialized\n":"no supported driver\n");
   const char *states[]={"off/static","discovering","requesting","bound","renewing","rebinding","retry wait"};
@@ -807,6 +815,7 @@ void net_diagnostics(void) {
     }
   }
   rtl8169_diagnostics();
+  rge_diagnostics();
   tcp_diagnostics();
 }
 static bool skip_name(const uint8_t *p, unsigned n, unsigned *off) {
