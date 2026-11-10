@@ -202,6 +202,22 @@ def main():
         "nsfb_enumerate_surface_types(framebuffer_pick_default_fename, NULL);",
         'nsfb_enumerate_surface_types(framebuffer_pick_default_fename, NULL);\n#ifdef __AVALANCHE__\n\tfename = "avalanche";\n#endif',
     )
+    framebuffer = browser / "netsurf/frontends/framebuffer"
+    for source in (ROOT / "ports/netsurf/avalanche_download.inc",
+                   ROOT / "avalanche/include/magenta.h"):
+        shutil.copyfile(source, framebuffer / source.name)
+    replace(
+        framebuffer / "gui.c",
+        "static struct gui_misc_table framebuffer_misc_table = {",
+        '#include "avalanche_download.inc"\n\n'
+        "static struct gui_misc_table framebuffer_misc_table = {",
+    )
+    replace(
+        framebuffer / "gui.c",
+        "ret = netsurf_register(&framebuffer_table);",
+        "framebuffer_table.download = &magenta_download_table;\n"
+        "\tret = netsurf_register(&framebuffer_table);",
+    )
     (browser / "netsurf/Makefile.config").write_text(
         "NETSURF_FB_RESPATH := /netsurf\nNETSURF_FB_FONTLIB := freetype\nNETSURF_FB_FONTPATH := /netsurf/fonts\nNETSURF_FB_FONT_CURSIVE := DejaVuSerif.ttf\nNETSURF_FB_FONT_FANTASY := DejaVuSans-Bold.ttf\nCFLAGS += -D__AVALANCHE__\nLDFLAGS += -static -no-pie $(shell pkg-config --static --libs libcurl) -L"
         + str(iconv_prefix / "lib")

@@ -4,8 +4,10 @@
 #include "tcp.h"
 #include "ip_fragment.h"
 #include "virtio.h"
+#include "usb.h"
 /* Poll-driven Ethernet. DMA memory is identity mapped and supervisor-only. */
-static enum { NONE, RTL8139, E1000, VIRTIO, PCNET, RTL8169, RGE } nic;
+static enum { NONE, RTL8139, E1000, VIRTIO, PCNET, RTL8169, RGE, USB_ECM } nic, wired_nic;
+static uint8_t wired_mac[6];
 static uint16_t rtl_port;
 static volatile uint32_t *e1000;
 static uint8_t mac[6];
@@ -77,6 +79,12 @@ static bool same_mac(const uint8_t *a, const uint8_t *b) {
 static bool ethernet_send_raw(const void *frame, uint32_t n) {
   if (!link_ready || n > 1514 || n < 14)
     return false;
+  if (nic == USB_ECM) {
+    bool ok = usb_ethernet_send(frame, n);
+    if (ok) tx_count++;
+    else drop_count++;
+    return ok;
+  }
   if (nic == RGE) {
     bool ok=rge_send(frame,n);if(ok)tx_count++;else drop_count++;return ok;
   }
@@ -460,8 +468,18 @@ static void receive_packet(const uint8_t *p, uint32_t n,bool physical) {
 }
 void net_poll(void) {
   devices_poll();
+  uint8_t usb_mac[6];
+  bool usb_present = usb_ethernet_mac(usb_mac);
+  if ((nic == USB_ECM && !usb_present) || (nic == NONE && usb_present))
+    net_use_usb_ethernet(usb_present);
   if (!link_ready)
     return;
+  if (nic == USB_ECM) {
+    usb_ethernet_poll(receive);
+    net_service_poll();
+    tcp_poll();
+    return;
+  }
   if (nic == RGE) { rge_poll(receive); net_service_poll(); tcp_poll(); return; }
   if (nic == RTL8169) { rtl8169_poll(receive); net_service_poll(); tcp_poll(); return; }
   if (nic == PCNET) {
@@ -590,6 +608,25 @@ static void apply_config(uint32_t address, uint32_t netmask, uint32_t router,
 void net_config(uint32_t address, uint32_t netmask, uint32_t router, uint32_t dns) {
   net_dhcp_stop(); apply_config(address, netmask, router, dns);
 }
+bool net_usb_ethernet_selected(void) { return nic == USB_ECM; }
+int net_use_usb_ethernet(bool enable) {
+  if (enable == (nic == USB_ECM)) return 0;
+  uint8_t address[6];
+  if (enable && !usb_ethernet_mac(address)) return -19;
+  net_config(0, 0, 0, 0);
+  if (enable) {
+    wired_nic = nic;
+    memcpy(wired_mac, mac, sizeof(mac));
+    nic = USB_ECM;
+    memcpy(mac, address, sizeof(mac));
+  } else {
+    nic = wired_nic;
+    memcpy(mac, wired_mac, sizeof(mac));
+  }
+  link_ready = nic != NONE;
+  if (link_ready) net_dhcp_begin();
+  return 0;
+}
 void net_dns_servers(uint32_t primary, uint32_t secondary) {
   dns_server = primary; dns_secondary = secondary;
 }
@@ -601,6 +638,7 @@ void net_info(void) {
                 : nic == PCNET   ? "AMD PCnet"
                 : nic == RGE ? "Realtek RTL8125/8126/8127"
                 : nic == RTL8169 ? "Realtek RTL8169/8168"
+                : nic == USB_ECM ? "USB CDC Ethernet"
                                  : "none supported");
   console_write(" MAC ");
   for (unsigned i = 0; i < 6; i++) {
@@ -635,6 +673,7 @@ void net_snapshot(struct network_info *out) {
                      : nic == PCNET   ? "AMD PCnet"
                 : nic == RGE ? "Realtek RTL8125/8126/8127"
                 : nic == RTL8169 ? "Realtek RTL8169/8168"
+                : nic == USB_ECM ? "USB CDC Ethernet"
                                       : "No Ethernet adapter";
   memcpy(out->adapter, name, strlen(name) + 1);
 }

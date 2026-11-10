@@ -1,52 +1,22 @@
 #include "sandbox.h"
 #include "package.h"
 #include "../vendor/bearssl/bearssl.h"
-#include "ext4.h"
 #include "http.h"
-static struct ext4_volume package_volume;
-static bool package_ext4;
-static unsigned package_entries = 32;
-static int package_size(const char *name) {
-  if (!package_ext4)
-    return fs_size(name);
-  struct ext4_inode inode;
-  int r = ext4_lookup(&package_volume, name, &inode);
-  return r ? r : inode.size > INT32_MAX ? -27 : (int)inode.size;
-}
-static int package_read(const char *name, void *data, uint32_t capacity) {
-  if (!package_ext4)
-    return fs_read(name, data, capacity);
-  struct ext4_inode inode;
-  int r = ext4_lookup(&package_volume, name, &inode);
-  if (r)
-    return r;
-  if (inode.size > capacity)
-    return -27;
-  return ext4_read(&package_volume, &inode, 0, data, inode.size);
-}
-static int package_write(const char *name, const void *data, uint32_t size) {
-  return package_ext4 ? ext4_replace(&package_volume, name, data, size)
-                      : fs_write(name, data, size);
-}
-static int package_remove(const char *name) {
-  return package_ext4 ? ext4_remove(&package_volume, name) : fs_remove(name);
-}
+#define STBI_NO_STDIO
+#include "../vendor/stb/stb_image.h"
+#define PACKAGE_RECORD_CAPACITY 640
+static unsigned package_entries;
 static bool package_entry(unsigned index, char *name, uint32_t *size) {
-  if (!package_ext4)
-    return fs_entry(index, name, size);
   char full[256];
   uint64_t length;
-  if (ext4_entry(&package_volume, "/", index, full, &length) ||
-      strlen(full) > 31 || length > UINT32_MAX)
+  bool directory;
+  if (fs_browse("/", index, full, &length, &directory) ||
+      directory || strlen(full) > 31 || length > UINT32_MAX)
     return false;
   memcpy(name, full, strlen(full) + 1);
   *size = length;
   return true;
 }
-#define fs_size package_size
-#define fs_read package_read
-#define fs_write package_write
-#define fs_remove package_remove
 #define fs_entry package_entry
 struct package {
   const char *name, *version;
@@ -103,7 +73,7 @@ static int transaction_recover(void) {
       t.binary_size < -1 || t.binary_size > (int)sizeof(previous) ||
       t.record_size < -1 || t.record_size > 512)
     return -74;
-  char record[512], db[32];
+  char record[PACKAGE_RECORD_CAPACITY], db[32];
   uint8_t digest[32];
   memcpy(db, "pkg-", 4);
   memcpy(db + 4, t.name, strlen(t.name) + 1);
@@ -141,7 +111,7 @@ static int transaction_begin(const char *name) {
   if (!safe_name(name) || fs_size(transaction_file) >= 0)
     return -16;
   struct package_transaction t = {0};
-  char db[32], record[512];
+  char db[32], record[PACKAGE_RECORD_CAPACITY];
   t.magic = 0x50545831;
   memcpy(t.name, name, strlen(name) + 1);
   memcpy(db, "pkg-", 4);
@@ -237,12 +207,45 @@ static bool signature_valid(const br_x509_pkey *key, const void *signature,
                 &key->key.rsa, actual) &&
          same_digest(expected, actual);
 }
-static int verify_manifest(const char *host, const char *path, const void *data,
-                           unsigned size) {
+struct bundle_entry {
+  char name[48];
+  const uint8_t *data;
+  unsigned method, packed, size;
+  uint32_t checksum;
+};
+struct package_bundle {
+  struct bundle_entry entries[4];
+  unsigned count;
+};
+static int bundle_read(const struct package_bundle *bundle, const char *name,
+                       void *out, unsigned capacity) {
+  for (unsigned i = 0; i < bundle->count; i++) {
+    const struct bundle_entry *entry = &bundle->entries[i];
+    if (!str_eq(entry->name, name)) continue;
+    if (entry->size > capacity) return -27;
+    if (!entry->method)
+      memcpy(out, entry->data, entry->size);
+    else if (stbi_zlib_decode_noheader_buffer(out, entry->size,
+                    (const char *)entry->data, entry->packed) != (int)entry->size)
+      return -74;
+    return crc32(out, entry->size) == entry->checksum ? (int)entry->size : -74;
+  }
+  return -2;
+}
+static int package_source(const char *host, const struct package_bundle *bundle,
+                          const char *path, void *out, unsigned capacity) {
+  if (host) return package_download(host, path, out, capacity);
+  if (bundle) return bundle_read(bundle, path, out, capacity);
+  return fs_read(path, out, capacity);
+}
+static int verify_manifest(const char *host, const struct package_bundle *bundle,
+                           const char *path, const void *data, unsigned size,
+                           uint8_t publisher[32]) {
   int count =
       fs_read(".pkg-trust.der", trust_certificate, sizeof(trust_certificate));
   if (count < 0)
     return -13;
+  sha256(trust_certificate, count, publisher);
   const br_x509_pkey *key = trust_key(trust_certificate, count);
   if (!key)
     return -74;
@@ -253,7 +256,7 @@ static int verify_manifest(const char *host, const char *path, const void *data,
   memcpy(location, path, length);
   memcpy(location + length, ".sig", 5);
   uint8_t signature[512];
-  count = package_download(host, location, signature, sizeof(signature));
+  count = package_source(host, bundle, location, signature, sizeof(signature));
   if (count < 0)
     return count;
   if (!signature_valid(key, signature, count, data, size))
@@ -271,9 +274,9 @@ static bool installed(unsigned n) {
 }
 static bool required(const char *name) {
   for (unsigned slot = 0; slot < package_entries; slot++) {
-    char db[32], record[512];
+    char db[32], record[PACKAGE_RECORD_CAPACITY];
     uint32_t size;
-    if (!fs_entry(slot, db, &size) || size >= sizeof(record) || db[0] != 'p' ||
+    if (!package_entry(slot, db, &size) || size >= sizeof(record) || db[0] != 'p' ||
         db[1] != 'k' || db[2] != 'g' || db[3] != '-')
       continue;
     int n = fs_read(db, record, sizeof(record) - 1);
@@ -341,7 +344,7 @@ static bool version_allowed(const char *name, const char *version) {
   uint32_t incoming[3], installed_version[3];
   if (!version_parts(version, incoming))
     return false;
-  char db[32], record[512];
+  char db[32], record[PACKAGE_RECORD_CAPACITY];
   memcpy(db, "pkg-", 4);
   memcpy(db + 4, name, strlen(name) + 1);
   int count = fs_read(db, record, sizeof(record) - 1);
@@ -454,12 +457,16 @@ static int install(unsigned n, unsigned visiting) {
   console_putc('\n');
   return 0;
 }
-static int fetch(const char *host, const char *path) {
+static int fetch(const char *host, const struct package_bundle *bundle,
+                 const char *path) {
   char record[512], parsed[512];
-  int n = package_download(host, path, record, sizeof(record) - 1);
+  int n = package_source(host, bundle, path, record, sizeof(record) - 1);
   if (n < 0)
     return n;
-  int verification = verify_manifest(host, path, record, n);
+  if (__builtin_memchr(record, 0, n))
+    return -22;
+  uint8_t publisher[32];
+  int verification = verify_manifest(host, bundle, path, record, n, publisher);
   if (verification)
     return verification;
   record[n] = 0;
@@ -493,6 +500,8 @@ static int fetch(const char *host, const char *path) {
       !str_eq(name, file) || strlen(hash) != 64 || !strlen(version) ||
       strlen(version) > 31)
     return -22;
+  if (!host && (strlen(name) <= 6 || !str_eq(name + strlen(name) - 6, ".mgnta")))
+    return -22;
   uint32_t capability_mask = AV_CAP_ALL;
   if (capabilities) {
     bool valid;
@@ -514,16 +523,6 @@ static int fetch(const char *host, const char *path) {
     else
       expected[i / 2] |= digit;
   }
-  if (*dependency) {
-    unsigned dep = 0;
-    while (dep < COUNT && !str_eq(dependency, catalog[dep].name))
-      dep++;
-    if (dep == COUNT)
-      return -2;
-    int r = install(dep, 0);
-    if (r)
-      return r;
-  }
   char location[256];
   unsigned prefix = 0;
   for (unsigned i = 0; path[i]; i++)
@@ -533,13 +532,26 @@ static int fetch(const char *host, const char *path) {
     return -36;
   memcpy(location, path, prefix);
   memcpy(location + prefix, file, strlen(file) + 1);
-  int count = package_download(host, location, image, sizeof(image));
+  static uint8_t payload[FS_MAX_FILE];
+  int count = package_source(host, bundle, location, payload, sizeof(payload));
   if (count < 0)
     return count;
-  sha256(image, count, actual);
+  sha256(payload, count, actual);
   for (unsigned i = 0; i < 32; i++)
     if (expected[i] != actual[i])
       return -74;
+  if (count < 4 || __builtin_memcmp(payload, "\177ELF", 4))
+    return -22;
+  if (*dependency) {
+    unsigned dep = 0;
+    while (dep < COUNT && !str_eq(dependency, catalog[dep].name))
+      dep++;
+    if (dep == COUNT)
+      return -2;
+    int result = install(dep, 0);
+    if (result)
+      return result;
+  }
   if (capabilities) {
     int security = sandbox_profile(expected, capability_mask);
     if (security < 0) return security;
@@ -550,13 +562,26 @@ static int fetch(const char *host, const char *path) {
   int r = transaction_begin(name);
   if (r)
     return r;
-  r = fs_write(name, image, count);
+  r = fs_write(name, payload, count);
   if (r < 0)
     return r;
   char db[32];
   memcpy(db, "pkg-", 4);
   memcpy(db + 4, name, strlen(name) + 1);
-  r = fs_write(db, record, n);
+  char receipt[sizeof(record) + 90];
+  memcpy(receipt, record, n);
+  unsigned used = n;
+  if (!used || receipt[used - 1] != '\n') receipt[used++] = '\n';
+  static const char publisher_key[] = "publisher-sha256 ";
+  memcpy(receipt + used, publisher_key, sizeof(publisher_key) - 1);
+  used += sizeof(publisher_key) - 1;
+  static const char hex[] = "0123456789abcdef";
+  for (unsigned i = 0; i < 32; i++) {
+    receipt[used++] = hex[publisher[i] >> 4];
+    receipt[used++] = hex[publisher[i] & 15];
+  }
+  receipt[used++] = '\n';
+  r = fs_write(db, receipt, used);
   if (r < 0) {
     transaction_recover();
     return r;
@@ -579,20 +604,89 @@ static int fetch(const char *host, const char *path) {
   console_putc('\n');
   return 0;
 }
-void package_command(char *args) {
-  package_ext4 = false;
-  package_entries = 32;
-  for (unsigned disk = 0; disk < disk_count(); disk++)
-    if (!ext4_mount(&package_volume, disk, 0)) {
-      package_ext4 = true;
-      package_entries = 0;
-      char name[256];
-      uint64_t size;
-      while (package_entries < 65536 &&
-             !ext4_entry(&package_volume, "/", package_entries, name, &size))
-        package_entries++;
-      break;
+static unsigned zip16(const uint8_t *data) {
+  return data[0] | ((unsigned)data[1] << 8);
+}
+static uint32_t zip32(const uint8_t *data) {
+  return zip16(data) | ((uint32_t)zip16(data + 2) << 16);
+}
+static int install_bundle(const char *path) {
+  static uint8_t archive[FS_MAX_FILE + 16384];
+  int bytes = fs_read(path, archive, sizeof(archive));
+  if (bytes < 0) return bytes;
+  struct package_bundle bundle = {0};
+  unsigned size = bytes, offset = 0;
+  const char *manifest = NULL;
+  while (offset + 4 <= size && zip32(archive + offset) == 0x04034b50) {
+    if (bundle.count == 4 || size - offset < 30) return -22;
+    const uint8_t *header = archive + offset;
+    unsigned flags = zip16(header + 6), method = zip16(header + 8);
+    unsigned packed = zip32(header + 18), unpacked = zip32(header + 22);
+    unsigned name_length = zip16(header + 26), extra = zip16(header + 28);
+    struct bundle_entry *entry = &bundle.entries[bundle.count];
+    unsigned prefix = 30 + name_length + extra;
+    if ((flags & ~0x800u) || (method != 0 && method != 8) ||
+        !name_length || name_length >= sizeof(entry->name) ||
+        prefix > size - offset || packed > size - offset - prefix ||
+        unpacked > FS_MAX_FILE || (!method && packed != unpacked))
+      return -22;
+    for (unsigned i = 0; i < name_length; i++) {
+      uint8_t c = header[30 + i];
+      if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '.' || c == '-' || c == '_'))
+        return -22;
+      entry->name[i] = c;
     }
+    for (unsigned i = 0; i < bundle.count; i++)
+      if (str_eq(bundle.entries[i].name, entry->name)) return -22;
+    entry->data = header + prefix;
+    entry->method = method;
+    entry->packed = packed;
+    entry->size = unpacked;
+    entry->checksum = zip32(header + 14);
+    if (name_length > 9 && str_eq(entry->name + name_length - 9, ".manifest")) {
+      if (manifest) return -22;
+      manifest = entry->name;
+    }
+    bundle.count++;
+    offset += prefix + packed;
+  }
+  if (bundle.count != 4 || !manifest || size - offset < 4 ||
+      zip32(archive + offset) != 0x02014b50)
+    return -22;
+  unsigned basename = strlen(manifest) - 9;
+  char executable[48], signature[52];
+  memcpy(executable, manifest, basename);
+  executable[basename] = 0;
+  if (!safe_name(executable)) return -22;
+  unsigned manifest_length = strlen(manifest);
+  memcpy(signature, manifest, manifest_length);
+  memcpy(signature + manifest_length, ".sig", 5);
+  unsigned matches = 0;
+  for (unsigned i = 0; i < bundle.count; i++) {
+    const char *name = bundle.entries[i].name;
+    matches += str_eq(name, executable) || str_eq(name, signature) ||
+               str_eq(name, "trust.der");
+  }
+  if (matches != 3) return -22;
+  return fetch(NULL, &bundle, manifest);
+}
+int package_install_local(const char *manifest_path) {
+  int recovery = transaction_recover();
+  if (recovery) return recovery;
+  unsigned length = strlen(manifest_path);
+  if (length >= 4 && str_eq(manifest_path + length - 4, ".zip"))
+    return install_bundle(manifest_path);
+  return fetch(NULL, NULL, manifest_path);
+}
+void package_command(char *args) {
+  package_entries = 0;
+  char entry[256];
+  uint64_t size;
+  bool directory;
+  while (package_entries < 65536 &&
+         !fs_browse("/", package_entries, entry, &size, &directory))
+    package_entries++;
   int recovery = transaction_recover();
   if (recovery) {
     console_write("Package recovery failed. Package changes blocked.\n");
@@ -634,7 +728,7 @@ void package_command(char *args) {
     return;
   }
   if (str_eq(action, "fetch")) {
-    int r = fetch(name, word(&args));
+    int r = fetch(name, NULL, word(&args));
     if (r < 0) {
       console_write("Package download error ");
       print_uint(-r);
@@ -653,7 +747,7 @@ void package_command(char *args) {
     for (unsigned slot = 0; slot < package_entries; slot++) {
       char db[32];
       uint32_t size;
-      if (!fs_entry(slot, db, &size) || db[0] != 'p' || db[1] != 'k' ||
+      if (!package_entry(slot, db, &size) || db[0] != 'p' || db[1] != 'k' ||
           db[2] != 'g' || db[3] != '-')
         continue;
       bool known = false;
@@ -661,7 +755,26 @@ void package_command(char *args) {
         if (str_eq(db + 4, catalog[i].name))
           known = true;
       if (!known && match(db + 4, name)) {
+        char version[32] = "unknown", record[PACKAGE_RECORD_CAPACITY];
+        int count = fs_read(db, record, sizeof(record) - 1);
+        if (count >= 0) {
+          record[count] = 0;
+          for (char *line = record; *line;) {
+            char *end = line;
+            while (*end && *end != '\n') end++;
+            unsigned length = end - line;
+            if (length > 8 && length < sizeof(version) + 8 &&
+                !__builtin_memcmp(line, "version ", 8)) {
+              memcpy(version, line + 8, length - 8);
+              version[length - 8] = 0;
+              break;
+            }
+            line = *end ? end + 1 : end;
+          }
+        }
         console_write(db + 4);
+        console_putc(' ');
+        console_write(version);
         console_write(" installed\n");
       }
     }
@@ -675,7 +788,7 @@ void package_command(char *args) {
       console_write("Package not found\n");
       return;
     }
-    char db[32], record[512];
+    char db[32], record[PACKAGE_RECORD_CAPACITY];
     memcpy(db, "pkg-", 4);
     memcpy(db + 4, name, strlen(name) + 1);
     int size = fs_read(db, record, sizeof(record) - 1);
@@ -708,7 +821,7 @@ void package_command(char *args) {
   if (str_eq(action, "install") || str_eq(action, "upgrade"))
     r = install(n, 0);
   else if (str_eq(action, "query")) {
-    char out[512], db[32];
+    char out[PACKAGE_RECORD_CAPACITY], db[32];
     database_name(n, db);
     r = installed(n) ? fs_read(db, out, sizeof(out) - 1) : manifest(n, out);
     if (r >= 0) {

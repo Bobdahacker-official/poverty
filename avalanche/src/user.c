@@ -776,6 +776,7 @@ void process_exit(struct process *t, int status, int signal) {
   if (!t || t->state == TASK_ZOMBIE || t->state == TASK_EMPTY)
     return;
   client_destroy(t->pid);
+  gui_download_disconnect(t->pid);
   if (tcp_owner == t->pid)
     tcp_cleanup = true;
   t->status = status;

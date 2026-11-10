@@ -443,6 +443,30 @@ int fs_write(const char *name, const void *data, uint32_t size) {
   r->crc = crc32(data, size);
   return commit(candidate) ? (int)size : -3;
 }
+int fs_write_new_stream(const char *path, const void *data, uint32_t size) {
+  if (!sandbox_write_allowed(path)) return -13;
+  const char *relative = path;
+  int error;
+  struct ext4_volume *volume = volume_for(&relative, true, &error);
+  if (error) return error;
+  struct file_metadata existing;
+  int status = fs_metadata(path, &existing);
+  if (status != -2) return status ? status : -17;
+  if (size <= FS_MAX_FILE || !volume) return fs_write(path, data, size);
+  struct ext4_inode inode;
+  int result = ext4_create(volume, relative, &inode);
+  if (result < 0) return result;
+  const uint8_t *bytes = data;
+  for (uint32_t offset = 0; offset < size;) {
+    unsigned count = size - offset > 4096 ? 4096 : size - offset;
+    result = ext4_write(volume, &inode, offset, bytes + offset, count);
+    if (result != (int)count) return result < 0 ? result : -5;
+    offset += count;
+    result = ext4_inode_read(volume, inode.number, &inode);
+    if (result < 0) return result;
+  }
+  return size;
+}
 int fs_mkdir(const char *path) {
   if (!sandbox_write_allowed(path)) return -13;
   int error;

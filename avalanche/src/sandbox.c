@@ -106,7 +106,7 @@ bool sandbox_linux(struct process *p,unsigned call,bool x64) {
   uint32_t need=0;
   if(x64) {
     switch(call) {
-    case 4096:case 4097:case 4098:case 4099:need=AV_CAP_GUI;break;
+    case 4096:case 4097:case 4098:case 4099:case AV_LINUX_DOWNLOAD:need=AV_CAP_GUI;break;
     case 41:case 42:case 43:case 48:case 49:case 50:case 288:case 44:case 45:case 51:case 52:case 54:case 55:case 4100:need=AV_CAP_NETWORK;break;
     case 56:case 57:case 59:need=AV_CAP_EXEC;break;
     case 62:case 234:need=AV_CAP_PROCESSES;break;

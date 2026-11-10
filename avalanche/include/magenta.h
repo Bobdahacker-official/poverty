@@ -47,6 +47,16 @@ enum av_gui_event_type {
   AV_GUI_MOUSE,
   AV_GUI_QUIT
 };
+#define AV_LINUX_DOWNLOAD 4101
+enum av_download_operation {
+  AV_DOWNLOAD_BEGIN, AV_DOWNLOAD_DATA, AV_DOWNLOAD_DONE, AV_DOWNLOAD_FAILED,
+  AV_DOWNLOAD_STATUS
+};
+struct av_download_request {
+  uint32_t operation, id, size;
+  uint64_t total, data;
+  char filename[128];
+};
 struct av_audio_status {
   uint32_t available, playing, rate, channels, frames_played, frames_total;
   int32_t error;

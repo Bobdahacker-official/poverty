@@ -6,6 +6,8 @@ The SDK builds native `.mgnta` executables and signs their manifests with RSA/SH
 
 In the browser desktop, Upload app opens the signed-bundle uploader. It verifies the executable hash and signature. Packages can trust the uploaded developer certificate and install the app, repeating verification inside Avalanche. The upload bridge address is editable in Packages. The private signing key stays on the development machine.
 
+To install directly from disk, open an SDK-produced `.mgnta.zip` or `.mgnta.manifest` in Files and confirm in Packages. Pin the developer's DER certificate separately with `pkg trust` before installing. Magenta verifies the manifest signature and executable hash with that pinned certificate. Installed applications appear in the launcher and Packages. Package details show the signed version and capabilities, plus the verified signer's certificate fingerprint for new installations.
+
 System Monitor has an Applications view for built-in desktop windows and a Processes view for ring-3 programs. Applications can be focused or closed from the live window list. The compositor copies changed framebuffer regions, and extended keyboard events use a queue so fast game input is retained.
 
 Terminal includes `ps`, `uname`, `pwd`, `clear`, `date`, `free`, `uptime`, `mkdir`, `cp`, `mv`, `wc`, `head`, and `grep`, alongside the existing shell commands. The desktop Terminal can pass up to 64 KiB of text between supported commands, such as `ps | grep worker` or `grep error /log | head`. Use `>` to replace a file with the output or `>>` to append to it. Pipelines support the built-in `ps`, `echo`, `cat`, `head`, `grep`, and `wc` commands.
@@ -65,6 +67,10 @@ Open **Drives** in Files to browse a second clean ext4 volume without replacing 
 
 The editor supports Save As, Find Next, and Go to Line. It periodically saves a recovery draft for unsaved edits and offers to recover it after reopening the desktop. The original file is written when you choose Save.
 
+In **Settings → Workspaces**, enable **Restore desktop after reboot** to keep built-in window positions, the current Files location, and browser tab addresses. The separate document option reopens the last saved text document. Unsaved text is handled by draft recovery. Native apps and playback are left closed after reboot.
+
+**Files → Downloads** accepts page saves from Browser and file transfers from the Magenta NetSurf frontend. Choose a destination, cancel a queued transfer, or open the containing folder after saving. NetSurf transfers show progress. Downloads are staged in memory, with up to four entries and 1 MiB per entry. A failed disk write can leave a `.part` file. Completed filenames are assigned only after the full payload is written.
+
 ![Files](Images/files.png)
 
 Right-click an app in the launcher or dock to add a desktop shortcut. Right-click its desktop icon to remove the shortcut.
@@ -85,6 +91,8 @@ Ctrl-T opens Terminal; Ctrl-F opens Files; Ctrl-E opens the editor. Ctrl-K, Ctrl
 System Monitor has live process and performance views, per-process CPU samples, memory usage, a name/PID filter, pause/resume, priority controls, and process termination. Its kernel entry represents the built-in desktop apps, which share the kernel rather than appearing as separate userspace processes. The CPU graph measures actual userspace timer ticks; the remaining CPU time includes both kernel work and idle time. History keeps the last 60 samples.
 
 ## Networking
+
+Network can switch to a compatible USB CDC-ECM Ethernet adapter or tethering device connected through xHCI. Switching adapters starts a fresh IPv4 DHCP lease. **Network → Bluetooth LE** can discover nearby advertisers with a compatible USB HCI controller. The Bluetooth view lists advertisements and signal strength. It does not pair devices or provide Bluetooth audio. USB tethering supplies Ethernet frames to Magenta and does not configure the tethering device's Wi-Fi.
 
 Connections start with DHCP or a saved static profile. DHCP runs in the background and handles lease renewal, rebinding, expiry, and negative acknowledgements. Addresses and DNS servers come from the selected profile or DHCP server. `netdiag` shows the adapter, PCI IDs, link state, lease details, and live TCP connections.
 
@@ -135,6 +143,8 @@ USB disks connected at boot use SCSI commands over Bulk-Only Transport on UHCI o
 Keyboard and mouse reports continue to be processed during bulk disk transfers. A separate check disables PS/2 and types commands through a USB keyboard while writes are in progress on a disk attached to the same hub.
 
 Intel HD Audio supplies analogue PCM playback. Codec discovery follows pin, selector, mixer, and DAC connections; it configures power, amplifiers, stream format, and the output stream. A DMA ring buffers playback while polling refills it from storage. Mono and stereo PCM16 WAV playback supports 8, 16, 22.05, 24, 32, 44.1, 48, and 96 kHz when the codec accepts the rate. Tests capture the emulated audio output and check the actual stereo samples, including playback from a ring-3 app and a responsive Music window.
+
+Music lists analogue output paths discovered across PCI HDA controllers and offers volume and mute where the codec exposes adjustable gain. Pause playback before switching jacks. HDMI/DisplayPort, USB audio, and microphone capture use separate driver paths and are outside this playback implementation.
 
 The kernel maps physical addresses through 64 GiB. Allocated pages use a separate, supervisor-only memory mapping, so RAM above 4 GiB stays accessible while applications run. Native programs have a 64 MiB address window and up to 64 MiB of mapped pages, with 64 KiB reserved for the stack. Disk-backed ELF files can be up to 32 MiB. `mem` reports managed RAM, free pages, and allocations above 4 GiB. The memory checks boot with 256 MiB, 8 GiB, and 32 GiB and run an ext4 executable with 16 MiB of writable data.
 

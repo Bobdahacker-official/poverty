@@ -1245,6 +1245,9 @@ void linux_syscall64(struct trap_frame *f) {
      rather than truncating them into a different, valid user allocation. */
   unsigned alias = 0;
   switch (f->eax) {
+  case AV_LINUX_DOWNLOAD:
+    result = a > UINT32_MAX ? -14 : gui_download_call(t, a);
+    break;
   case 200:
     result = user_kill((int)a, (int)b);
     break;

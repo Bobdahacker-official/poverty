@@ -21,7 +21,7 @@ struct device {
   uint8_t input[2112] __attribute__((aligned(64)));
   struct endpoint ep[32];
   uint8_t descriptor[512] __attribute__((aligned(64)));
-  uint8_t report[16] __attribute__((aligned(64)));
+  uint8_t report[272] __attribute__((aligned(64)));
   uint8_t old_keys[6], modifiers;
   unsigned slot, port, speed, packet, hid, hid_ep, hid_packet;
   unsigned route, depth, tt_slot, tt_port;
@@ -46,6 +46,153 @@ static unsigned command_code, command_slot;
 static bool running, polling, command_done;
 static bool port_present[64], port_pending[64];
 static uint32_t port_changed[64];
+static struct {
+  unsigned slot, input, output, output_packet;
+  uint8_t mac[6];
+} ethernet;
+static uint8_t ethernet_rx[1536] __attribute__((aligned(4096)));
+enum { BT_MISSING, BT_IDLE, BT_STARTING, BT_SCANNING, BT_STOPPING, BT_FAILED };
+static struct {
+  unsigned slot, state, phase, count;
+  uint16_t opcode;
+  uint32_t deadline;
+  bool requested, waiting;
+  unsigned event_used;
+  uint8_t event[257];
+  struct bluetooth_peer peers[24];
+} bluetooth;
+unsigned usb_bluetooth_state(void) { return bluetooth.state; }
+bool usb_bluetooth_scan(bool enabled) {
+  if (!bluetooth.slot) return false;
+  bluetooth.requested = enabled;
+  if (enabled && bluetooth.state == BT_FAILED) bluetooth.state = BT_IDLE;
+  return true;
+}
+unsigned usb_bluetooth_peers(struct bluetooth_peer *out, unsigned capacity) {
+  unsigned count = bluetooth.count < capacity ? bluetooth.count : capacity;
+  memcpy(out, bluetooth.peers, count * sizeof(*out));
+  return count;
+}
+static void bluetooth_advertisement(const uint8_t *data, unsigned length) {
+  if (length < 2 || data[0] != 2 || bluetooth.state != BT_SCANNING) return;
+  unsigned reports = data[1];
+  data += 2;
+  length -= 2;
+  for (unsigned i = 0; i < reports && length >= 10; i++) {
+    unsigned size = data[8];
+    if (size > length - 10) return;
+    unsigned index = 0;
+    while (index < bluetooth.count &&
+           (bluetooth.peers[index].address_type != data[1] ||
+            __builtin_memcmp(bluetooth.peers[index].address, data + 2, 6)))
+      index++;
+    if (index == bluetooth.count) {
+      if (bluetooth.count < sizeof(bluetooth.peers) / sizeof(bluetooth.peers[0]))
+        bluetooth.count++;
+      else {
+        index = 0;
+        for (unsigned n = 1; n < bluetooth.count; n++)
+          if ((uint32_t)(clock_ticks() - bluetooth.peers[n].last_seen) >
+              (uint32_t)(clock_ticks() - bluetooth.peers[index].last_seen))
+            index = n;
+      }
+      memset(&bluetooth.peers[index], 0, sizeof(bluetooth.peers[index]));
+    }
+    struct bluetooth_peer *peer = &bluetooth.peers[index];
+    peer->address_type = data[1];
+    memcpy(peer->address, data + 2, sizeof(peer->address));
+    peer->rssi = (int8_t)data[9 + size];
+    peer->last_seen = clock_ticks();
+    for (unsigned at = 0; at < size;) {
+      unsigned field = data[9 + at];
+      if (!field || field > size - at - 1) break;
+      unsigned type = data[10 + at];
+      if (type == 9 || (type == 8 && !peer->name[0])) {
+        unsigned name_length = field - 1;
+        if (name_length >= sizeof(peer->name)) name_length = sizeof(peer->name) - 1;
+        for (unsigned n = 0; n < name_length; n++) {
+          uint8_t c = data[11 + at + n];
+          peer->name[n] = c >= 32 && c < 127 ? c : '?';
+        }
+        peer->name[name_length] = 0;
+      }
+      at += field + 1;
+    }
+    data += size + 10;
+    length -= size + 10;
+  }
+}
+static void bluetooth_event(const uint8_t *event, unsigned size) {
+  if (size < 2 || event[1] != size - 2) return;
+  if (event[0] == 0x3e) {
+    bluetooth_advertisement(event + 2, size - 2);
+    return;
+  }
+  if (event[0] != 0x0e || size < 6 || !bluetooth.waiting ||
+      (event[3] | ((unsigned)event[4] << 8)) != bluetooth.opcode)
+    return;
+  bluetooth.waiting = false;
+  if (event[5]) {
+    bluetooth.state = BT_FAILED;
+    bluetooth.requested = false;
+  } else if (bluetooth.state == BT_STOPPING)
+    bluetooth.state = BT_IDLE;
+  else if (++bluetooth.phase == 4)
+    bluetooth.state = BT_SCANNING;
+}
+static void bluetooth_receive(const uint8_t *packet, unsigned size) {
+  while (size--) {
+    bluetooth.event[bluetooth.event_used++] = *packet++;
+    if (bluetooth.event_used >= 2 &&
+        bluetooth.event_used == (unsigned)bluetooth.event[1] + 2) {
+      bluetooth_event(bluetooth.event, bluetooth.event_used);
+      bluetooth.event_used = 0;
+    }
+  }
+}
+static void service_bluetooth(void) {
+  if (!bluetooth.slot) return;
+  if (bluetooth.waiting) {
+    if ((int32_t)(clock_ticks() - bluetooth.deadline) >= 0) {
+      bluetooth.waiting = bluetooth.requested = false;
+      bluetooth.state = BT_FAILED;
+    }
+    return;
+  }
+  if (bluetooth.state == BT_IDLE && bluetooth.requested) {
+    bluetooth.state = BT_STARTING;
+    bluetooth.phase = bluetooth.count = 0;
+  }
+  if (bluetooth.state == BT_SCANNING && !bluetooth.requested)
+    bluetooth.state = BT_STOPPING;
+  if (bluetooth.state != BT_STARTING && bluetooth.state != BT_STOPPING)
+    return;
+  uint8_t reset[] = {0x03, 0x0c, 0};
+  uint8_t event_mask[] = {0x01, 0x0c, 8, 0x00, 0x60, 0, 0, 0, 0, 0, 0x20};
+  uint8_t parameters[] = {0x0b, 0x20, 7, 0, 0x60, 0, 0x30, 0, 0, 0};
+  uint8_t enable[] = {0x0c, 0x20, 2, bluetooth.state == BT_STARTING, 0};
+  const uint8_t *command_data = enable;
+  unsigned size = sizeof(enable);
+  if (bluetooth.state == BT_STARTING && bluetooth.phase == 0) {
+    command_data = reset;
+    size = sizeof(reset);
+  } else if (bluetooth.state == BT_STARTING && bluetooth.phase == 1) {
+    command_data = event_mask;
+    size = sizeof(event_mask);
+  } else if (bluetooth.state == BT_STARTING && bluetooth.phase == 2) {
+    command_data = parameters;
+    size = sizeof(parameters);
+  }
+  bluetooth.opcode = command_data[0] | ((uint16_t)command_data[1] << 8);
+  bluetooth.deadline = clock_ticks() + 200;
+  bluetooth.waiting = true;
+  uint8_t command_buffer[sizeof(event_mask)];
+  memcpy(command_buffer, command_data, size);
+  if (!xhci_control(bluetooth.slot, 0x20, 0, 0, 0, command_buffer, size)) {
+    bluetooth.waiting = bluetooth.requested = false;
+    bluetooth.state = BT_FAILED;
+  }
+}
 static uint32_t read_reg(volatile uint32_t *base, unsigned offset) {
   return base[offset / 4];
 }
@@ -162,6 +309,8 @@ void xhci_poll(void) {
     else if (device->hid == 2 && ep->actual >= 3)
       mouse_feed_relative((int8_t)device->report[1], (int8_t)device->report[2],
                           device->report[0]);
+    else if (device->hid == 3 && device->slot == bluetooth.slot)
+      bluetooth_receive(device->report, ep->actual);
     arm_hid(device);
   }
   polling = false;
@@ -255,7 +404,7 @@ int xhci_bulk(unsigned slot, unsigned endpoint, void *data, unsigned size,
               bool input) {
   struct device *device = find(slot);
   unsigned dci = endpoint * 2 + (input ? 1 : 0);
-  if (!running || !device || !endpoint || dci >= 32 || !size ||
+  if (!running || !device || !endpoint || dci >= 32 || (input && !size) ||
       size > sizeof(bounce))
     return -1;
   struct endpoint *ep = &device->ep[dci];
@@ -294,6 +443,134 @@ static bool descriptor(struct device *device, unsigned kind, unsigned size) {
   memset(device->descriptor, 0, sizeof(device->descriptor));
   return xhci_control(device->slot, 0x80, 6, kind << 8, 0, device->descriptor,
                       size);
+}
+static int ethernet_hex(uint8_t c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+static bool ethernet_address(unsigned slot, unsigned index, uint8_t mac[6]) {
+  uint8_t text[26] = {0};
+  if (!index || !xhci_control(slot, 0x80, 6, 0x300, 0, text, 4) ||
+      text[0] < 4 || text[1] != 3)
+    return false;
+  unsigned language = text[2] | ((unsigned)text[3] << 8);
+  memset(text, 0, sizeof(text));
+  if (!xhci_control(slot, 0x80, 6, 0x300 | index, language, text, sizeof(text)) ||
+      text[0] != sizeof(text) || text[1] != 3)
+    return false;
+  unsigned nonzero = 0;
+  for (unsigned i = 0; i < 6; i++) {
+    int high = ethernet_hex(text[2 + 4 * i]);
+    int low = ethernet_hex(text[4 + 4 * i]);
+    if (high < 0 || low < 0 || text[3 + 4 * i] || text[5 + 4 * i]) return false;
+    mac[i] = (high << 4) | low;
+    nonzero |= mac[i];
+  }
+  return nonzero && !(mac[0] & 1);
+}
+static bool ethernet_configure(struct device *device, unsigned total) {
+  if (ethernet.slot) return false;
+  unsigned control = 256, data_interface = 256, mac_index = 0, segment = 0;
+  bool in_control = false;
+  for (unsigned at = 0; at + 2 <= total;) {
+    const uint8_t *d = device->descriptor + at;
+    if (d[0] < 2 || d[0] > total - at) return false;
+    if (d[1] == 4 && d[0] >= 9) {
+      in_control = d[3] == 0 && d[5] == 2 && d[6] == 6 && d[7] == 0;
+      if (in_control) {
+        if (control != 256) break;
+        control = d[2];
+      }
+    } else if (in_control && d[1] == 0x24 && d[0] >= 5) {
+      if (d[2] == 6 && d[3] == control)
+        data_interface = d[4];
+      if (d[2] == 15 && d[0] >= 13) {
+        mac_index = d[3];
+        segment = d[8] | ((unsigned)d[9] << 8);
+      }
+    }
+    at += d[0];
+  }
+  if (control == 256 || data_interface == 256 || segment < 1514) return false;
+  unsigned alternate = 0, input = 0, output = 0, in_packet = 0, out_packet = 0;
+  bool in_data = false;
+  for (unsigned at = 0; at + 2 <= total;) {
+    const uint8_t *d = device->descriptor + at;
+    if (d[0] < 2 || d[0] > total - at) return false;
+    if (d[1] == 4 && d[0] >= 9) {
+      if (input && output) break;
+      input = output = 0;
+      in_data = d[2] == data_interface && d[5] == 10;
+      if (in_data) alternate = d[3];
+    } else if (in_data && d[1] == 5 && d[0] >= 7 && (d[3] & 3) == 2) {
+      unsigned packet = (d[4] | ((unsigned)d[5] << 8)) & 2047;
+      if (!packet || packet > 1024 || !(d[2] & 15)) return false;
+      if (d[2] & 0x80) {
+        input = d[2] & 15;
+        in_packet = packet;
+      } else {
+        output = d[2] & 15;
+        out_packet = packet;
+      }
+    }
+    at += d[0];
+  }
+  unsigned slot = device->slot, configuration = device->descriptor[5];
+  uint8_t mac[6];
+  if (!configuration || !input || !output || !ethernet_address(slot, mac_index, mac))
+    return false;
+  unsigned in_dci = input * 2 + 1, out_dci = output * 2;
+  unsigned entries = in_dci > out_dci ? in_dci : out_dci;
+  memset(device->input, 0, sizeof(device->input));
+  ((uint32_t *)(void *)device->input)[1] = 1u | (1u << in_dci) | (1u << out_dci);
+  uint32_t *ctx = input_context(device, 0);
+  memcpy(ctx, device->output, context_bytes);
+  ctx[0] = (ctx[0] & ~(31u << 27)) | (entries << 27);
+  endpoint_context(device, in_dci, 6, in_packet, 0);
+  endpoint_context(device, out_dci, 2, out_packet, 0);
+  if (!command(page_physical(device->input), (12u << 10) | (slot << 24)) ||
+      !xhci_control(slot, 0, 9, configuration, 0, NULL, 0) ||
+      (alternate && !xhci_control(slot, 1, 11, alternate, data_interface, NULL, 0)) ||
+      !xhci_control(slot, 0x21, 0x43, 0x0e, control, NULL, 0))
+    return false;
+  ethernet.slot = slot;
+  ethernet.input = input;
+  ethernet.output = output;
+  ethernet.output_packet = out_packet;
+  memcpy(ethernet.mac, mac, sizeof(mac));
+  console_write("USB CDC Ethernet ready\n");
+  return true;
+}
+bool usb_ethernet_mac(uint8_t mac[6]) {
+  if (!ethernet.slot) return false;
+  memcpy(mac, ethernet.mac, 6);
+  return true;
+}
+bool usb_ethernet_send(const void *frame, unsigned length) {
+  if (!ethernet.slot || length < 14 || length > 1514) return false;
+  if (xhci_bulk(ethernet.slot, ethernet.output, (void *)frame, length, false)
+      != (int)length)
+    return false;
+  return length % ethernet.output_packet ||
+         xhci_bulk(ethernet.slot, ethernet.output, (void *)frame, 0, false) == 0;
+}
+void usb_ethernet_poll(void (*receive)(const uint8_t *, uint32_t)) {
+  struct device *device = find(ethernet.slot);
+  if (!device) return;
+  unsigned dci = ethernet.input * 2 + 1;
+  struct endpoint *ep = &device->ep[dci];
+  if (ep->pending) return;
+  if ((ep->code == 1 || ep->code == 13) && ep->actual >= 14 && ep->actual <= 1514)
+    receive(ethernet_rx, ep->actual);
+  ep->expected = sizeof(ethernet_rx);
+  ep->pending = true;
+  ep->code = 0;
+  ep->awaited = enqueue(&ep->ring, page_physical(ethernet_rx), sizeof(ethernet_rx),
+                        (1u << 10) | 32 | 4);
+  __asm__ volatile("sfence" ::: "memory");
+  doorbells[device->slot] = dci;
 }
 static bool enumerate(unsigned port, unsigned speed, unsigned route,
                       unsigned depth, unsigned tt_slot, unsigned tt_port);
@@ -383,6 +660,8 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
   unsigned total = device->descriptor[2] | (unsigned)device->descriptor[3] << 8;
   if (total < 9 || total > 512 || !descriptor(device, 2, total))
     goto failed;
+  if (ethernet_configure(device, total))
+    return true;
   unsigned configuration = device->descriptor[5], interface = 0, kind = 0,
            protocol = 0;
   unsigned in = 0, out = 0, in_packet = 0, out_packet = 0, max_dci = 1;
@@ -405,6 +684,9 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
         kind = 8;
       if (!d[3] && (d[5] == 9 || device_class == 9))
         kind = 9;
+      if (!d[3] && d[5] == 0xe0 && d[6] == 1 && protocol == 1 &&
+          !bluetooth.slot)
+        kind = 0xe0;
     } else if (d[1] == 5 && d[0] >= 7 && kind) {
       unsigned number = d[2] & 15, packet = (d[4] | (unsigned)d[5] << 8) & 2047;
       bool input = d[2] & 0x80;
@@ -413,7 +695,8 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
       if (!number || !packet || packet > 1024)
         goto failed;
       if ((kind == 8 && type == 2) ||
-          ((kind == 3 || kind == 9) && type == 3 && input && packet <= 16)) {
+          ((kind == 3 || kind == 9) && type == 3 && input && packet <= 16) ||
+          (kind == 0xe0 && type == 3 && input && packet <= 272)) {
         if (type == 3) {
           if (speed >= 3)
             interval = d[6] ? d[6] - 1 : 0;
@@ -489,6 +772,13 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
     if (!usb_storage_attach(128 + slot, device->packet, interface, in, out,
                             in_packet, out_packet))
       goto failed;
+  } else if (kind == 0xe0) {
+    bluetooth.slot = slot;
+    bluetooth.state = BT_IDLE;
+    device->hid = 3;
+    device->hid_ep = in * 2 + 1;
+    device->hid_packet = in_packet;
+    arm_hid(device);
   } else {
     if (!xhci_control(slot, 0x21, 11, 0, interface, NULL, 0))
       goto failed;
@@ -529,6 +819,10 @@ static void detach_branch(unsigned port, unsigned route, unsigned depth) {
         continue;
       device->hid_pending = false;
       device->hub_ports = 0;
+      if (bluetooth.slot == device->slot)
+        memset(&bluetooth, 0, sizeof(bluetooth));
+      if (ethernet.slot == device->slot)
+        memset(&ethernet, 0, sizeof(ethernet));
       usb_storage_detach(128 + device->slot);
       if (command(0, (10u << 10) | (device->slot << 24))) {
         dcbaa[device->slot] = 0;
@@ -588,6 +882,7 @@ void xhci_service_ports(void) {
     }
   }
   service_hubs();
+  service_bluetooth();
 }
 void xhci_init(void) {
   const struct pci_device *pci = pci_find_class(12, 3, 0x30);

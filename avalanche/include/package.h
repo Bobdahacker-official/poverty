@@ -3,5 +3,6 @@
 #include "system.h"
 void sha256(const void *, size_t, uint8_t[32]);
 void package_command(char *);
+int package_install_local(const char *);
 int user_builtin(const char *, const void **, uint32_t *);
 #endif

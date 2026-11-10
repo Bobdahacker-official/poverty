@@ -2,6 +2,7 @@
 #include "calculator.h"
 #include "filetypes.h"
 #include "nvme_health.h"
+#include "package.h"
 #include "font.h"
 #include "gui_canvas.h"
 #include "gui_games.h"
@@ -92,6 +93,8 @@ static struct {
 } file_defaults;
 static bool file_defaults_saved;
 static void browser_new_tab(const char *);
+static bool resume_desktop, resume_editor;
+static void desktop_session_save(void);
 static unsigned default_handler(enum file_type type) {
   if (type == FILE_TEXT || type == FILE_HTML)
     return file_defaults.handlers[type] == BROWSER ? BROWSER : EDITOR;
@@ -170,6 +173,8 @@ static int selected_file = -1;
 static bool file_more, creating_file, deleting_file;
 static bool emptying_trash;
 static bool showing_drives;
+static bool showing_downloads, download_attention;
+static char local_manifest[256];
 static char restore_name[256], restore_entry[256];
 static struct task_info task_items[256];
 static unsigned task_slots;
@@ -973,6 +978,19 @@ static void open_file(unsigned index) {
   if (file_items[index].directory) {
     browse(path);
     return;
+  }
+  unsigned length = strlen(path);
+  bool manifest = length >= 15 && str_eq(path + length - 15, ".mgnta.manifest");
+  bool bundle = length >= 10 && str_eq(path + length - 10, ".mgnta.zip");
+  bool application = length >= 6 && str_eq(path + length - 6, ".mgnta");
+  if (bundle || manifest || (application && length + 9 < sizeof(path))) {
+    if (application) append(path, ".manifest", sizeof(path));
+    if (bundle || manifest || fs_size(path) >= 0) {
+      copy(local_manifest, path, sizeof(local_manifest));
+      open_app(PACKAGES);
+      return;
+    }
+    path[length] = 0;
   }
   unsigned char ident[64];
   int ident_size = fs_read_at(path, 0, ident, sizeof(ident));
@@ -1811,7 +1829,172 @@ static void files_drives_view(void) {
     }
   }
 }
+#define DOWNLOAD_SLOTS 4
+#define DOWNLOAD_LIMIT (1024u * 1024u)
+enum download_state { DL_EMPTY, DL_RECEIVING, DL_READY, DL_FAILED, DL_CANCELLED, DL_SAVED };
+static struct desktop_download {
+  unsigned id, received, total;
+  int owner;
+  enum download_state state;
+  char filename[128], destination[256];
+  uint8_t data[DOWNLOAD_LIMIT];
+} downloads[DOWNLOAD_SLOTS];
+static unsigned download_sequence;
+static struct desktop_download *download_begin(int owner, const char *filename,
+                                                uint64_t total) {
+  if (total > DOWNLOAD_LIMIT) return NULL;
+  for (unsigned i = 0; i < DOWNLOAD_SLOTS; i++) {
+    struct desktop_download *item = &downloads[i];
+    if (item->state != DL_EMPTY) continue;
+    item->id = download_sequence = download_sequence % INT32_MAX + 1;
+    item->received = 0;
+    item->total = total;
+    item->owner = owner;
+    item->state = DL_RECEIVING;
+    copy(item->filename, valid_item_name(filename) ? filename : "download",
+         sizeof(item->filename));
+    if (!join_path(item->destination, browser_path, item->filename))
+      join_path(item->destination, "/", item->filename);
+    download_attention = true;
+    return item;
+  }
+  return NULL;
+}
+void gui_download_disconnect(int pid) {
+  for (unsigned i = 0; i < DOWNLOAD_SLOTS; i++)
+    if (downloads[i].owner == pid && downloads[i].state == DL_RECEIVING)
+      downloads[i].state = DL_FAILED;
+}
+int gui_download_call(struct process *process, uint32_t address) {
+  struct av_download_request request;
+  if (!running || !process_copyin(process, &request, address, sizeof(request)))
+    return -14;
+  if (request.operation == AV_DOWNLOAD_BEGIN) {
+    if (!__builtin_memchr(request.filename, 0, sizeof(request.filename)))
+      return -22;
+    struct desktop_download *item =
+        download_begin(process->pid, request.filename, request.total);
+    return item ? (int)item->id : request.total > DOWNLOAD_LIMIT ? -27 : -28;
+  }
+  for (unsigned i = 0; i < DOWNLOAD_SLOTS; i++) {
+    struct desktop_download *item = &downloads[i];
+    if (item->state == DL_EMPTY || item->id != request.id ||
+        item->owner != process->pid)
+      continue;
+    if (item->state != DL_RECEIVING) return -125;
+    switch (request.operation) {
+    case AV_DOWNLOAD_STATUS:
+      return 0;
+    case AV_DOWNLOAD_DATA:
+      if (request.size > DOWNLOAD_LIMIT - item->received) {
+        item->state = DL_FAILED;
+        return -27;
+      }
+      if (request.data > UINT32_MAX ||
+          !process_copyin(process, item->data + item->received, request.data,
+                          request.size)) {
+        item->state = DL_FAILED;
+        return -14;
+      }
+      item->received += request.size;
+      return 0;
+    case AV_DOWNLOAD_DONE:
+      item->state = !item->total || item->total == item->received
+                        ? DL_READY : DL_FAILED;
+      return item->state == DL_READY ? 0 : -5;
+    case AV_DOWNLOAD_FAILED:
+      item->state = DL_FAILED;
+      return 0;
+    default:
+      return -22;
+    }
+  }
+  return -2;
+}
+static int download_save(struct desktop_download *item) {
+  char partial[256];
+  if (item->destination[0] != '/' ||
+      strlen(item->destination) + sizeof(".part") > sizeof(partial))
+    return -22;
+  copy(partial, item->destination, sizeof(partial));
+  append(partial, ".part", sizeof(partial));
+  struct file_metadata info;
+  if (fs_metadata(item->destination, &info) != -2 ||
+      fs_metadata(partial, &info) != -2)
+    return -17;
+  int result = fs_write_new_stream(partial, item->data, item->received);
+  if (result < 0) return result;
+  if ((unsigned)result != item->received) return -5;
+  result = fs_rename(partial, item->destination);
+  if (!result) item->state = DL_SAVED;
+  return result;
+}
+static void downloads_view(void) {
+  heading("Downloads");
+  nk_layout_row_dynamic(&ui, 32, 1);
+  if (nk_button_label(&ui, "Back to Files")) {
+    showing_downloads = false;
+    return;
+  }
+  float remaining = nk_window_get_content_region(&ui).h - 90;
+  nk_layout_row_dynamic(&ui, remaining > 80 ? remaining : 80, 1);
+  if (!nk_group_begin(&ui, "Browser downloads", 0)) {
+    nk_group_end(&ui);
+    return;
+  }
+  unsigned count = 0;
+  for (unsigned i = 0; i < DOWNLOAD_SLOTS; i++) {
+    struct desktop_download *item = &downloads[i];
+    if (item->state == DL_EMPTY) continue;
+    count++;
+    heading(item->filename);
+    nk_layout_row_dynamic(&ui, 26, 2);
+    static const char *states[] = {
+        "", "Receiving", "Ready to save", "Incomplete", "Cancelled", "Saved"};
+    caption(states[item->state]);
+    char size[64];
+    format_size(size, item->received);
+    caption(size);
+    if (item->state == DL_RECEIVING && item->total) {
+      nk_size progress = item->received < item->total ? item->received : item->total;
+      nk_layout_row_dynamic(&ui, 16, 1);
+      nk_progress(&ui, &progress, item->total, NK_FIXED);
+    }
+    if (item->state == DL_READY) {
+      nk_layout_row_dynamic(&ui, 34, 2);
+      nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, item->destination,
+                                     sizeof(item->destination), nk_filter_default);
+      if (accent_button("Save to this path")) {
+        int r = download_save(item);
+        if (r < 0) file_error("Download save failed", r);
+      }
+    }
+    nk_layout_row_dynamic(&ui, 34, 2);
+    if (item->state == DL_RECEIVING || item->state == DL_READY) {
+      if (nk_button_label(&ui, "Cancel")) item->state = DL_CANCELLED;
+    } else if (nk_button_label(&ui, "Dismiss")) item->state = DL_EMPTY;
+    if (item->state == DL_SAVED && nk_button_label(&ui, "Open containing folder")) {
+      char folder[256];
+      copy(folder, item->destination, sizeof(folder));
+      unsigned slash = strlen(folder);
+      while (slash > 1 && folder[slash - 1] != '/') slash--;
+      folder[slash > 1 ? slash - 1 : 1] = 0;
+      browse(folder);
+      showing_downloads = false;
+      break;
+    }
+  }
+  if (!count) {
+    nk_layout_row_dynamic(&ui, 36, 1);
+    caption("No browser downloads");
+  }
+  nk_group_end(&ui);
+}
 static void file_contents_view(void) {
+  if (showing_downloads) {
+    downloads_view();
+    return;
+  }
   if (showing_drives) {
     files_drives_view();
     return;
@@ -1872,9 +2055,13 @@ static void file_contents_view(void) {
   char trash[256];
   trash_path(trash, browser_path);
   bool in_trash = str_eq(browser_path, trash);
-  nk_layout_row_dynamic(&ui, 32, 4);
+  nk_layout_row_dynamic(&ui, 32, 5);
   if (nk_button_label(&ui, "Drives")) {
     showing_drives = true;
+    return;
+  }
+  if (nk_button_label(&ui, "Downloads")) {
+    showing_downloads = true;
     return;
   }
   if (quiet_button("Trash", "Show items moved to Trash", !in_trash)) {
@@ -2514,7 +2701,64 @@ static void ip_string(char out[32], uint32_t address) {
     append(out, value, 32);
   }
 }
+static void bluetooth_view(void) {
+  heading("Bluetooth LE");
+  static const char *states[] = {
+      "No compatible USB Bluetooth controller", "Ready", "Starting scan",
+      "Scanning for advertisements", "Stopping scan", "Controller did not accept scanning"};
+  unsigned state = usb_bluetooth_state();
+  nk_layout_row_dynamic(&ui, 28, 1);
+  caption(states[state < sizeof(states) / sizeof(states[0]) ? state : 0]);
+  nk_layout_row_dynamic(&ui, 34, 2);
+  if (quiet_button("Scan", "Listen for nearby Bluetooth LE advertisements",
+                   state == 1 || state == 5))
+    usb_bluetooth_scan(true);
+  if (quiet_button("Stop scan", "Stop Bluetooth discovery", state == 2 || state == 3))
+    usb_bluetooth_scan(false);
+  struct bluetooth_peer peers[24];
+  unsigned count = usb_bluetooth_peers(peers, 24);
+  for (unsigned i = 0; i < count; i++) {
+    const struct bluetooth_peer *peer = &peers[i];
+    char address[18], value[32], signal[48] = "";
+    static const char hex[] = "0123456789ABCDEF";
+    for (unsigned n = 0; n < 6; n++) {
+      unsigned octet = peer->address[5 - n];
+      address[n * 3] = hex[octet >> 4];
+      address[n * 3 + 1] = hex[octet & 15];
+      address[n * 3 + 2] = n == 5 ? 0 : ':';
+    }
+    nk_layout_row_dynamic(&ui, 26, 3);
+    nk_label(&ui, peer->name[0] ? peer->name : "Unnamed device", NK_TEXT_LEFT);
+    nk_label(&ui, address, NK_TEXT_LEFT);
+    if (peer->rssi == 127)
+      caption("Signal unavailable");
+    else {
+      if (peer->rssi < 0) copy(signal, "-", sizeof(signal));
+      number(value, peer->rssi < 0 ? -peer->rssi : peer->rssi);
+      append(signal, value, sizeof(signal));
+      append(signal, " dBm", sizeof(signal));
+      caption(signal);
+    }
+  }
+}
 static void network_view(void) {
+  static bool showing_bluetooth;
+  nk_layout_row_dynamic(&ui, 32, 2);
+  if (nk_button_label(&ui, "Ethernet")) showing_bluetooth = false;
+  if (nk_button_label(&ui, "Bluetooth LE")) showing_bluetooth = true;
+  if (showing_bluetooth) {
+    bluetooth_view();
+    return;
+  }
+  uint8_t usb_mac[6];
+  if (usb_ethernet_mac(usb_mac)) {
+    nk_layout_row_dynamic(&ui, 32, 1);
+    bool selected = net_usb_ethernet_selected();
+    if (nk_button_label(&ui, selected ? "Use PCI Ethernet" : "Use USB Ethernet")) {
+      net_use_usb_ethernet(!selected);
+      update_status();
+    }
+  }
   nk_layout_row_dynamic(&ui, 28, 2);
   nk_label(&ui, network_status.adapter, NK_TEXT_LEFT);
   caption(network_status.ip ? "IPv4 configured" : "No IPv4 address");
@@ -2612,6 +2856,30 @@ static const char *package_summary(const char *name) {
   return "An application installed from an HTTP package repository.";
 }
 static void packages_view(void) {
+  if (*local_manifest) {
+    heading("Install signed application");
+    nk_layout_row_dynamic(&ui, 44, 1);
+    nk_label_wrap(&ui, local_manifest);
+    nk_layout_row_dynamic(&ui, 60, 1);
+    nk_label_wrap(&ui, "Magenta verifies the manifest with the pinned signing "
+                       "certificate, then verifies the executable hash.");
+    nk_layout_row_dynamic(&ui, 36, 2);
+    if (accent_button("Verify and install")) {
+      int result = package_install_local(local_manifest);
+      if (result < 0) {
+        notify(result == -13 ? "Pin the publisher's certificate first"
+               : result == -74 ? "Signature or executable hash did not match"
+                               : "Could not install the signed application");
+      } else {
+        local_manifest[0] = 0;
+        refresh_packages();
+        refresh_files();
+        notify("Application installed. Open it from the launcher.");
+      }
+    }
+    if (nk_button_label(&ui, "Cancel")) local_manifest[0] = 0;
+    return;
+  }
   heading("Packages");
   nk_layout_row_dynamic(&ui, 30, 4);
   caption("UPLOADED APPLICATIONS");
@@ -2700,7 +2968,10 @@ static void packages_view(void) {
                        NK_TEXT_RIGHT, rgb(installed ? 0x23ad95 : accent()));
       nk_layout_row_dynamic(&ui, 64, 1);
       nk_label_wrap(&ui, package_summary(p->name));
-      nk_layout_row_dynamic(&ui, 36, installed ? 2 : 1);
+      nk_layout_row_dynamic(&ui, 36, installed ? 3 : 1);
+      if (installed && nk_button_label(&ui, "Launch") &&
+          user_spawn(p->name, "", false) < 0)
+        notify("Could not launch the application");
       if (accent_button(installed ? "Upgrade" : "Install"))
         package_action(installed ? "upgrade" : "install");
       if (installed && nk_button_label(&ui, "Remove"))
@@ -2869,6 +3140,15 @@ static void workspace_view(void) {
   }
   nk_layout_row_dynamic(&ui, 34, 1);
   if (accent_button("Save workspace settings")) workspace_save();
+  nk_layout_row_dynamic(&ui, 30, 1);
+  nk_bool restore = resume_desktop, documents = resume_editor;
+  nk_checkbox_label(&ui, "Restore desktop after reboot", &restore);
+  nk_checkbox_label(&ui, "Reopen the last saved text document", &documents);
+  if (resume_desktop != (bool)restore || resume_editor != (bool)documents) {
+    resume_desktop = restore;
+    resume_editor = documents;
+    desktop_session_save();
+  }
   nk_layout_row_dynamic(&ui, 28, 1);
   caption(workspace_dirty ? "Changes waiting to save" : "Workspace settings saved");
 }
@@ -3352,6 +3632,99 @@ static void browser_close_tab(unsigned tab) {
   if (was_active)
     browser_switch(browser_order[at < browser_tab_count ? at : at - 1]);
 }
+#define SESSION_PATH "/.magenta-session"
+struct session_window {
+  int x, y, w, h;
+  unsigned visible, maximized;
+};
+static struct desktop_session {
+  uint32_t version, enabled, reopen_document, tabs, selected_tab;
+  char files[256], document[256];
+  char addresses[WEB_TABS][512];
+  struct session_window windows[APP_COUNT];
+  uint32_t checksum;
+} session;
+static uint32_t session_checksum, session_last_save;
+static void desktop_session_save(void) {
+  memset(&session, 0, sizeof(session));
+  session.version = 1;
+  session.enabled = resume_desktop;
+  session.reopen_document = resume_editor;
+  if (resume_desktop) {
+    copy(session.files, browser_path, sizeof(session.files));
+    if (resume_editor && !editor_dirty && apps[EDITOR].visible)
+      copy(session.document, editor_path, sizeof(session.document));
+    for (unsigned i = 0; i < APP_COUNT; i++) {
+      struct nk_rect bounds = apps[i].maximized ? apps[i].restore : apps[i].bounds;
+      session.windows[i] = (struct session_window){
+          bounds.x, bounds.y, bounds.w, bounds.h, apps[i].visible, apps[i].maximized};
+    }
+    session.tabs = browser_tab_count;
+    for (unsigned i = 0; i < browser_tab_count; i++) {
+      unsigned slot = browser_order[i];
+      struct browser_tab *tab = &browser_tabs[slot];
+      copy(session.addresses[i], *tab->loaded_url ? tab->loaded_url : tab->address,
+           sizeof(session.addresses[i]));
+      if (slot == browser_active) session.selected_tab = i;
+    }
+  }
+  session.checksum = crc32(&session, offsetof(struct desktop_session, checksum));
+  session_last_save = clock_ticks();
+  if (session.checksum != session_checksum &&
+      fs_write(SESSION_PATH, &session, sizeof(session)) >= 0)
+    session_checksum = session.checksum;
+}
+static void desktop_session_load(void) {
+  resume_desktop = resume_editor = false;
+  session_checksum = 0;
+  session_last_save = clock_ticks();
+  if (fs_read(SESSION_PATH, &session, sizeof(session)) != (int)sizeof(session) ||
+      session.version != 1 ||
+      session.checksum != crc32(&session, offsetof(struct desktop_session, checksum)))
+    return;
+  session_checksum = session.checksum;
+  resume_desktop = session.enabled == 1;
+  resume_editor = session.reopen_document == 1;
+  if (!resume_desktop) return;
+  for (unsigned i = 0; i < APP_COUNT; i++) {
+    const struct session_window *saved = &session.windows[i];
+    if (saved->w < 160 || saved->h < 100) continue;
+    int w = saved->w < (int)width ? saved->w : (int)width;
+    int h = saved->h < (int)height - 42 ? saved->h : (int)height - 42;
+    int x = saved->x >= 0 && saved->x <= (int)width - w ? saved->x : 0;
+    int y = saved->y >= 36 && saved->y <= (int)height - h ? saved->y : 36;
+    apps[i].bounds = nk_rect(x, y, w, h);
+    apps[i].visible = saved->visible == 1 && i != EDITOR;
+    if (saved->maximized == 1) {
+      apps[i].restore = apps[i].bounds;
+      apps[i].bounds = nk_rect(8, 42, width - 16, height - 100);
+      apps[i].maximized = true;
+    }
+  }
+  if (session.files[0] == '/' && !session.files[255] &&
+      fs_directory(session.files) == 0)
+    browse(session.files);
+  if (session.tabs && session.tabs <= WEB_TABS &&
+      session.selected_tab < session.tabs) {
+    memset(browser_tabs, 0, sizeof(browser_tabs));
+    browser_tab_count = 0;
+    for (unsigned i = 0; i < session.tabs; i++) {
+      const char *address = session.addresses[i];
+      browser_new_tab(address[0] && !address[511] ? address : "about:home");
+    }
+    browser_switch(browser_order[session.selected_tab]);
+  }
+  if (resume_editor && !editor_draft_available &&
+      session.document[0] == '/' && !session.document[255]) {
+    int bytes = fs_read(session.document, editor, sizeof(editor) - 1);
+    if (bytes >= 0 && !__builtin_memchr(editor, 0, bytes)) {
+      editor[bytes] = 0;
+      copy(editor_path, session.document, sizeof(editor_path));
+      apps[EDITOR].visible = true;
+    } else
+      editor[0] = 0;
+  }
+}
 static void browser_title(void) {
   struct browser_tab *tab = &browser_tabs[browser_active];
   const char *label = tab->loaded_url;
@@ -3520,13 +3893,16 @@ static void browser_view(void) {
     browser_load_requested = true;
   }
   caption(browser_status);
-  if (quiet_button("Save Page", "Save this tab's HTML to /download.html",
-                   *browser_source != 0))
-    copy(browser_status,
-         fs_write("/download.html", browser_source, strlen(browser_source)) >= 0
-             ? "Saved /download.html"
-             : "Could not save the page",
-         sizeof(browser_status));
+  if (quiet_button("Save Page", "Send this tab's HTML to Downloads",
+                   *browser_source != 0)) {
+    unsigned size = strlen(browser_source);
+    struct desktop_download *item = download_begin(0, "download.html", size);
+    if (item) {
+      memcpy(item->data, browser_source, size);
+      item->received = size;
+      item->state = DL_READY;
+    } else notify("Dismiss an existing download to make room");
+  }
 
   const float address[] = {0.85f, 0.15f};
   nk_layout_row(&ui, NK_DYNAMIC, 38, 2, address);
@@ -4011,6 +4387,46 @@ static void application(unsigned id) {
       struct av_audio_status status;
       audio_snapshot(&status);
       heading("Music");
+      unsigned outputs = audio_output_count();
+      if (outputs) {
+        unsigned selected = audio_output_selected();
+        static const char *types[] = {"Line out", "Speaker", "Headphones"};
+        char label[64], index[32];
+        number(index, selected + 1);
+        copy(label, "Output ", sizeof(label));
+        append(label, index, sizeof(label));
+        append(label, " (", sizeof(label));
+        unsigned type = audio_output_type(selected);
+        append(label, type < 3 ? types[type] : "Analogue", sizeof(label));
+        append(label, ")", sizeof(label));
+        nk_layout_row_dynamic(&ui, 30, 1);
+        if (nk_combo_begin_label(&ui, label, nk_vec2(250, 240))) {
+          nk_layout_row_dynamic(&ui, 26, 1);
+          for (unsigned i = 0; i < outputs; i++) {
+            type = audio_output_type(i);
+            number(index, i + 1);
+            copy(label, index, sizeof(label));
+            append(label, ". ", sizeof(label));
+            append(label, type < 3 ? types[type] : "Analogue", sizeof(label));
+            if (nk_button_label(&ui, label)) {
+              int result = audio_output_select(i);
+              if (result < 0)
+                notify(result == -16 ? "Pause playback before switching outputs"
+                                     : "Could not configure this audio output");
+              nk_combo_close(&ui);
+              break;
+            }
+          }
+          nk_combo_end(&ui);
+        }
+        nk_layout_row_dynamic(&ui, 26, 2);
+        int volume = audio_volume();
+        nk_bool mute = audio_muted();
+        bool changed = nk_slider_int(&ui, 0, &volume, 100, 1);
+        if (nk_checkbox_label(&ui, "Mute", &mute)) changed = true;
+        if (changed && audio_set_volume(volume, mute) < 0)
+          notify("This output does not expose adjustable gain");
+      }
       nk_layout_row_dynamic(&ui, 34, 1);
       if (music_focus) {
         nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
@@ -4505,6 +4921,20 @@ static void launcher_view(void) {
                    name, strlen(name), &body_font, nk_rgba(0, 0, 0, 0),
                    rgb(palette()->text));
     }
+    if (launcher_category == 0 || launcher_category == 4) {
+      for (unsigned i = 0; i < package_count; i++) {
+        const struct package_item *item = &package_items[i];
+        if (!item->installed || !contains(item->name, launcher_search))
+          continue;
+        matches++;
+        if (nk_button_label(&ui, item->name)) {
+          if (user_spawn(item->name, "", false) < 0)
+            notify("Could not launch the installed application");
+          else
+            launcher = false;
+        }
+      }
+    }
     if (!matches) {
       nk_layout_row_dynamic(&ui, 44, 1);
       caption("No applications match your search.");
@@ -4945,6 +5375,7 @@ int gui_run(void) {
   user_tty_external(true);
   update_status();
   browse("/");
+  desktop_session_load();
   refresh_packages();
   calculator_focus = true;
   active_app = -1;
@@ -4969,6 +5400,11 @@ int gui_run(void) {
     user_poll();
     user_yield_kernel();
     poll_processes();
+    if (download_attention) {
+      download_attention = false;
+      showing_downloads = true;
+      open_app(FILES);
+    }
     if ((uint32_t)(clock_ticks() - last_status) >= 100) {
       update_status();
       last_status = clock_ticks();
@@ -5053,6 +5489,8 @@ int gui_run(void) {
         clipboard_save();
       if (workspace_dirty && (uint32_t)(clock_ticks() - workspace_last_save) >= 50)
         workspace_save();
+      if (resume_desktop && (uint32_t)(clock_ticks() - session_last_save) >= 200)
+        desktop_session_save();
       last_frame = clock_ticks();
       if (preferences_dirty && !(buttons & 1) &&
           (uint32_t)(clock_ticks() - last_save) >= 50)
@@ -5067,6 +5505,7 @@ int gui_run(void) {
   user_tty_external(false);
   clipboard_save();
   if (workspace_dirty) workspace_save();
+  if (resume_desktop) desktop_session_save();
   if (preferences_dirty)
     preference_save(false);
   graphics_console_capture(NULL);

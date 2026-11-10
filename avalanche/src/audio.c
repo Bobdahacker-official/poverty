@@ -18,6 +18,15 @@ static struct {
 } descriptors[AUDIO_SEGMENTS] __attribute__((aligned(128)));
 static uint8_t pcm[AUDIO_SEGMENTS][AUDIO_CHUNK] __attribute__((aligned(4096)));
 static unsigned path[16], path_index[16], path_length;
+#define HDA_OUTPUT_LIMIT 32
+static struct hda_output {
+  volatile uint8_t *registers;
+  unsigned stream_offset, codec, function, pin, device;
+  uint16_t vendor, controller;
+  bool present;
+} outputs[HDA_OUTPUT_LIMIT];
+static unsigned output_count, output_selected, output_volume = 60;
+static bool output_muted;
 static uint32_t reg32(unsigned offset) {
   return *(volatile uint32_t *)(registers + offset);
 }
@@ -116,8 +125,7 @@ static bool route(unsigned node, unsigned depth) {
   }
   return false;
 }
-void audio_init(void) {
-  const struct pci_device *device = pci_find_class(4, 3, 0);
+static void probe_controller(const struct pci_device *device) {
   uint64_t base = pci_memory_bar(device, 0);
   if (!base || !platform_mmio(base, 0x4000))
     return;
@@ -132,8 +140,8 @@ void audio_init(void) {
     return;
   sleep_ticks(1);
   uint16_t caps = reg16(0), present = reg16(14);
-  unsigned outputs = (caps >> 12) & 15, inputs = (caps >> 8) & 15;
-  if (!outputs)
+  unsigned output_streams = (caps >> 12) & 15, inputs = (caps >> 8) & 15;
+  if (!output_streams)
     return;
   stream = 1;
   stream_offset = 0x80 + inputs * 0x20;
@@ -160,30 +168,108 @@ void audio_init(void) {
           continue;
         if (!route(n, 0))
           continue;
-        pin = n;
-        for (unsigned i = 0; i < path_length; i++) {
-          unsigned node = path[i];
-          uint32_t w = parameter(node, 9);
-          (void)send(node, 0x70500);
-          if (i + 1 < path_length && ((w >> 20) & 15) != 2)
-            (void)send(node, 0x70100 | path_index[i]);
-          if (w & 4)
-            (void)send(node, 0x30000 | 0xb000 | (parameter(node, 18) & 127));
-          if (w & 2)
-            (void)send(node, 0x30000 | 0x7000 | (path_index[i] << 8) |
-                                 (parameter(node, 13) & 127));
-        }
-        uint32_t pincaps = parameter(pin, 12);
-        if (!send(pin, 0x70700 | 0x40 | ((pincaps & 8) ? 0x80 : 0)))
-          continue;
-        if (pincaps & (1u << 16))
-          (void)send(pin, 0x70c02);
-        available = true;
-        console_write("Intel HD Audio PCM output ready\n");
-        return;
+        if (output_count == HDA_OUTPUT_LIMIT) return;
+        unsigned type = (config >> 20) & 15;
+        uint32_t sense = 0;
+        bool plugged = (parameter(n, 12) & 4) && verb(n, 0xf0900, &sense) &&
+                       (sense >> 31);
+        outputs[output_count++] = (struct hda_output){
+            registers, stream_offset, codec, fg, n, type,
+            device->vendor, device->device, plugged};
       }
     }
   }
+}
+static uint32_t amp_caps(unsigned node, unsigned id, uint32_t widget) {
+  return parameter(widget & (1u << 3) ? node : function, id);
+}
+static bool set_output_gain(void) {
+  bool adjustable = false;
+  for (unsigned i = 0; i < path_length; i++) {
+    unsigned node = path[i];
+    uint32_t widget = parameter(node, 9);
+    if (!(widget & 4)) continue;
+    uint32_t caps = amp_caps(node, 18, widget);
+    unsigned zero = caps & 127, steps = (caps >> 8) & 127;
+    unsigned gain = (zero < steps ? zero : steps) * output_volume / 100;
+    unsigned mute = (output_muted || !output_volume) && (caps >> 31) ? 128 : 0;
+    if (send(node, 0x30000 | 0xb000 | gain | mute))
+      adjustable |= (caps >> 31) != 0 || steps != 0;
+  }
+  return adjustable;
+}
+static bool configure_output(unsigned index) {
+  const struct hda_output *out = &outputs[index];
+  registers = out->registers;
+  stream_offset = out->stream_offset;
+  codec = out->codec;
+  function = out->function;
+  pin = out->pin;
+  if (!send(function, 0x70500) || !route(pin, 0)) return false;
+  for (unsigned i = 0; i < path_length; i++) {
+    unsigned node = path[i];
+    uint32_t widget = parameter(node, 9);
+    (void)send(node, 0x70500);
+    if (i + 1 < path_length && ((widget >> 20) & 15) != 2)
+      (void)send(node, 0x70100 | path_index[i]);
+    if (widget & 2) {
+      uint32_t caps = amp_caps(node, 13, widget);
+      unsigned gain = caps & 127, steps = (caps >> 8) & 127;
+      if (gain > steps) gain = steps;
+      (void)send(node, 0x30000 | 0x7000 | (path_index[i] << 8) | gain);
+    }
+  }
+  uint32_t caps = parameter(pin, 12);
+  if (!send(pin, 0x70700 | 0x40 | ((caps & 8) ? 0x80 : 0))) return false;
+  if (caps & (1u << 16)) {
+    uint32_t power = 0;
+    (void)verb(pin, 0xf0c00, &power);
+    (void)send(pin, 0x70c00 | (power & 7) | 2);
+  }
+  (void)set_output_gain();
+  output_selected = index;
+  return true;
+}
+void audio_init(void) {
+  output_count = 0;
+  available = false;
+  for (unsigned i = 0; i < pci_count_devices(); i++) {
+    const struct pci_device *device = pci_device_at(i);
+    if (device->class_id == 4 && device->subclass == 3 && device->prog_if == 0)
+      probe_controller(device);
+  }
+  for (unsigned pass = 0; pass < 2 && !available; pass++)
+    for (unsigned i = 0; i < output_count; i++)
+      if ((pass || outputs[i].present) && configure_output(i)) {
+        available = true;
+        break;
+      }
+  if (available) console_write("HD Audio analogue PCM output ready\n");
+}
+unsigned audio_output_count(void) { return output_count; }
+unsigned audio_output_selected(void) { return output_selected; }
+unsigned audio_output_type(unsigned index) {
+  return index < output_count ? outputs[index].device : 15;
+}
+int audio_output_select(unsigned index) {
+  if (index >= output_count) return -22;
+  if (playback.active) return -16;
+  if (available && index == output_selected) return 0;
+  unsigned old = output_selected;
+  bool had_output = available;
+  if (had_output) (void)send(pin, 0x70700);
+  available = configure_output(index);
+  if (available) return 0;
+  if (had_output) available = configure_output(old);
+  return -5;
+}
+unsigned audio_volume(void) { return output_volume; }
+bool audio_muted(void) { return output_muted; }
+int audio_set_volume(unsigned volume, bool muted) {
+  if (!available || volume > 100) return -22;
+  output_volume = volume;
+  output_muted = muted;
+  return set_output_gain() ? 0 : -95;
 }
 void audio_info(void) {
   if (!available) {
@@ -197,6 +283,9 @@ void audio_info(void) {
   console_write(" pin ");
   print_uint(pin);
   console_write("; PCM16 output\n");
+  console_write("Analogue outputs: ");
+  print_uint(output_count);
+  console_putc('\n');
 }
 static uint32_t le32(const uint8_t *p) {
   return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 |
