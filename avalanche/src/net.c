@@ -5,6 +5,7 @@
 #include "ip_fragment.h"
 #include "virtio.h"
 #include "usb.h"
+#include "rtw8821cu.h"
 /* Poll-driven Ethernet. DMA memory is identity mapped and supervisor-only. */
 static enum { NONE, RTL8139, E1000, VIRTIO, PCNET, RTL8169, RGE, USB_ECM } nic, wired_nic;
 static uint8_t wired_mac[6];
@@ -855,6 +856,7 @@ void net_diagnostics(void) {
   }
   rtl8169_diagnostics();
   rge_diagnostics();
+  rtw8821cu_usb_info();
   tcp_diagnostics();
 }
 static bool skip_name(const uint8_t *p, unsigned n, unsigned *off) {

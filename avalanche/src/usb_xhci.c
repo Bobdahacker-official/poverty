@@ -1,4 +1,5 @@
 #include "usb.h"
+#include "rtw8821cu.h"
 #define SLOTS 8
 #define RING_SIZE 64
 struct trb {
@@ -211,14 +212,14 @@ static void pairing_event(const uint8_t *event, unsigned size) {
     pairing.state = BT_PAIR_AUTHENTICATING;
     pair_deadline(3000);
   } else if (code == 5 && size >= 6 && pairing.link &&
-             (event[3] | (event[4] << 8)) == pairing.handle) {
+             (event[3] | ((unsigned)event[4] << 8)) == pairing.handle) {
     pairing.link = false;
     bluetooth.acl_limit = bluetooth.acl_credits =
         bluetooth.acl_outstanding = bluetooth.acl_used = 0;
     bluetooth.acl_query = false;
     pair_close(pairing.error);
   } else if (code == 6 && size >= 5 && pairing.state == BT_PAIR_AUTHENTICATING &&
-             (event[3] | (event[4] << 8)) == pairing.handle) {
+             (event[3] | ((unsigned)event[4] << 8)) == pairing.handle) {
     if (event[2]) pair_close(event[2]);
     else {
       uint8_t parameters[] = {pairing.handle, pairing.handle >> 8, 1};
@@ -228,7 +229,7 @@ static void pairing_event(const uint8_t *event, unsigned size) {
     }
   } else if ((code == 8 || code == 0x59) && size >= 6 &&
              pairing.state == BT_PAIR_ENCRYPTING &&
-             (event[3] | (event[4] << 8)) == pairing.handle) {
+             (event[3] | ((unsigned)event[4] << 8)) == pairing.handle) {
     if (event[2] || !event[5]) pair_close(event[2] ? event[2] : 0x05);
     else {
       if (pairing.have_candidate_key) {
@@ -373,7 +374,7 @@ static void bluetooth_event(const uint8_t *event, unsigned size) {
   if (event[0] == 0x13 && size >= 3 && event[2] <= (size - 3) / 4)
     for (unsigned i = 0; i < event[2]; i++) {
       const uint8_t *entry = event + 3 + i * 4;
-      if ((entry[0] | (entry[1] << 8)) == pairing.handle) {
+      if ((entry[0] | ((unsigned)entry[1] << 8)) == pairing.handle) {
         unsigned done = entry[2] | (entry[3] << 8);
         bluetooth.acl_outstanding -= done < bluetooth.acl_outstanding
                                          ? done : bluetooth.acl_outstanding;
@@ -704,6 +705,32 @@ static void endpoint_context(struct device *device, unsigned dci, unsigned type,
   ctx[2] = ptr;
   ctx[3] = ptr >> 32;
   ctx[4] = packet | ((type == 7 ? packet : 0) << 16);
+}
+static bool configure_rtw8821cu(struct device *device, unsigned vendor,
+                               unsigned product, unsigned length) {
+  struct rtw8821cu_usb_config config;
+  if (!rtw8821cu_usb_parse(device->descriptor, length, &config))
+    return false;
+  unsigned rx = config.rx.number * 2 + 1, last = rx;
+  memset(device->input, 0, sizeof(device->input));
+  uint32_t *flags = (void *)device->input;
+  flags[1] = 1u | (1u << rx);
+  uint32_t *ctx = input_context(device, 0);
+  memcpy(ctx, device->output, context_bytes);
+  endpoint_context(device, rx, 6, config.rx.packet_size, 0);
+  for (unsigned i = 0; i < config.tx_count; i++) {
+    unsigned tx = config.tx[i].number * 2;
+    flags[1] |= 1u << tx;
+    if (tx > last) last = tx;
+    endpoint_context(device, tx, 2, config.tx[i].packet_size, 0);
+  }
+  ctx[0] = (ctx[0] & ~(31u << 27)) | (last << 27);
+  unsigned slot = device->slot;
+  if (!command(page_physical(device->input), (12u << 10) | (slot << 24)) ||
+      !xhci_control(slot, 0, 9, config.configuration, 0, NULL, 0))
+    return false;
+  rtw8821cu_usb_attach(slot, vendor, product, &config);
+  return true;
 }
 static bool descriptor(struct device *device, unsigned kind, unsigned size) {
   memset(device->descriptor, 0, sizeof(device->descriptor));
@@ -1116,11 +1143,18 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
     goto failed;
   unsigned device_class = device->descriptor[4],
            device_protocol = device->descriptor[6];
+  unsigned vendor = device->descriptor[8] | (device->descriptor[9] << 8);
+  unsigned product = device->descriptor[10] | (device->descriptor[11] << 8);
   if (!descriptor(device, 2, 9))
     goto failed;
   unsigned total = device->descriptor[2] | (unsigned)device->descriptor[3] << 8;
   if (total < 9 || total > sizeof(device->descriptor) || !descriptor(device, 2, total))
     goto failed;
+  if (rtw8821cu_usb_match(vendor, product)) {
+    if (configure_rtw8821cu(device, vendor, product, total))
+      return true;
+    goto failed;
+  }
   if (ethernet_configure(device, total))
     return true;
   if (uac1_find(device, total))
@@ -1300,6 +1334,7 @@ static void detach_branch(unsigned port, unsigned route, unsigned depth) {
       if (uac.slot == device->slot)
         memset(&uac, 0, sizeof(uac));
       usb_storage_detach(128 + device->slot);
+      rtw8821cu_usb_detach(device->slot);
       if (command(0, (10u << 10) | (device->slot << 24))) {
         dcbaa[device->slot] = 0;
         device->used = false;

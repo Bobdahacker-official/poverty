@@ -18,11 +18,11 @@ Magenta is an x86-64 operating system written in C and assembly, built on [Avala
 
 ## Download
 
-Get [Magenta 0.2.0 — Mountains](https://github.com/Bobdahacker-official/poverty/releases/tag/magenta-v0.2.0). The release includes boot ISOs, writable disks, source, and checksums.
+Get [the latest Magenta release](https://github.com/Bobdahacker-official/poverty/releases/latest). The release includes boot ISOs, writable disks, source, and checksums.
 
-- [Magenta ISO](https://github.com/Bobdahacker-official/poverty/releases/download/magenta-v0.2.0/magenta.iso)
-- [Magenta data disk](https://github.com/Bobdahacker-official/poverty/releases/download/magenta-v0.2.0/magenta-data.img)
-- [Avalanche ISO](https://github.com/Bobdahacker-official/poverty/releases/download/magenta-v0.2.0/avalanche.iso)
+- [Magenta ISO](https://github.com/Bobdahacker-official/poverty/releases/latest/download/magenta.iso)
+- [Magenta data disk](https://github.com/Bobdahacker-official/poverty/releases/latest/download/magenta-data.img)
+- [Avalanche ISO](https://github.com/Bobdahacker-official/poverty/releases/latest/download/avalanche.iso)
 
 For the latest build, use the files in [Images](Images/). Releases mark version updates; ordinary commits don't create a release.
 

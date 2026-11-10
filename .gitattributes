@@ -1,0 +1,2 @@
+*.sh text eol=lf
+**/boot/**/grub.cfg text eol=lf
