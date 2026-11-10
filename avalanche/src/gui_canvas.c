@@ -846,26 +846,32 @@ void gui_canvas_cursor(int x, int y) {
 void gui_canvas_present(void) {
   if (scene_repaint) {
     for (unsigned y = 0; y < height; y += 32) {
-      unsigned rows = height - y < 32 ? height - y : 32, left = width,
-               right = 0;
-      for (unsigned row = 0; row < rows; row++) {
-        const uint32_t *current = pixels + (y + row) * width;
-        const uint32_t *old = presented_pixels + (y + row) * width;
-        for (unsigned x = 0; x < width; x++)
-          if (first_present || current[x] != old[x]) {
-            if (x < left)
-              left = x;
-            if (x >= right)
-              right = x + 1;
-          }
-      }
-      if (left < right) {
-        presented_pixel_count += (uint64_t)(right - left) * rows;
-        graphics_present_region(pixels, width, height, left, y, right - left,
-                                rows);
-        for (unsigned row = 0; row < rows; row++)
-          copy_pixels(presented_pixels + (y + row) * width + left,
-                      pixels + (y + row) * width + left, right - left);
+      unsigned rows = height - y < 32 ? height - y : 32;
+      unsigned run = width;
+      for (unsigned tile = 0; tile < width; tile += 32) {
+        unsigned columns = width - tile < 32 ? width - tile : 32;
+        bool changed = first_present;
+        for (unsigned row = 0; row < rows && !changed; row++) {
+          const uint32_t *current = pixels + (y + row) * width + tile;
+          const uint32_t *old = presented_pixels + (y + row) * width + tile;
+          for (unsigned col = 0; col < columns; col++)
+            if (current[col] != old[col]) {
+              changed = true;
+              break;
+            }
+        }
+        if (changed && run == width)
+          run = tile;
+        if (run != width && (!changed || tile + columns == width)) {
+          unsigned right = changed ? tile + columns : tile;
+          presented_pixel_count += (uint64_t)(right - run) * rows;
+          graphics_present_region(pixels, width, height, run, y, right - run,
+                                  rows);
+          for (unsigned row = 0; row < rows; row++)
+            copy_pixels(presented_pixels + (y + row) * width + run,
+                        pixels + (y + row) * width + run, right - run);
+          run = width;
+        }
       }
     }
     first_present = false;
@@ -917,7 +923,13 @@ void gui_canvas_icon(struct nk_command_buffer *b, struct nk_rect r,
     return;
   }
   float x = r.x + (r.w - 24) / 2, y = r.y + (r.h - 24) / 2;
-  if (kind == 11) {
+  if (kind == 12) {
+    nk_stroke_rect(b, nk_rect(x + 3, y, 18, 24), 3, 2, c);
+    nk_stroke_rect(b, nk_rect(x + 6, y + 3, 12, 5), 1, 1, c);
+    for (unsigned row = 0; row < 3; row++)
+      for (unsigned col = 0; col < 3; col++)
+        nk_fill_rect(b, nk_rect(x + 6 + col * 4, y + 11 + row * 4, 2, 2), 0, c);
+  } else if (kind == 11) {
     nk_stroke_rect(b, nk_rect(x, y + 4, 24, 16), 5, 2, c);
     nk_stroke_line(b, x + 5, y + 12, x + 11, y + 12, 2, c);
     nk_stroke_line(b, x + 8, y + 9, x + 8, y + 15, 2, c);

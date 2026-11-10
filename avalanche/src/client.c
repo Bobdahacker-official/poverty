@@ -22,11 +22,27 @@ void client_event(unsigned index, unsigned type, int a, int b, int flags) {
     return;
   if (type == AV_GUI_QUIT)
     c->closing = true;
+  bool motion = type == AV_GUI_MOUSE && c->pointer_known &&
+                c->pointer_buttons == flags;
+  if (motion && c->tail_motion && c->event_count) {
+    unsigned tail = (c->event_head + c->event_count - 1) % 128;
+    struct av_gui_event *last = &c->events[tail];
+    if (last->type == AV_GUI_MOUSE && last->c == flags) {
+      last->a = a;
+      last->b = b;
+      return;
+    }
+  }
   if (c->event_count == 128) {
     if (type != AV_GUI_QUIT)
       return;
     c->event_head = (c->event_head + 1) % 128;
     c->event_count--;
+  }
+  c->tail_motion = motion;
+  if (type == AV_GUI_MOUSE) {
+    c->pointer_known = true;
+    c->pointer_buttons = flags;
   }
   unsigned at = (c->event_head + c->event_count++) % 128;
   c->events[at] = (struct av_gui_event){type, a, b, flags};
@@ -101,16 +117,30 @@ int client_call(struct process *t, unsigned operation, uint32_t address) {
             : 0;
     if (size > UINT32_MAX || !process_range(t, draw.pixels, size, false))
       return -14;
+    bool changed = false;
+    uint32_t row[2048];
     for (unsigned y = 0; y < draw.height; y++) {
       uint32_t *out = c->pixels + (draw.y + y) * c->width + draw.x;
-      if (!process_copyin(t, out, draw.pixels + (uint64_t)y * draw.stride * 4,
-                          draw.width * 4))
+      if (!process_copyin(t, row, draw.pixels + (uint64_t)y * draw.stride * 4,
+                          draw.width * 4)) {
+        if (changed) {
+          c->sequence++;
+          gui_canvas_invalidate();
+        }
         return -14;
-      for (unsigned x = 0; x < draw.width; x++)
-        out[x] |= 0xff000000;
+      }
+      for (unsigned x = 0; x < draw.width; x++) {
+        uint32_t pixel = row[x] | 0xff000000;
+        if (out[x] != pixel) {
+          out[x] = pixel;
+          changed = true;
+        }
+      }
     }
-    c->sequence++;
-    gui_canvas_invalidate();
+    if (changed) {
+      c->sequence++;
+      gui_canvas_invalidate();
+    }
     return 0;
   }
   return -38;

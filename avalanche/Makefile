@@ -3,7 +3,7 @@ CC = gcc
 LD = ld
 CFLAGS = -m64 -mno-red-zone -std=c11 -O2 -Wall -Wextra -Werror -ffreestanding -fno-pie -fno-pic -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -mno-sse -mno-mmx -msoft-float -Iinclude
 KERNEL_FLAGS = $(CFLAGS) -mcmodel=large
-SOURCES = client games gui_games audio usb_xhci partition usb_storage random image power usb_uhci pcnet pci_ecam http nvme web_runtime web tls kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
+SOURCES = tcp ip_fragment rtl8169 route net_service sandbox firewall filetypes calculator client games gui_games audio usb_xhci partition usb_storage random image power usb_uhci pcnet pci_ecam http nvme web_runtime web tls kernel platform devices ahci fs net user linux virtio block_cache ext4 gui gui_canvas gui_toolkit package sha256 font
 BEAR_SOURCES = $(wildcard vendor/bearssl/*.c)
 BEAR_OBJECTS = $(patsubst vendor/bearssl/%.c,build/bearssl/%.o,$(BEAR_SOURCES))
 OBJECTS = $(addprefix build/,$(addsuffix .o,$(SOURCES))) build/boot.o build/platform_asm.o build/embed.o build/font_data.o build/elk.o build/printf.o
@@ -16,6 +16,17 @@ build build/user:
 	mkdir -p $@
 build/%.o: src/%.c include/avalanche.h include/system.h include/abi.h include/process.h include/magenta.h include/ext4.h include/usb.h | build
 	$(CC) $(KERNEL_FLAGS) -c $< -o $@
+build/calculator.o: src/calculator.c include/calculator.h
+	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
+build/tcp.o build/net.o build/linux.o: include/tcp.h
+build/ip_fragment.o build/net.o: include/ip_fragment.h
+build/net.o build/net_service.o build/route.o build/kernel.o: include/net_service.h
+build/sandbox.o build/user.o build/linux.o build/fs.o build/kernel.o build/package.o: include/sandbox.h
+build/nvme.o build/gui.o build/kernel.o build/user.o: include/nvme_health.h
+build/firewall.o build/net.o build/kernel.o build/user.o: include/firewall.h
+build/filetypes.o build/gui.o: include/filetypes.h
+build/gui.o: include/calculator.h
+build/client.o build/gui.o: include/client.h
 build/gui.o: src/gui.c include/gui_canvas.h include/gui_style.h include/gui_toolkit.h include/font.h include/image.h vendor/nuklear/nuklear.h vendor/nuklear/style.h | build
 	$(CC) $(KERNEL_FLAGS) -msse2 -mfpmath=sse -c $< -o $@
 build/image.o: src/image.c include/image.h vendor/stb/stb_image.h | build

@@ -1,7 +1,11 @@
 #include "system.h"
+#include "firewall.h"
+#include "net_service.h"
+#include "tcp.h"
+#include "ip_fragment.h"
 #include "virtio.h"
 /* Poll-driven Ethernet. DMA memory is identity mapped and supervisor-only. */
-static enum { NONE, RTL8139, E1000, VIRTIO, PCNET } nic;
+static enum { NONE, RTL8139, E1000, VIRTIO, PCNET, RTL8169 } nic;
 static uint16_t rtl_port;
 static volatile uint32_t *e1000;
 static uint8_t mac[6];
@@ -27,10 +31,7 @@ static uint8_t rx_buffers[32][2048] __attribute__((aligned(16)));
 static uint8_t e_tx[8][2048] __attribute__((aligned(16)));
 static uint32_t rx_index;
 static uint32_t ip, mask, gateway, dns_server, rx_count, tx_count, drop_count;
-/* VirtualBox NAT exposes its DNS forwarder at 10.0.2.3.  Keep this as a
- * recovery resolver when a DHCP server omits or supplies an unusable DNS
- * option. */
-static const uint32_t nat_dns = 0x0a000203u;
+static uint32_t dns_secondary;
 static uint16_t ip_id;
 static uint32_t rd(uint32_t r) { return e1000[r / 4]; }
 static void wr(uint32_t r, uint32_t v) {
@@ -73,9 +74,14 @@ static bool same_mac(const uint8_t *a, const uint8_t *b) {
       return false;
   return true;
 }
-static bool ethernet_send(const void *frame, uint32_t n) {
+static bool ethernet_send_raw(const void *frame, uint32_t n) {
   if (!link_ready || n > 1514 || n < 14)
     return false;
+  if (nic == RTL8169) {
+    bool ok = rtl8169_send(frame, n);
+    if (ok) tx_count++;
+    return ok;
+  }
   if (nic == PCNET) {
     bool ok = pcnet_send(frame, n);
     if (ok)
@@ -122,6 +128,13 @@ static bool ethernet_send(const void *frame, uint32_t n) {
   tx_count++;
   return true;
 }
+static bool ethernet_send(const void *frame,uint32_t size) {
+  if(size>=34 && be16((const uint8_t *)frame+12)==0x800 &&
+      !firewall_packet(true,(const uint8_t *)frame+14,size-14))return false;
+  return ethernet_send_raw(frame,size);
+}
+bool net_frame_send(const void *frame,uint32_t size) {return ethernet_send(frame,size);}
+void net_device_mac(uint8_t result[6]) {memcpy(result,mac,6);}
 static bool rtl_init(const struct pci_device *d) {
   if (!(d->bar[0] & 1))
     return false;
@@ -223,15 +236,14 @@ void net_init(void) {
   if (virtio_net_init(mac)) {
     nic = VIRTIO;
     link_ready = true;
-    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
     return;
   }
   if (pcnet_init(mac)) {
     nic = PCNET;
     link_ready = true;
-    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
     return;
   }
+  if (rtl8169_init(mac)) { nic = RTL8169; link_ready = true; return; }
   const struct pci_device *d = pci_find(0x10ec, 0x8139);
   if (d && rtl_init(d))
     link_ready = true;
@@ -245,8 +257,6 @@ void net_init(void) {
         link_ready = true;
     }
   }
-  if (link_ready)
-    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
 }
 struct arp_entry {
   uint32_t ip, seen;
@@ -291,8 +301,9 @@ static bool resolve(uint32_t destination, uint8_t *result) {
     memcpy(result, broadcast, 6);
     return true;
   }
-  uint32_t next = ((destination & mask) == (ip & mask)) ? destination : gateway;
-  if (!next)
+  if(!ip)return false;
+  uint32_t next;
+  if (!route_lookup(destination, &next) || !next)
     return false;
   for (unsigned attempt = 0; attempt < 3; attempt++) {
     for (unsigned i = 0; i < 8; i++)
@@ -314,46 +325,53 @@ static bool resolve(uint32_t destination, uint8_t *result) {
   }
   return false;
 }
-static bool ipv4_send(uint32_t dest, uint8_t protocol, const void *payload,
-                      uint32_t size) {
-  if (size > 1480)
-    return false;
-  uint8_t p[1514], target[6];
-  if (!resolve(dest, target))
-    return false;
-  memcpy(p, target, 6);
-  memcpy(p + 6, mac, 6);
-  put16(p + 12, 0x800);
-  uint8_t *h = p + 14;
-  memset(h, 0, 20);
-  h[0] = 0x45;
-  put16(h + 2, (uint16_t)(20 + size));
-  put16(h + 4, ++ip_id);
-  put16(h + 6, 0x4000);
-  h[8] = 64;
-  h[9] = protocol;
-  put32(h + 12, ip);
-  put32(h + 16, dest);
-  put16(h + 10, checksum(h, 20));
-  memcpy(h + 20, payload, size);
-  return ethernet_send(p, 34 + size);
+bool net_resolve(uint32_t destination,uint8_t *result) {return resolve(destination,result);}
+static bool ipv4_send_to(uint32_t dest,uint8_t protocol,const void *payload,uint32_t size,const uint8_t target[6]) {
+  if(size>65515)return false;
+  uint16_t identification=++ip_id;
+  if(size>1480) {
+    static uint8_t complete[65535];
+    memset(complete,0,20);complete[0]=0x45;put16(complete+2,20+size);complete[8]=64;complete[9]=protocol;
+    put32(complete+12,ip);put32(complete+16,dest);put16(complete+10,checksum(complete,20));
+    memcpy(complete+20,payload,size);
+    if(!firewall_packet(true,complete,20+size))return false;
+  }
+  for(unsigned offset=0;offset<size || (!size && !offset);) {
+    unsigned count=size-offset;if(count>1480)count=1480;
+    uint8_t frame[1514];memcpy(frame,target,6);memcpy(frame+6,mac,6);put16(frame+12,0x800);
+    uint8_t *h=frame+14;memset(h,0,20);h[0]=0x45;put16(h+2,20+count);put16(h+4,identification);
+    put16(h+6,size<=1480?0x4000:(offset/8)|(offset+count<size?0x2000:0));h[8]=64;h[9]=protocol;
+    put32(h+12,ip);put32(h+16,dest);put16(h+10,checksum(h,20));memcpy(h+20,(const uint8_t *)payload+offset,count);
+    if(!(size>1480?ethernet_send_raw(frame,34+count):ethernet_send(frame,34+count)))return false;
+    if(!size)break;
+    offset+=count;
+  }
+  return true;
+}
+static bool ipv4_send(uint32_t dest,uint8_t protocol,const void *payload,uint32_t size) {
+  uint8_t target[6];if(!resolve(dest,target))return false;return ipv4_send_to(dest,protocol,payload,size,target);
 }
 struct datagram {
   bool used;
   uint32_t source, size;
   uint16_t src_port, dst_port;
-  uint8_t data[1472];
+  uint8_t data[65507];
 };
 static struct datagram udp[8];
 static unsigned udp_next;
-static void tcp_receive(uint32_t, const uint8_t *, uint32_t);
+
 static uint16_t ping_sequence;
 static uint32_t ping_target, ping_reply_tick;
 static bool ping_waiting, ping_received;
-static void receive(const uint8_t *p, uint32_t n) {
+static bool dhcp_receive(uint32_t, uint16_t, uint16_t, const uint8_t *, unsigned);
+static bool dhcp_listening(void);
+static void receive_packet(const uint8_t *,uint32_t,bool);
+static void receive_reassembled(const uint8_t *p,uint32_t n) {receive_packet(p,n,false);}
+static void receive(const uint8_t *p,uint32_t n) {receive_packet(p,n,true);}
+static void receive_packet(const uint8_t *p, uint32_t n,bool physical) {
   if (n < 14)
     return;
-  rx_count++;
+  if (physical) rx_count++;
   if (!same_mac(p, mac) && !same_mac(p, broadcast))
     return;
   uint16_t type = be16(p + 12);
@@ -376,38 +394,22 @@ static void receive(const uint8_t *p, uint32_t n) {
   const uint8_t *h = p + 14;
   uint32_t ihl = (h[0] & 15) * 4, total = be16(h + 2);
   if ((h[0] >> 4) != 4 || ihl < 20 || ihl > 60 || total < ihl ||
-      total > n - 14 || checksum(h, ihl) || ((be16(h + 6) & 0x3fff) != 0))
+      total > n - 14 || checksum(h, ihl) || (be16(h + 6) & 0x8000))
     return;
+  if (be16(h + 6) & 0x3fff) {ip4_reassemble(p,n,receive_reassembled);return;}
   uint32_t source = be32(h + 12), dest = be32(h + 16);
-  if (dest != ip && dest != 0xffffffffu && (!ip || dest != (ip | ~mask)))
+  bool dhcp_reply = dhcp_listening() && h[9] == 17 && total >= ihl+8 && be16(h+ihl) == 67 && be16(h+ihl+2) == 68;
+  if (!dhcp_reply && dest != ip && dest != 0xffffffffu && (!ip || dest != (ip | ~mask)))
     return;
+  if (!firewall_packet(false, h, total)) { drop_count++; return; }
   const uint8_t *payload = h + ihl;
   uint32_t size = total - ihl;
   if (h[9] == 1) {
     if (size < 8 || checksum(payload, size))
       return;
-    if (payload[0] == 8 && payload[1] == 0 && ip && dest == ip &&
-        size <= 1480) { /* Reply directly to the Ethernet sender; never block in
-                           receive. */
-      uint8_t reply[1514];
-      memcpy(reply, p + 6, 6);
-      memcpy(reply + 6, mac, 6);
-      put16(reply + 12, 0x800);
-      uint8_t *rh = reply + 14;
-      memcpy(rh, h, 20);
-      rh[0] = 0x45;
-      put16(rh + 2, 20 + size);
-      put16(rh + 6, 0);
-      rh[8] = 64;
-      put32(rh + 12, ip);
-      put32(rh + 16, source);
-      put16(rh + 10, 0);
-      put16(rh + 10, checksum(rh, 20));
-      memcpy(rh + 20, payload, size);
-      rh[20] = 0;
-      put16(rh + 22, 0);
-      put16(rh + 22, checksum(rh + 20, size));
-      ethernet_send(reply, 34 + size);
+    if (payload[0] == 8 && payload[1] == 0 && ip && dest == ip && size<=65515) {
+      static uint8_t reply[65515];memcpy(reply,payload,size);reply[0]=0;put16(reply+2,0);put16(reply+2,checksum(reply,size));
+      ipv4_send_to(source,1,reply,size,p+6);
     } else if (payload[0] == 0 && payload[1] == 0 && ping_waiting &&
                source == ping_target && be16(payload + 4) == 0xa11a &&
                be16(payload + 6) == ping_sequence) {
@@ -418,25 +420,22 @@ static void receive(const uint8_t *p, uint32_t n) {
   }
   if (h[9] == 6) {
     if (dest == ip)
-      tcp_receive(source, payload, size);
+      tcp_input(source, payload, size, p + 6);
     return;
   }
   if (h[9] != 17 || size < 8)
     return;
   uint32_t len = be16(payload + 4);
-  if (len < 8 || len > size || len - 8 > 1472)
+  if (len < 8 || len > size || len - 8 > 65507)
     return;
   if (be16(payload + 6)) {
-    uint8_t pseudo[1492];
-    put32(pseudo, source);
-    put32(pseudo + 4, dest);
-    pseudo[8] = 0;
-    pseudo[9] = 17;
-    put16(pseudo + 10, len);
-    memcpy(pseudo + 12, payload, len);
-    if (checksum(pseudo, len + 12))
-      return;
+    uint32_t sum=(source>>16)+(source&65535)+(dest>>16)+(dest&65535)+17+len;
+    for(unsigned i=0;i+1<len;i+=2)sum+=be16(payload+i);
+    if(len&1)sum+=(uint32_t)payload[len-1]<<8;
+    while(sum>>16)sum=(sum&65535)+(sum>>16);
+    if((uint16_t)~sum)return;
   }
+  if (dhcp_receive(source, be16(payload), be16(payload + 2), payload + 8, len - 8)) return;
   unsigned slot = 8;
   for (unsigned i = 0; i < 8; i++)
     if (!udp[i].used) {
@@ -459,12 +458,15 @@ void net_poll(void) {
   devices_poll();
   if (!link_ready)
     return;
+  if (nic == RTL8169) { rtl8169_poll(receive); net_service_poll(); tcp_poll(); return; }
   if (nic == PCNET) {
     pcnet_poll(receive);
+    net_service_poll(); tcp_poll();
     return;
   }
   if (nic == VIRTIO) {
     virtio_net_poll(receive);
+    net_service_poll(); tcp_poll();
     return;
   }
   if (nic == RTL8139) {
@@ -504,18 +506,24 @@ void net_poll(void) {
     }
     (void)rd(0xc0);
   }
+  net_service_poll(); tcp_poll();
 }
 int net_udp_send(uint32_t dest, uint16_t src, uint16_t port, const void *data,
                  uint32_t n) {
-  if (!link_ready || n > 1472 || !src || !port || !dest)
+  if (!link_ready || n > 65507 || !src || !port || !dest)
     return -1;
-  uint8_t p[1480];
+  uint8_t small[1480];
+  unsigned pages=(n+8+4095)/4096;
+  uint8_t *p=n+8<=sizeof(small)?small:pages_alloc(pages);
+  if(!p)return -12;
   put16(p, src);
   put16(p + 2, port);
   put16(p + 4, n + 8);
   put16(p + 6, 0);
   memcpy(p + 8, data, n);
-  return ipv4_send(dest, 17, p, n + 8) ? (int)n : -2;
+  int result=ipv4_send(dest,17,p,n+8)?(int)n:-2;
+  if(p!=small)for(unsigned i=0;i<pages;i++)page_free(p+i*4096);
+  return result;
 }
 int net_udp_recv(uint16_t port, void *data, uint32_t cap, uint32_t *source,
                  uint16_t *srcport) {
@@ -563,13 +571,22 @@ void ip_print(uint32_t a) {
       console_putc('.');
   }
 }
-void net_config(uint32_t address, uint32_t netmask, uint32_t router,
+static void apply_config(uint32_t address, uint32_t netmask, uint32_t router,
                 uint32_t dns) {
+  if (ip != address || mask != netmask || gateway != router) {tcp_reset_all(); memset(udp,0,sizeof(udp));}
   ip = address;
   mask = netmask;
   gateway = router;
   dns_server = dns;
+  dns_secondary = 0;
+  route_config(address, netmask, router);
   memset(arp, 0, sizeof(arp));
+}
+void net_config(uint32_t address, uint32_t netmask, uint32_t router, uint32_t dns) {
+  net_dhcp_stop(); apply_config(address, netmask, router, dns);
+}
+void net_dns_servers(uint32_t primary, uint32_t secondary) {
+  dns_server = primary; dns_secondary = secondary;
 }
 void net_info(void) {
   console_write("NIC: ");
@@ -577,6 +594,7 @@ void net_info(void) {
                 : nic == RTL8139 ? "RTL8139"
                 : nic == E1000   ? "Intel E1000"
                 : nic == PCNET   ? "AMD PCnet"
+                : nic == RTL8169 ? "Realtek RTL8169/8168"
                                  : "none supported");
   console_write(" MAC ");
   for (unsigned i = 0; i < 6; i++) {
@@ -609,6 +627,7 @@ void net_snapshot(struct network_info *out) {
                      : nic == RTL8139 ? "RTL8139"
                      : nic == E1000   ? "Intel E1000"
                      : nic == PCNET   ? "AMD PCnet"
+                : nic == RTL8169 ? "Realtek RTL8169/8168"
                                       : "No Ethernet adapter";
   memcpy(out->adapter, name, strlen(name) + 1);
 }
@@ -641,138 +660,154 @@ int net_ping(uint32_t dest) {
   return -3;
 }
 static uint32_t dhcp_xid;
-static void dhcp_packet(uint8_t *p, uint8_t type, uint32_t offered,
-                        uint32_t server, uint32_t *size) {
-  memset(p, 0, 320);
-  p[0] = 1;
-  p[1] = 1;
-  p[2] = 6;
-  put32(p + 4, dhcp_xid);
-  put16(p + 10, 0x8000);
-  memcpy(p + 28, mac, 6);
-  put32(p + 236, 0x63825363);
-  unsigned i = 240;
-  p[i++] = 53;
-  p[i++] = 1;
-  p[i++] = type;
-  p[i++] = 61;
-  p[i++] = 7;
-  p[i++] = 1;
-  memcpy(p + i, mac, 6);
-  i += 6;
-  if (type == 3) {
-    p[i++] = 50;
-    p[i++] = 4;
-    put32(p + i, offered);
-    i += 4;
-    p[i++] = 54;
-    p[i++] = 4;
-    put32(p + i, server);
-    i += 4;
-  }
-  p[i++] = 55;
-  p[i++] = 4;
-  p[i++] = 1;
-  p[i++] = 3;
-  p[i++] = 6;
-  p[i++] = 51;
-  p[i++] = 255;
-  *size = i;
-}
+enum dhcp_state {DHCP_OFF,DHCP_SELECTING,DHCP_REQUESTING,DHCP_BOUND,DHCP_RENEWING,DHCP_REBINDING,DHCP_RETRY};
+static enum dhcp_state dhcp_state;
+static bool dhcp_listening(void) {return dhcp_state==DHCP_SELECTING || dhcp_state==DHCP_REQUESTING;}
 struct lease {
-  uint32_t address, mask, router, dns, server;
+  uint32_t address,mask,router,dns,secondary,server,seconds,renew,rebind;
   uint8_t type;
+  bool has_mask,has_router,has_dns;
 };
-static bool dhcp_parse(const uint8_t *p, unsigned n, struct lease *l) {
-  if (n < 240 || p[0] != 2 || p[1] != 1 || p[2] != 6 ||
-      be32(p + 4) != dhcp_xid || !same_mac(p + 28, mac) ||
-      be32(p + 236) != 0x63825363)
-    return false;
-  memset(l, 0, sizeof(*l));
-  l->address = be32(p + 16);
-  for (unsigned i = 240; i < n;) {
-    unsigned code = p[i++];
-    if (code == 255)
-      break;
-    if (!code)
-      continue;
-    if (i >= n)
-      return false;
-    unsigned len = p[i++];
-    if (len > n - i)
-      return false;
-    if (code == 53 && len == 1)
-      l->type = p[i];
-    else if (code == 1 && len == 4)
-      l->mask = be32(p + i);
-    else if (code == 3 && len >= 4)
-      l->router = be32(p + i);
-    else if (code == 6 && len >= 4)
-      l->dns = be32(p + i);
-    else if (code == 54 && len == 4)
-      l->server = be32(p + i);
-    i += len;
+static struct lease dhcp_offer;
+static uint32_t dhcp_next,dhcp_expires,dhcp_renew_at,dhcp_rebind_at,dhcp_attempts,dhcp_acquired;
+static bool dhcp_infinite,dhcp_polling;
+static bool due(uint32_t now,uint32_t deadline) {return (int32_t)(now-deadline)>=0;}
+static uint32_t transaction_id(void) {
+  uint32_t value;
+  if(!secure_random(&value,sizeof(value)))value=clock_ticks()^be32(mac)^((uint32_t)mac[4]<<24)^((uint32_t)mac[5]<<8);
+  return value?value:1;
+}
+static void dhcp_packet(uint8_t *p,uint8_t type,uint32_t *size) {
+  memset(p,0,320);p[0]=1;p[1]=1;p[2]=6;put32(p+4,dhcp_xid);
+  bool renewal=dhcp_state==DHCP_RENEWING || dhcp_state==DHCP_REBINDING;
+  if(renewal)put32(p+12,ip);else put16(p+10,0x8000);
+  uint32_t elapsed=(clock_ticks()-dhcp_acquired)/100;put16(p+8,elapsed>65535?65535:elapsed);
+  memcpy(p+28,mac,6);put32(p+236,0x63825363);
+  unsigned i=240;p[i++]=53;p[i++]=1;p[i++]=type;
+  p[i++]=61;p[i++]=7;p[i++]=1;memcpy(p+i,mac,6);i+=6;
+  if(type==3 && !renewal) {
+    p[i++]=50;p[i++]=4;put32(p+i,dhcp_offer.address);i+=4;
+    p[i++]=54;p[i++]=4;put32(p+i,dhcp_offer.server);i+=4;
   }
-  return true;
+  p[i++]=55;p[i++]=6;p[i++]=1;p[i++]=3;p[i++]=6;p[i++]=51;p[i++]=58;p[i++]=59;
+  p[i++]=57;p[i++]=2;put16(p+i,1472);i+=2;
+  p[i++]=255;*size=i;
+}
+static bool dhcp_parse(const uint8_t *p,unsigned n,struct lease *l) {
+  if(n<240 || p[0]!=2 || p[1]!=1 || p[2]!=6 || be32(p+4)!=dhcp_xid ||
+     !same_mac(p+28,mac) || be32(p+236)!=0x63825363)return false;
+  memset(l,0,sizeof(*l));l->address=be32(p+16);
+  for(unsigned i=240;i<n;) {
+    unsigned code=p[i++];if(code==255)break;if(!code)continue;
+    if(i>=n)return false;
+    unsigned len=p[i++];if(len>n-i)return false;
+    if(code==53 && len==1)l->type=p[i];
+    else if(code==1 && len==4) {l->mask=be32(p+i);l->has_mask=true;}
+    else if(code==3 && len>=4 && !(len&3)) {l->router=be32(p+i);l->has_router=true;}
+    else if(code==6 && len>=4 && !(len&3)) {l->dns=be32(p+i);if(len>=8)l->secondary=be32(p+i+4);l->has_dns=true;}
+    else if(code==54 && len==4)l->server=be32(p+i);
+    else if(code==51 && len==4)l->seconds=be32(p+i);
+    else if(code==58 && len==4)l->renew=be32(p+i);
+    else if(code==59 && len==4)l->rebind=be32(p+i);
+    i+=len;
+  }
+  return l->type!=0;
+}
+void net_dhcp_stop(void) {dhcp_state=DHCP_OFF;}
+void net_dhcp_begin(void) {
+  if(!link_ready) {dhcp_state=DHCP_OFF;return;}
+  apply_config(0,0,0,0);
+  memset(&dhcp_offer,0,sizeof(dhcp_offer));
+  dhcp_state=DHCP_SELECTING;dhcp_attempts=0;dhcp_xid=transaction_id();
+  dhcp_acquired=dhcp_next=clock_ticks();dhcp_infinite=false;
+}
+static bool dhcp_receive(uint32_t source,uint16_t sport,uint16_t dport,const uint8_t *p,unsigned length) {
+  (void)source;
+  if(sport!=67 || dport!=68 || dhcp_state==DHCP_OFF)return false;
+  struct lease lease;
+  if(!dhcp_parse(p,length,&lease))return true;
+  uint32_t now=clock_ticks();
+  if(dhcp_state==DHCP_SELECTING && lease.type==2 && lease.address && lease.server) {
+    dhcp_offer=lease;dhcp_state=DHCP_REQUESTING;dhcp_attempts=0;dhcp_next=now;return true;
+  }
+  if(dhcp_state!=DHCP_REQUESTING && dhcp_state!=DHCP_RENEWING && dhcp_state!=DHCP_REBINDING)return true;
+  if(!lease.server || (dhcp_state!=DHCP_REBINDING && lease.server!=dhcp_offer.server))return true;
+  if(lease.type==6) {apply_config(0,0,0,0);dhcp_state=DHCP_RETRY;dhcp_next=now+100;return true;}
+  if(lease.type!=5 || !lease.seconds)return true;
+  if(!lease.address)lease.address=dhcp_offer.address;
+  if(lease.address!=dhcp_offer.address)return true;
+  if(!lease.has_mask)lease.mask=dhcp_offer.mask;
+  if(!lease.has_router)lease.router=dhcp_offer.router;
+  if(!lease.has_dns) {lease.dns=dhcp_offer.dns;lease.secondary=dhcp_offer.secondary;}
+  uint32_t inverse=~lease.mask;
+  if(!lease.address || !lease.mask || (inverse&(inverse+1)) ||
+     (lease.router && (lease.router&lease.mask)!=(lease.address&lease.mask)))return true;
+  apply_config(lease.address,lease.mask,lease.router,lease.dns);dns_secondary=lease.secondary;
+  dhcp_offer=lease;dhcp_acquired=now;dhcp_infinite=lease.seconds==0xffffffffu;
+  uint32_t lifetime=lease.seconds>21474836u?2147483600u:lease.seconds*100u;
+  uint32_t renew=lease.renew && lease.renew<lease.seconds && lease.renew<=21474836u?lease.renew*100u:lifetime/2;
+  uint32_t rebind=lease.rebind && lease.rebind<lease.seconds && lease.rebind<=21474836u?lease.rebind*100u:(uint64_t)lifetime*7/8;
+  if(!renew || renew>=rebind || rebind>=lifetime) {renew=lifetime/2;rebind=(uint64_t)lifetime*7/8;}
+  dhcp_expires=now+lifetime;dhcp_renew_at=now+renew;dhcp_rebind_at=now+rebind;
+  dhcp_state=DHCP_BOUND;dhcp_attempts=0;return true;
+}
+void net_service_poll(void) {
+  if(dhcp_polling || dhcp_state==DHCP_OFF || !link_ready)return;
+  dhcp_polling=true;uint32_t now=clock_ticks();
+  if((dhcp_state==DHCP_BOUND || dhcp_state==DHCP_RENEWING || dhcp_state==DHCP_REBINDING) && !dhcp_infinite) {
+    if(due(now,dhcp_expires)) {net_dhcp_begin();goto done;}
+    if(dhcp_state==DHCP_BOUND && due(now,dhcp_renew_at)) {
+      dhcp_state=DHCP_RENEWING;dhcp_xid=transaction_id();dhcp_next=now;dhcp_attempts=0;
+    }
+    if(dhcp_state==DHCP_RENEWING && due(now,dhcp_rebind_at)) {dhcp_state=DHCP_REBINDING;dhcp_next=now;dhcp_attempts=0;}
+  }
+  if(dhcp_state==DHCP_BOUND)goto done;
+  if(dhcp_state==DHCP_RETRY) {if(due(now,dhcp_next))net_dhcp_begin();goto done;}
+  if(!due(now,dhcp_next))goto done;
+  if(dhcp_attempts>=5 && (dhcp_state==DHCP_SELECTING || dhcp_state==DHCP_REQUESTING)) {
+    dhcp_state=DHCP_RETRY;dhcp_next=now+3000;goto done;
+  }
+  uint8_t packet[320];uint32_t length;
+  dhcp_packet(packet,dhcp_state==DHCP_SELECTING?1:3,&length);
+  unsigned delay=100u<<(dhcp_attempts<4?dhcp_attempts:4);
+  if(dhcp_attempts<31)dhcp_attempts++;
+  dhcp_next=now+delay;
+  net_udp_send(dhcp_state==DHCP_RENEWING?dhcp_offer.server:0xffffffffu,68,67,packet,length);
+done:dhcp_polling=false;
 }
 int net_dhcp(void) {
-  if (!link_ready)
-    return -1;
-  uint32_t old_ip = ip, old_mask = mask, old_gw = gateway, old_dns = dns_server;
-  ip = 0;
-  mask = 0;
-  gateway = 0;
-  dhcp_xid = 0x41564c00u ^ clock_ticks() ^ ((uintptr_t)mac[4] << 8) ^ mac[5];
-  uint8_t p[320], reply[1472];
-  struct lease offer = {0};
-  bool offered = false;
-  uint32_t size;
-  for (unsigned attempt = 0; attempt < 3 && !offered; attempt++) {
-    dhcp_packet(p, 1, 0, 0, &size);
-    net_udp_send(0xffffffffu, 68, 67, p, size);
-    uint32_t start = clock_ticks();
-    while (clock_ticks() - start < 200) {
-      uint32_t source;
-      uint16_t port;
-      int n = net_udp_recv(68, reply, sizeof(reply), &source, &port);
-      if (n >= 0 && port == 67 && dhcp_parse(reply, (unsigned)n, &offer) &&
-          offer.type == 2 && offer.address && offer.server) {
-        offered = true;
-        break;
-      }
-      cpu_pause();
+  if(!link_ready)return -19;
+  if(dhcp_state==DHCP_BOUND) {
+    dhcp_state=DHCP_RENEWING;dhcp_xid=transaction_id();dhcp_next=clock_ticks();dhcp_attempts=0;
+  } else if(dhcp_state==DHCP_OFF || dhcp_state==DHCP_RETRY)net_dhcp_begin();
+  uint32_t started=clock_ticks();
+  while((uint32_t)(clock_ticks()-started)<1200) {
+    net_poll();if(dhcp_state==DHCP_BOUND)return 0;cpu_pause();
+  }
+  return -110;
+}
+void net_diagnostics(void) {
+  net_info();
+  console_write("Ethernet link: ");
+  if(nic==RTL8169)console_write(rtl8169_link()?"up\n":"down\n");
+  else if(nic==E1000)console_write(rd(8)&2?"up\n":"down\n");
+  else console_write(link_ready?"driver initialized\n":"no supported driver\n");
+  const char *states[]={"off/static","discovering","requesting","bound","renewing","rebinding","retry wait"};
+  console_write("DHCP state: ");console_write(states[dhcp_state]);console_putc('\n');
+  if(dhcp_state==DHCP_BOUND || dhcp_state==DHCP_RENEWING || dhcp_state==DHCP_REBINDING) {
+    console_write("Lease server: ");ip_print(dhcp_offer.server);console_putc('\n');
+    console_write("Lease age seconds: ");print_uint((clock_ticks()-dhcp_acquired)/100);console_putc('\n');
+    console_write("Lease duration seconds: ");print_uint(dhcp_offer.seconds);console_putc('\n');
+  }
+  for(unsigned i=0;i<pci_count_devices();i++) {
+    const struct pci_device *d=pci_device_at(i);
+    if(d && d->class_id==2) {
+      console_write("Network PCI ");print_hex(d->vendor);console_putc(':');print_hex(d->device);
+      console_write(" revision ");print_hex(pci_read(d,8)&255);console_write(" class ");print_hex(d->subclass);console_putc('\n');
     }
   }
-  if (offered)
-    for (unsigned attempt = 0; attempt < 3; attempt++) {
-      dhcp_packet(p, 3, offer.address, offer.server, &size);
-      net_udp_send(0xffffffffu, 68, 67, p, size);
-      uint32_t start = clock_ticks();
-      while (clock_ticks() - start < 200) {
-        uint32_t source;
-        uint16_t port;
-        int n = net_udp_recv(68, reply, sizeof(reply), &source, &port);
-        struct lease ack;
-        if (n >= 0 && port == 67 && dhcp_parse(reply, (unsigned)n, &ack)) {
-          if (ack.type == 6)
-            break;
-          if (ack.type == 5 && ack.address == offer.address &&
-              ack.server == offer.server && ack.mask) {
-            net_config(ack.address, ack.mask, ack.router,
-                       ack.dns ? ack.dns : nat_dns);
-            return 0;
-          }
-        }
-        cpu_pause();
-      }
-    }
-  net_config(old_ip, old_mask, old_gw, old_dns);
-  /* VirtualBox's default NAT network is deterministic.  Keep the desktop
-   * usable when its DHCP exchange is lost during adapter startup; normal
-   * DHCP leases still take precedence above. */
-  if (link_ready)
-    net_config(0x0a00020fu, 0xffffff00u, 0x0a000202u, nat_dns);
-  return -2;
+  rtl8169_diagnostics();
+  tcp_diagnostics();
 }
 static bool skip_name(const uint8_t *p, unsigned n, unsigned *off) {
   unsigned steps = 0;
@@ -798,7 +833,8 @@ int net_dns(const char *name, uint32_t *answer) {
   if (!ip)
     return -1;
   uint8_t query[512] = {0}, reply[1472];
-  uint16_t id = (uint16_t)(clock_ticks() ^ 0xa51a), port = 49152 + (id % 16000);
+  uint32_t nonce; if(!secure_random(&nonce,sizeof(nonce))) nonce=clock_ticks() ^ be32(mac);
+  uint16_t id=nonce, port=49152+((nonce>>16)%16000);
   put16(query, id);
   put16(query + 2, 0x100);
   put16(query + 4, 1);
@@ -823,8 +859,8 @@ int net_dns(const char *name, uint32_t *answer) {
   put16(query + pos, 1);
   put16(query + pos + 2, 1);
   pos += 4;
-  uint32_t resolvers[3] = {dns_server, nat_dns, 0x08080808u};
-  for (unsigned resolver = 0; resolver < 3; resolver++) {
+  uint32_t resolvers[2] = {dns_server, dns_secondary};
+  for (unsigned resolver = 0; resolver < 2; resolver++) {
     uint32_t server = resolvers[resolver];
     if (!server || (resolver && server == resolvers[0]))
       continue;
@@ -832,7 +868,7 @@ int net_dns(const char *name, uint32_t *answer) {
       if (net_udp_send(server, port, 53, query, pos) < 0)
         return -3;
       uint32_t start = clock_ticks();
-      while (clock_ticks() - start < 500) {
+      while (clock_ticks() - start < 200) {
         uint32_t source;
         uint16_t srcport;
         int result =
@@ -840,8 +876,9 @@ int net_dns(const char *name, uint32_t *answer) {
         if (result < 12 || source != server || srcport != 53)
           continue;
         unsigned n = (unsigned)result;
-        if (be16(reply) != id || (be16(reply + 2) & 0x820f) != 0x8000)
-          continue;
+        if (be16(reply) != id || !(be16(reply+2)&0x8000)) continue;
+        if((be16(reply+2)&15)==3) return -2;
+        if ((be16(reply+2)&0x7a0f)!=0) continue;
         unsigned off = 12, questions = be16(reply + 4),
                  answers = be16(reply + 6);
         if (questions != 1 || answers > 128)
@@ -869,287 +906,6 @@ int net_dns(const char *name, uint32_t *answer) {
   return -4;
 }
 
-/* A single active-open TCP stream. Stop-and-wait transmission bounds memory;
- * in-order receive, advertised windows, checksums and retransmission are used.
- * No listen/backlog API, SACK, window scaling or IP fragmentation is provided.
- */
-#define TCP_RX 8192u
-static struct {
-  bool active, established, peer_closed, reset;
-  uint32_t remote, snd_una, snd_nxt, rcv_nxt;
-  uint16_t local_port, remote_port, peer_window, mss;
-  uint8_t hardware[6], buffer[TCP_RX];
-  uint32_t head, count;
-} tcp;
-static uint16_t tcp_port = 50000;
-void net_tcp_snapshot(struct tcp_snapshot *out) {
-  *out = (struct tcp_snapshot){tcp.active,     tcp.established, tcp.peer_closed,
-                               tcp.reset,      tcp.count,       tcp.remote,
-                               tcp.local_port, tcp.remote_port};
-}
-static void tcp_emit(uint8_t flags, uint32_t seq, const void *data,
-                     uint32_t size) {
-  uint8_t p[594], pseudo[572];
-  unsigned options = (flags & 2) ? 4 : 0, hlen = 20 + options,
-           tlen = hlen + size;
-  if (tlen > 560)
-    return;
-  memcpy(p, tcp.hardware, 6);
-  memcpy(p + 6, mac, 6);
-  put16(p + 12, 0x800);
-  uint8_t *h = p + 14;
-  memset(h, 0, 20);
-  h[0] = 0x45;
-  put16(h + 2, 20 + tlen);
-  put16(h + 4, ++ip_id);
-  put16(h + 6, 0x4000);
-  h[8] = 64;
-  h[9] = 6;
-  put32(h + 12, ip);
-  put32(h + 16, tcp.remote);
-  put16(h + 10, checksum(h, 20));
-  uint8_t *t = h + 20;
-  memset(t, 0, hlen);
-  put16(t, tcp.local_port);
-  put16(t + 2, tcp.remote_port);
-  put32(t + 4, seq);
-  put32(t + 8, tcp.rcv_nxt);
-  t[12] = (uint8_t)((hlen / 4) << 4);
-  t[13] = flags;
-  put16(t + 14, TCP_RX - tcp.count);
-  if (options) {
-    t[20] = 2;
-    t[21] = 4;
-    put16(t + 22, 536);
-  }
-  if (size)
-    memcpy(t + hlen, data, size);
-  put32(pseudo, ip);
-  put32(pseudo + 4, tcp.remote);
-  pseudo[8] = 0;
-  pseudo[9] = 6;
-  put16(pseudo + 10, tlen);
-  memcpy(pseudo + 12, t, tlen);
-  put16(t + 16, checksum(pseudo, tlen + 12));
-  ethernet_send(p, 34 + tlen);
-}
-static void tcp_receive(uint32_t source, const uint8_t *p, uint32_t n) {
-  if (!tcp.active || source != tcp.remote || n < 20 || n > 1480 ||
-      be16(p) != tcp.remote_port || be16(p + 2) != tcp.local_port)
-    return;
-  unsigned hlen = (p[12] >> 4) * 4;
-  if (hlen < 20 || hlen > n)
-    return;
-  uint8_t pseudo[1492];
-  put32(pseudo, source);
-  put32(pseudo + 4, ip);
-  pseudo[8] = 0;
-  pseudo[9] = 6;
-  put16(pseudo + 10, n);
-  memcpy(pseudo + 12, p, n);
-  if (checksum(pseudo, n + 12))
-    return;
-  uint32_t seq = be32(p + 4), ack = be32(p + 8);
-  uint8_t flags = p[13];
-  if (flags & 4) {
-    if ((tcp.established && seq == tcp.rcv_nxt) ||
-        (!tcp.established && (flags & 16) && ack == tcp.snd_nxt))
-      tcp.reset = true;
-    return;
-  }
-  if (!tcp.established) {
-    if ((flags & 0x12) != 0x12 || ack != tcp.snd_nxt)
-      return;
-    tcp.snd_una = ack;
-    tcp.rcv_nxt = seq + 1;
-    tcp.peer_window = be16(p + 14);
-    tcp.mss = 536;
-    for (unsigned off = 20; off < hlen;) {
-      unsigned kind = p[off++];
-      if (!kind)
-        break;
-      if (kind == 1)
-        continue;
-      if (off >= hlen)
-        break;
-      unsigned len = p[off++];
-      if (len < 2 || len - 2 > hlen - off)
-        break;
-      if (kind == 2 && len == 4) {
-        uint16_t m = be16(p + off);
-        if (m && m < tcp.mss)
-          tcp.mss = m;
-      }
-      off += len - 2;
-    }
-    tcp.established = true;
-    tcp_emit(16, tcp.snd_nxt, NULL, 0);
-    return;
-  }
-  if (!(flags & 16))
-    return;
-  if ((int32_t)(ack - tcp.snd_una) >= 0 && (int32_t)(tcp.snd_nxt - ack) >= 0) {
-    tcp.snd_una = ack;
-    tcp.peer_window = be16(p + 14);
-  }
-  if (flags & 2) {
-    tcp_emit(16, tcp.snd_nxt, NULL, 0);
-    return;
-  }
-  unsigned bytes = n - hlen;
-  if (bytes || flags & 1) {
-    if (seq != tcp.rcv_nxt || bytes > TCP_RX - tcp.count) {
-      tcp_emit(16, tcp.snd_nxt, NULL, 0);
-      return;
-    }
-    for (unsigned i = 0; i < bytes; i++)
-      tcp.buffer[(tcp.head + tcp.count + i) % TCP_RX] = p[hlen + i];
-    tcp.count += bytes;
-    tcp.rcv_nxt += bytes;
-    if (flags & 1) {
-      tcp.rcv_nxt++;
-      tcp.peer_closed = true;
-    }
-    tcp_emit(16, tcp.snd_nxt, NULL, 0);
-  }
-}
-int net_tcp_connect(uint32_t destination, uint16_t port) {
-  if (!link_ready || !ip || !destination || !port || tcp.active)
-    return -1;
-  memset(&tcp, 0, sizeof(tcp));
-  if (!resolve(destination, tcp.hardware))
-    return -2;
-  tcp.active = true;
-  tcp.remote = destination;
-  tcp.remote_port = port;
-  tcp.local_port = ++tcp_port;
-  if (tcp_port < 49152)
-    tcp.local_port = tcp_port = 49152;
-  uint32_t seq = clock_ticks() * 1103515245u ^ ((uintptr_t)mac[4] << 16) ^
-                 ((uintptr_t)mac[5] << 8);
-  tcp.snd_una = seq;
-  tcp.snd_nxt = seq + 1;
-  for (unsigned attempt = 0; attempt < 4; attempt++) {
-    tcp_emit(2, seq, NULL, 0);
-    uint32_t start = clock_ticks();
-    while (clock_ticks() - start < (100u << attempt)) {
-      net_poll();
-      if (tcp.reset) {
-        tcp.active = false;
-        return -3;
-      }
-      if (tcp.established)
-        return 0;
-      cpu_pause();
-    }
-  }
-  tcp.active = false;
-  return -4;
-}
-int net_tcp_send(const void *data, uint32_t size) {
-  if (!tcp.active || !tcp.established || tcp.reset || size > 65536)
-    return -1;
-  const uint8_t *p = data;
-  uint32_t sent = 0;
-  while (sent < size) {
-    uint32_t window_start = clock_ticks();
-    while (!tcp.peer_window && !tcp.reset &&
-           clock_ticks() - window_start < 300) {
-      net_poll();
-      cpu_pause();
-    }
-    if (!tcp.peer_window || tcp.reset)
-      return -4;
-    uint32_t n = size - sent;
-    if (n > tcp.mss)
-      n = tcp.mss;
-    if (n > tcp.peer_window)
-      n = tcp.peer_window;
-    uint32_t seq = tcp.snd_nxt;
-    tcp.snd_nxt += n;
-    bool acknowledged = false;
-    for (unsigned attempt = 0; attempt < 4 && !acknowledged; attempt++) {
-      tcp_emit(0x18, seq, p + sent, n);
-      uint32_t start = clock_ticks();
-      while (clock_ticks() - start < (100u << attempt)) {
-        net_poll();
-        if (tcp.reset) {
-          tcp.active = false;
-          return -2;
-        }
-        if (tcp.snd_una == tcp.snd_nxt) {
-          acknowledged = true;
-          break;
-        }
-        cpu_pause();
-      }
-    }
-    if (!acknowledged) {
-      tcp_emit(4, tcp.snd_nxt, NULL, 0);
-      tcp.active = false;
-      return -3;
-    }
-    sent += n;
-  }
-  return (int)sent;
-}
-int net_tcp_recv(void *data, uint32_t capacity, uint32_t timeout) {
-  if (!tcp.active || !tcp.established || !capacity || timeout > 1000)
-    return -1;
-  uint32_t start = clock_ticks();
-  while (!tcp.count && !tcp.peer_closed && !tcp.reset) {
-    net_poll();
-    if (clock_ticks() - start >= timeout)
-      return -2;
-    cpu_pause();
-  }
-  if (tcp.reset)
-    return -3;
-  uint32_t n = tcp.count;
-  if (n > capacity)
-    n = capacity;
-  for (uint32_t i = 0; i < n; i++)
-    ((uint8_t *)(uintptr_t)data)[i] = tcp.buffer[(tcp.head + i) % TCP_RX];
-  tcp.head = (tcp.head + n) % TCP_RX;
-  tcp.count -= n;
-  if (n)
-    tcp_emit(16, tcp.snd_nxt, NULL, 0);
-  return (int)n;
-}
-int net_tcp_close(void) {
-  if (!tcp.active)
-    return 0;
-  if (tcp.reset) {
-    tcp.active = false;
-    return -1;
-  }
-  uint32_t seq = tcp.snd_nxt++;
-  bool acknowledged = false;
-  for (unsigned attempt = 0; attempt < 3 && !acknowledged; attempt++) {
-    tcp_emit(0x11, seq, NULL, 0);
-    uint32_t start = clock_ticks();
-    while (clock_ticks() - start < 100) {
-      net_poll();
-      if (tcp.reset)
-        break;
-      if (tcp.snd_una == tcp.snd_nxt) {
-        acknowledged = true;
-        break;
-      }
-      cpu_pause();
-    }
-  }
-  uint32_t start = clock_ticks();
-  while (acknowledged && !tcp.peer_closed && !tcp.reset &&
-         clock_ticks() - start < 200) {
-    net_poll();
-    cpu_pause();
-  }
-  if (!acknowledged || !tcp.peer_closed)
-    tcp_emit(4, tcp.snd_nxt, NULL, 0);
-  tcp.active = false;
-  return acknowledged ? 0 : -1;
-}
 void net_http(const char *host, const char *path) {
   if (!*path)
     path = "/";

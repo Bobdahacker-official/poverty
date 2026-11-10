@@ -80,6 +80,14 @@ Ctrl-T opens Terminal; Ctrl-F opens Files; Ctrl-E opens the editor. Ctrl-K, Ctrl
 
 System Monitor has live process and performance views, per-process CPU samples, memory usage, a name/PID filter, pause/resume, priority controls, and process termination. Its kernel entry represents the built-in desktop apps, which share the kernel rather than appearing as separate userspace processes. The CPU graph measures actual userspace timer ticks; the remaining CPU time includes both kernel work and idle time. History keeps the last 60 samples.
 
+## Networking
+
+Connections start with DHCP or a saved static profile. DHCP runs in the background and handles lease renewal, rebinding, expiry, and negative acknowledgements. Addresses and DNS servers come from the selected profile or DHCP server. `netdiag` shows the adapter, PCI IDs, link state, lease details, and live TCP connections.
+
+TCP supports 64 sockets, passive opens with bounded listen backlogs, simultaneous connections, selective acknowledgements, out-of-order receive, negotiated window scaling, retransmission, half-close, and TIME_WAIT. Native SDK sockets and Linux32/Linux64 socket calls share the transport. IPv4 reassembles fragmented datagrams and fragments outgoing large datagrams; overlap rejection and expiry bound reassembly state.
+
+`netprofile` manages saved DHCP/static connections. `route` manages longest-prefix IPv4 routes, metrics, and persistent route tables. Both commands list their syntax when given an invalid operation. `make test-network-core` runs the focused packet and state-machine checks.
+
 ## Browser and registry
 
 Browser reads HTTPS and HTTP pages and local documents through Magenta's network and file APIs. Press Ctrl-B to open it and Ctrl-L to edit the address. It follows links, keeps a session history, reloads pages, and saves their source to `/download.html`. Addresses can include a port, such as `http://10.0.2.2:8080/`. Use `file:/path` to read a file. It checks TLS certificates and runs embedded JavaScript through Elk. It renders basic CSS colors, type sizes, spacing, classes, IDs, and inline styles, and loads linked CSS and scripts. Its HTML and CSS coverage is still small.
@@ -114,7 +122,7 @@ GeForce RTX 4060-class cards use the UEFI GOP framebuffer supplied by the card's
 
 ## Kernel
 
-Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, USB mass storage, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, E1000, and transitional VirtIO. USB 1.1 UHCI controllers handle boot-protocol keyboards and mice, including devices behind a hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks.
+Avalanche runs native programs in x86-64 long mode. It has a 256-slot process table, priority scheduling, separate address spaces, copy-on-write fork, and demand paging. Its ext4 driver supports 4 KiB blocks, extents, 64-bit descriptors, sparse files, and journal replay. Storage drivers include ATA, AHCI, NVMe, USB mass storage, and transitional VirtIO; network drivers include AMD PCnet, RTL8139, Realtek RTL8169/8168, E1000, and transitional VirtIO. USB 1.1 UHCI controllers handle boot-protocol keyboards and mice, including devices behind a hub. PCI devices are discovered through ACPI MCFG on PCI Express machines and configuration ports on older systems. The device inventory holds up to 1,024 PCI functions and 64 disks.
 
 USB disks connected at boot use SCSI commands over Bulk-Only Transport on UHCI or xHCI controllers. xHCI handles USB 2 and USB 3 devices, command and transfer rings, controller ownership, root-port reset, endpoint configuration, hubs, and interrupt HID reports. Keyboards, mice, and storage can share a controller. The storage driver reads, writes, and flushes disks with 512-byte, 1 KiB, 2 KiB, or 4 KiB logical sectors. Writes to part of a larger sector preserve the other bytes. USB disks use the same block cache and ext4 filesystem as internal drives. Malformed command-status replies trigger transport reset and endpoint recovery. The checks cover directly attached disks, hubs with disks and keyboards, producer-ring wraparound, and disks with 4 KiB sectors.
 

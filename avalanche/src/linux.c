@@ -1,3 +1,5 @@
+#include "sandbox.h"
+#include "tcp.h"
 #include "abi.h"
 #include "client.h"
 #include "process.h"
@@ -14,11 +16,13 @@ struct handle {
   uint32_t remote;
   uint16_t port;
   int socket_error, owner;
-  bool connected;
+  bool connected, listening, reuse;
+  int tcp_id;
+  uint32_t bind_address;
+  uint16_t bind_port;
   char name[256];
 };
 static struct handle handles[HANDLES];
-static struct handle *tcp_handle;
 static bool trace_enabled;
 static unsigned trace_count;
 void linux_trace_set(bool enabled) {
@@ -68,10 +72,7 @@ static int close_fd(struct process *t, unsigned fd) {
     return -9;
   int h = t->fds[fd];
   if (h >= 0 && handles[h].refs && !--handles[h].refs) {
-    if (tcp_handle == &handles[h]) {
-      process_tcp_release(handles[h].owner);
-      tcp_handle = NULL;
-    }
+    if (handles[h].kind == H_SOCKET && handles[h].tcp_id >= 0) net_tcp_socket_close(handles[h].tcp_id);
     memset(&handles[h], 0, sizeof(handles[h]));
   }
   t->fds[fd] = FD_UNUSED;
@@ -105,6 +106,8 @@ static int new_fd(struct process *t, unsigned start) {
   return -24;
 }
 static int open_file(struct process *t, uint32_t p, uint32_t flags) {
+  if (!sandbox_has(t, (flags & 3) ? AV_CAP_WRITE : AV_CAP_READ)) return -13;
+  if ((flags & (64 | 512)) && !sandbox_has(t, AV_CAP_WRITE)) return -13;
   char path[256], name[256];
   if (!process_string(t, p, path, sizeof(path)))
     return -14;
@@ -179,15 +182,17 @@ static int read_fd(struct process *t, unsigned fd, uint32_t out, uint32_t n) {
   if (t->fds[fd] < 0)
     return -9;
   struct handle *h = get_handle(t, fd);
+  if ((h->kind == H_SOCKET && !sandbox_has(t, AV_CAP_NETWORK)) ||
+      ((h->kind == H_FILE || h->kind == H_DIR) && !sandbox_has(t, AV_CAP_READ))) return -13;
   if (h->kind == H_SOCKET) {
-    if (!h->connected || h != tcp_handle)
+    if (!h->connected)
       return -107;
     unsigned count = n;
     if (count > sizeof(contents))
       count = sizeof(contents);
-    int r = net_tcp_recv(contents, count, (h->flags & 2048) ? 0 : 500);
+    int r = net_tcp_socket_recv(h->tcp_id, contents, count, (h->flags & 2048) ? 0 : 500);
     if (r < 0)
-      return r == -2 ? -11 : -104;
+      return r;
     if (!process_copyout(t, out, contents, r))
       return -14;
     return r;
@@ -252,8 +257,10 @@ static int write_fd(struct process *t, unsigned fd, uint32_t p, uint32_t n) {
   if (t->fds[fd] < 0)
     return -9;
   struct handle *h = get_handle(t, fd);
+  if ((h->kind == H_SOCKET && !sandbox_has(t, AV_CAP_NETWORK)) ||
+      (h->kind == H_FILE && !sandbox_has(t, AV_CAP_WRITE))) return -13;
   if (h->kind == H_SOCKET) {
-    if (!h->connected || h != tcp_handle)
+    if (!h->connected)
       return -107;
     unsigned done = 0;
     while (done < n) {
@@ -262,9 +269,9 @@ static int write_fd(struct process *t, unsigned fd, uint32_t p, uint32_t n) {
         count = sizeof(contents);
       if (!process_copyin(t, contents, p + done, count))
         return done ? (int)done : -14;
-      int r = net_tcp_send(contents, count);
+      int r = net_tcp_socket_send(h->tcp_id, contents, count, (h->flags & 2048) != 0);
       if (r < 0)
-        return done ? (int)done : -104;
+        return done ? (int)done : r;
       done += r;
     }
     return done;
@@ -424,6 +431,8 @@ static int directory_read(struct process *t, unsigned fd, uint32_t out,
 }
 static int memory_map(struct process *t, uint32_t address, uint32_t length,
                       uint32_t prot, uint32_t flags) {
+  if ((prot & 4) && (!sandbox_has(t, AV_CAP_EXEC_MEMORY) ||
+      (t->capabilities != AV_CAP_ALL && (prot & 2)))) return -13;
   if (!length || length > 4 * 1024 * 1024 || !(flags & 0x20) || !(flags & 2) ||
       (flags & 1) || (prot & ~7u))
     return -22;
@@ -487,11 +496,36 @@ static int time_value(struct process *t, uint32_t out, bool nano) {
            v[2] = {ticks / 100, (ticks % 100) * (nano ? 10000000u : 10000u)};
   return process_copyout(t, out, v, 8) ? 0 : -14;
 }
+static int socket_shutdown(struct process *,unsigned,unsigned);
+static int socket_create(struct process *,unsigned,unsigned,unsigned);
+static int socket_bind(struct process *,unsigned,uint32_t,unsigned);
+static int socket_listen(struct process *,unsigned,unsigned);
+static int socket_accept(struct process *,unsigned,uint32_t,uint32_t,unsigned);
+static int socket_connect(struct process *,unsigned,uint32_t,unsigned);
+static int socket_address(struct process *,unsigned,uint32_t,uint32_t,bool);
+static int socket_transfer(struct process *,unsigned,uint32_t,unsigned,unsigned,bool);
 void linux_syscall(struct trap_frame *f) {
   struct process *t = process_current();
+  if (!sandbox_linux(t, f->eax, false)) { f->eax = (uint32_t)-13; return; }
   uint32_t a = f->ebx, b = f->ecx, c = f->edx;
   int result = -38;
   switch (f->eax) {
+  case 102: {
+    uint32_t args[6]={0};unsigned count=a==1 || a==2 || a==3 || a==5 || a==6 || a==7?3:a==4 || a==13?2:a==9 || a==10?4:0;
+    if(!count)result=-95;
+    else if(!process_copyin(t,args,b,count*4))result=-14;
+    else switch(a) {
+    case 1:result=socket_create(t,args[0],args[1],args[2]);break;
+    case 2:result=socket_bind(t,args[0],args[1],args[2]);break;
+    case 3:result=socket_connect(t,args[0],args[1],args[2]);break;
+    case 4:result=socket_listen(t,args[0],args[1]);break;
+    case 5:result=socket_accept(t,args[0],args[1],args[2],0);break;
+    case 6:case 7:result=socket_address(t,args[0],args[1],args[2],a==7);break;
+    case 13:result=socket_shutdown(t,args[0],args[1]);break;
+    case 9:case 10:result=socket_transfer(t,args[0],args[1],args[2],args[3],a==9);break;
+    }
+    break;
+  }
   case 1:
   case 252:
     process_exit(t, (int)(a & 255), 0);
@@ -724,6 +758,8 @@ void linux_syscall(struct trap_frame *f) {
     break;
   }
   case 125: {
+    if ((c & 4) && (!sandbox_has(t, AV_CAP_EXEC_MEMORY) ||
+        (t->capabilities != AV_CAP_ALL && (c & 2)))) { result = -13; break; }
     if ((a & 4095) || !b || b > 4 * 1024 * 1024 || !process_address(a, b) ||
         (c & ~7u)) {
       result = -22;
@@ -888,6 +924,7 @@ static int stat64_fd(struct process *t, unsigned fd, uint32_t out) {
   if (t->fds[fd] < 0)
     return stat64_data(t, out, 0, "");
   struct handle *h = get_handle(t, fd);
+  if ((h->kind == H_FILE || h->kind == H_DIR) && !sandbox_has(t, AV_CAP_READ)) return -13;
   return stat64_data(t, out, h->kind, h->name);
 }
 static int stat64_path(struct process *t, uint32_t path, uint32_t out) {
@@ -993,15 +1030,18 @@ static int poll_descriptors(struct process *t, uint32_t address,
       else {
         struct handle *h = get_handle(t, p.fd);
         if (h && h->kind == H_SOCKET) {
+          net_tcp_socket_snapshot(h->tcp_id, &state);
+          if (h->listening && (p.events & 1) && net_tcp_pending(h->tcp_id)) p.revents |= 1;
           if (h->socket_error || (h->connected && state.reset))
             p.revents |= 8;
-          if (h == tcp_handle && h->connected) {
+          if (h->connected) {
             if ((p.events & 1) && (state.queued || state.closed))
               p.revents |= 1;
             if ((p.events & 4) && state.active && state.established &&
                 !state.reset)
               p.revents |= 4;
-            if (state.closed)
+            if ((p.events & 0x2000) && state.closed) p.revents |= 0x2000;
+            if (net_tcp_hungup(h->tcp_id))
               p.revents |= 16;
           }
         } else {
@@ -1062,48 +1102,65 @@ static int socket_create(struct process *t, unsigned family, unsigned type,
   memset(h, 0, sizeof(*h));
   h->refs = 1;
   h->kind = H_SOCKET;
+  h->tcp_id = net_tcp_socket();
+  if (h->tcp_id < 0) { int result=h->tcp_id; memset(h,0,sizeof(*h)); return result; }
   h->flags = 2 | ((type & 0x800) ? 2048 : 0);
   t->fds[fd] = i;
   if (type & 0x80000)
     t->cloexec |= 1u << fd;
   return fd;
 }
-static int socket_connect(struct process *t, unsigned fd, uint32_t address,
-                          unsigned length) {
-  struct handle *h = get_handle(t, fd);
-  if (!h || h->kind != H_SOCKET)
-    return -88;
-  uint8_t a[16];
-  if (length < 16 || !process_copyin(t, a, address, 16))
-    return -14;
-  if (a[0] != 2 || a[1])
-    return -97;
-  if (h->connected)
-    return -106;
-  if (tcp_handle && tcp_handle != h)
-    return -16;
-  int r = process_tcp_claim(t->pid);
-  if (r < 0)
-    return r;
-  h->remote =
-      (uint32_t)a[4] << 24 | (uint32_t)a[5] << 16 | (uint32_t)a[6] << 8 | a[7];
-  h->port = (unsigned)a[2] << 8 | a[3];
-  h->owner = t->pid;
-  struct network_info info;
-  net_snapshot(&info);
-  if (!info.ip && net_dhcp() < 0) {
-    process_tcp_release(t->pid);
-    return -101;
+static int socket_connect(struct process *t, unsigned fd, uint32_t address, unsigned length) {
+  struct handle *h=get_handle(t,fd);if(!h || h->kind!=H_SOCKET)return -88;
+  uint8_t a[16];if(length<16 || !process_copyin(t,a,address,16))return -14;
+  if(a[0]!=2 || a[1])return -97;
+  if(h->connected)return -106;
+  if(h->listening)return -22;
+  h->remote=(uint32_t)a[4]<<24|(uint32_t)a[5]<<16|(uint32_t)a[6]<<8|a[7];h->port=(unsigned)a[2]<<8|a[3];
+  struct network_info info;net_snapshot(&info);if(!info.ip && net_dhcp()<0)return -101;
+  int result=net_tcp_socket_connect(h->tcp_id,h->remote,h->port,(h->flags&2048)!=0);
+  if(result<0 && result!=-115) {h->socket_error=-result;return result;}
+  h->connected=true;return result;
+}
+static int socket_bind(struct process *t,unsigned fd,uint32_t address,unsigned length) {
+  struct handle *h=get_handle(t,fd);if(!h || h->kind!=H_SOCKET)return -88;
+  uint8_t a[16];if(length<16 || !process_copyin(t,a,address,16))return -14;
+  if(a[0]!=2 || a[1])return -97;
+  uint32_t ip=(uint32_t)a[4]<<24|(uint32_t)a[5]<<16|(uint32_t)a[6]<<8|a[7];unsigned port=(unsigned)a[2]<<8|a[3];
+  int result=net_tcp_bind(h->tcp_id,ip,port);
+  if(!result) {h->bind_address=ip;struct tcp_snapshot snapshot;net_tcp_socket_snapshot(h->tcp_id,&snapshot);h->bind_port=snapshot.local_port;}
+  return result;
+}
+static int socket_listen(struct process *t,unsigned fd,unsigned backlog) {
+  struct handle *h=get_handle(t,fd);if(!h || h->kind!=H_SOCKET)return -88;
+  int result=net_tcp_listen(h->tcp_id,backlog);if(!result)h->listening=true;return result;
+}
+static int socket_accept(struct process *t,unsigned fd,uint32_t address,uint32_t length,unsigned flags) {
+  struct handle *listener=get_handle(t,fd);if(!listener || listener->kind!=H_SOCKET || !listener->listening)return -22;
+  if(flags&~0x80800u)return -22;
+  uint32_t capacity=0;
+  if(address && (!length || !process_copyin(t,&capacity,length,4) || !process_range(t,address,capacity<16?capacity:16,true) || !process_range(t,length,4,true)))return -14;
+  int descriptor=new_fd(t,0);if(descriptor<0)return descriptor;
+  unsigned index=0;while(index<HANDLES && handles[index].refs)index++;
+  if(index==HANDLES)return -23;
+  uint32_t start=clock_ticks();int id;
+  do {
+    net_poll();id=net_tcp_accept(listener->tcp_id);
+    if(id!=-11 || (listener->flags&2048))break;
+    cpu_pause();
+  } while((uint32_t)(clock_ticks()-start)<500);
+  if(id<0)return id;
+  struct handle *h=&handles[index];memset(h,0,sizeof(*h));h->refs=1;h->kind=H_SOCKET;h->tcp_id=id;
+  h->flags=2|((flags&0x800)?2048:0);h->connected=true;h->reuse=listener->reuse;
+  struct tcp_snapshot snapshot;net_tcp_socket_snapshot(id,&snapshot);h->remote=snapshot.remote;h->port=snapshot.remote_port;h->bind_port=snapshot.local_port;
+  if(address) {
+    uint8_t a[16]={2,0,h->port>>8,h->port,h->remote>>24,h->remote>>16,h->remote>>8,h->remote};
+    unsigned size=capacity<16?capacity:16;
+    uint32_t actual=16;
+    if((size && !process_copyout(t,address,a,size)) || !process_copyout(t,length,&actual,4)) {net_tcp_socket_close(id);memset(h,0,sizeof(*h));return -14;}
   }
-  r = net_tcp_connect(h->remote, h->port);
-  if (r < 0) {
-    h->socket_error = r == -4 ? 110 : 111;
-    process_tcp_release(t->pid);
-    return -h->socket_error;
-  }
-  h->connected = true;
-  tcp_handle = h;
-  return 0;
+  t->fds[descriptor]=index;if(flags&0x80000)t->cloexec|=1u<<descriptor;
+  return descriptor;
 }
 static int socket_address(struct process *t, unsigned fd, uint32_t out,
                           uint32_t size, bool peer) {
@@ -1116,11 +1173,11 @@ static int socket_address(struct process *t, unsigned fd, uint32_t out,
   if (!process_copyin(t, &capacity, size, 4))
     return -14;
   struct tcp_snapshot snapshot;
-  net_tcp_snapshot(&snapshot);
+  net_tcp_socket_snapshot(h->tcp_id, &snapshot);
   struct network_info network;
   net_snapshot(&network);
-  uint32_t ip = peer ? h->remote : h->connected ? network.ip : 0;
-  unsigned port = peer ? h->port : h->connected ? snapshot.local_port : 0;
+  uint32_t ip = peer ? h->remote : h->connected ? network.ip : h->bind_address;
+  unsigned port = peer ? h->port : snapshot.local_port;
   uint8_t data[16] = {2, 0, port >> 8, port, ip >> 24, ip >> 16, ip >> 8, ip};
   uint32_t n = 16;
   if (capacity < n)
@@ -1130,8 +1187,44 @@ static int socket_address(struct process *t, unsigned fd, uint32_t out,
   n = 16;
   return process_copyout(t, size, &n, 4) ? 0 : -14;
 }
+static int socket_shutdown(struct process *t,unsigned fd,unsigned how) {
+  struct handle *h=get_handle(t,fd);if(!h || h->kind!=H_SOCKET)return -88;
+  return net_tcp_shutdown(h->tcp_id,how);
+}
+static int socket_transfer(struct process *t,unsigned fd,uint32_t buffer,unsigned length,unsigned flags,bool write) {
+  struct handle *h=get_handle(t,fd);if(!h || h->kind!=H_SOCKET)return -88;
+  if(flags & ~(write?0xc040u:0x40u))return -95;
+  unsigned previous=h->flags;if(flags&0x40)h->flags|=2048;
+  int result=write?write_fd(t,fd,buffer,length):read_fd(t,fd,buffer,length);
+  h->flags=previous;return result;
+}
+int linux_socket_service(struct process *t,unsigned operation,uint32_t a,uint32_t b,uint32_t c) {
+  if(!sandbox_has(t,AV_CAP_NETWORK))return -13;
+  switch(operation) {
+  case 0:return socket_create(t,a,b,c);
+  case 1:return socket_bind(t,a,b,c);
+  case 2:return socket_listen(t,a,b);
+  case 3:return socket_accept(t,a,b,c,0);
+  case 4:return socket_connect(t,a,b,c);
+  case 5:return socket_transfer(t,a,b,c,0,true);
+  case 6:return socket_transfer(t,a,b,c,0,false);
+  case 7:{struct handle *h=get_handle(t,a);return !h || h->kind!=H_SOCKET?-88:close_fd(t,a);}
+  case 8:{
+    struct handle *h=get_handle(t,a);struct av_socket_option option;
+    if(!h || h->kind!=H_SOCKET)return -88;
+    if(c<sizeof(option) || !process_copyin(t,&option,b,sizeof(option)))return -14;
+    if(option.level==1 && option.name==2) {h->reuse=option.value!=0;net_tcp_reuse(h->tcp_id,h->reuse);return 0;}
+    if(option.level==6 && option.name==1 && option.value==1)return 0;
+    return -92;
+  }
+  case 9:case 10:return socket_address(t,a,b,c,operation==10);
+  case 11:return socket_shutdown(t,a,b);
+  default:return -22;
+  }
+}
 void linux_syscall64(struct trap_frame *f) {
   struct process *t = process_current();
+  if (!sandbox_linux(t, f->eax, true)) { f->eax = (uint64_t)-13; return; }
   uint64_t syscall_number = f->eax;
   if (f->eax >= 4096 && f->eax <= 4099) {
     f->eax = f->edi > UINT32_MAX ? -14 : client_call(t, f->eax - 4096, f->edi);
@@ -1300,6 +1393,19 @@ void linux_syscall64(struct trap_frame *f) {
   case 7:
     result = a > UINT32_MAX ? -14 : poll_start(t, a, b, (int)c);
     break;
+  case 43:
+  case 288:
+    result = b > UINT32_MAX || c > UINT32_MAX ? -14 : socket_accept(t,a,b,c,f->eax == 288 ? d : 0);
+    break;
+  case 48:
+    result=socket_shutdown(t,a,b);
+    break;
+  case 49:
+    result = b > UINT32_MAX || c > UINT32_MAX ? -14 : socket_bind(t,a,b,c);
+    break;
+  case 50:
+    result = socket_listen(t,a,(int)b < 0 ? 16 : b);
+    break;
   case 41:
     result = socket_create(t, a, b, c);
     break;
@@ -1312,7 +1418,7 @@ void linux_syscall64(struct trap_frame *f) {
     else if (f->r8 || f->r9)
       result = -106;
     else
-      result = b > UINT32_MAX || c > INT32_MAX ? -14 : write_fd(t, a, b, c);
+      result = b > UINT32_MAX || c > INT32_MAX ? -14 : socket_transfer(t,a,b,c,d,true);
     break;
   case 45:
     if (d & ~UINT64_C(0x40))
@@ -1323,7 +1429,7 @@ void linux_syscall64(struct trap_frame *f) {
     else {
       result = f->r8 ? socket_address(t, a, f->r8, f->r9, true) : 0;
       if (!result)
-        result = read_fd(t, a, b, c);
+        result = socket_transfer(t,a,b,c,d,false);
     }
     break;
   case 51:
@@ -1339,6 +1445,7 @@ void linux_syscall64(struct trap_frame *f) {
       result = -88;
     else if (d > UINT32_MAX || f->r8 < 4 || !process_copyin(t, &value, d, 4))
       result = -14;
+    else if (b == 1 && c == 2) { h->reuse=value!=0;net_tcp_reuse(h->tcp_id,h->reuse);result=0; }
     else if (b == 6 && c == 1 && value == 1)
       result = 0; /* TCP transmits immediately, without Nagle aggregation. */
     else
@@ -1357,15 +1464,16 @@ void linux_syscall64(struct trap_frame *f) {
       break;
     }
     struct tcp_snapshot state;
-    net_tcp_snapshot(&state);
+    net_tcp_socket_snapshot(h->tcp_id,&state);
     if (c == 4)
-      value = h->socket_error                 ? h->socket_error
-              : (h->connected && state.reset) ? 104
-                                              : 0;
+      value = h->socket_error ? h->socket_error : net_tcp_socket_error(h->tcp_id,false);
     else if (c == 3)
       value = 1;
     else if (c == 8)
-      value = 8192;
+      value = 131072;
+    else if(c == 7) value = 65536;
+    else if(c == 2) value = h->reuse;
+    else if(c == 30) value = h->listening;
     else {
       result = -92;
       break;
@@ -1377,8 +1485,9 @@ void linux_syscall64(struct trap_frame *f) {
     else {
       cap = 4;
       result = process_copyout(t, f->r8, &cap, 4) ? 0 : -14;
-      if (!result && c == 4)
-        h->socket_error = 0;
+      if (!result && c == 4) {
+        h->socket_error = 0; net_tcp_socket_error(h->tcp_id,true);
+      }
     }
     break;
   }

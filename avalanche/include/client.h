@@ -9,9 +9,11 @@ struct gui_client {
   uint32_t *pixels;
   char title[64];
   struct av_gui_event events[128];
-  bool closing;
+  bool closing, pointer_known, tail_motion;
+  int pointer_buttons;
 };
 extern struct gui_client gui_clients[GUI_CLIENTS];
+int gui_clipboard_call(struct process *, bool, uint32_t, uint32_t);
 int client_call(struct process *, unsigned, uint32_t);
 void client_event(unsigned, unsigned, int, int, int);
 void client_destroy(int);

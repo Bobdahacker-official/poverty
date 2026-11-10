@@ -15,9 +15,13 @@ int main(void) {
       return 0;
     if (unix_command(cmd, rest, data))
       continue;
+    if (ueq(cmd, "firewall")) {
+      av_call(AV_FIREWALL, (uintptr_t)rest, 0, 0, 0);
+      continue;
+    }
     if (ueq(cmd, "help"))
       puts_u("help echo ls cat write rm ticks sleep udp recv spawn wait kill "
-             "pid aplay exit\nwrite NAME "
+             "pid aplay firewall exit\nwrite NAME "
              "TEXT; udp IP PORT TEXT; recv LOCALPORT\n");
     else if (ueq(cmd, "aplay")) {
       int result = av_call(AV_AUDIO_PLAY, (uintptr_t)rest, 0, 0, 0);

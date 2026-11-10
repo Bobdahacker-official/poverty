@@ -1,6 +1,37 @@
 #ifndef MAGENTA_APP_H
 #define MAGENTA_APP_H
 #include "lib.h"
+#define MG_AF_INET 2
+#define MG_SOCK_STREAM 1
+#define MG_SOCK_NONBLOCK 0x800
+#define MG_SOCK_CLOEXEC 0x80000
+static inline struct av_sockaddr_in mg_ipv4(uint32_t address,uint16_t port) {
+  struct av_sockaddr_in result={.family=MG_AF_INET,.port=(uint16_t)((port>>8)|(port<<8)),.address=__builtin_bswap32(address)};
+  return result;
+}
+static inline int mg_socket(unsigned domain,unsigned type,unsigned protocol) {return av_call(AV_SOCKET,0,domain,type,protocol);}
+static inline int mg_bind(unsigned fd,const void *address,unsigned length) {return av_call(AV_SOCKET,1,fd,(uintptr_t)address,length);}
+static inline int mg_listen(unsigned fd,unsigned backlog) {return av_call(AV_SOCKET,2,fd,backlog,0);}
+static inline int mg_accept(unsigned fd,void *address,unsigned *length) {return av_call(AV_SOCKET,3,fd,(uintptr_t)address,(uintptr_t)length);}
+static inline int mg_connect(unsigned fd,const void *address,unsigned length) {return av_call(AV_SOCKET,4,fd,(uintptr_t)address,length);}
+static inline int mg_send(unsigned fd,const void *data,unsigned length) {return av_call(AV_SOCKET,5,fd,(uintptr_t)data,length);}
+static inline int mg_recv(unsigned fd,void *data,unsigned length) {return av_call(AV_SOCKET,6,fd,(uintptr_t)data,length);}
+static inline int mg_socket_close(unsigned fd) {return av_call(AV_SOCKET,7,fd,0,0);}
+static inline int mg_setsockopt(unsigned fd,unsigned level,unsigned name,unsigned value) {
+  struct av_socket_option option={level,name,value};return av_call(AV_SOCKET,8,fd,(uintptr_t)&option,sizeof(option));
+}
+static inline int mg_getsockname(unsigned fd,void *address,unsigned *length) {return av_call(AV_SOCKET,9,fd,(uintptr_t)address,(uintptr_t)length);}
+static inline int mg_getpeername(unsigned fd,void *address,unsigned *length) {return av_call(AV_SOCKET,10,fd,(uintptr_t)address,(uintptr_t)length);}
+static inline int mg_shutdown(unsigned fd,unsigned how) {return av_call(AV_SOCKET,11,fd,how,0);}
+static inline int mg_sandbox_info(struct av_sandbox_info *info) {
+  return av_call(AV_SANDBOX_INFO, (uintptr_t)info, 0, 0, 0);
+}
+static inline int mg_sandbox_limit(unsigned capabilities) {
+  return av_call(AV_SANDBOX_LIMIT, capabilities, 0, 0, 0);
+}
+static inline int mg_disk_health(unsigned disk, struct nvme_health *health, int refresh) {
+  return av_call(AV_DISK_HEALTH, disk, (uintptr_t)health, sizeof(*health), refresh != 0);
+}
 static inline int mg_window_open(const struct av_gui_open *request) {
   return av_call(AV_GUI_OPEN, (uintptr_t)request, 0, 0, 0);
 }
@@ -12,6 +43,12 @@ static inline int mg_window_event(struct av_gui_event *event) {
 }
 static inline int mg_window_close(void) {
   return av_call(AV_GUI_CLOSE, 0, 0, 0, 0);
+}
+static inline int mg_clipboard_read(char *buffer, unsigned capacity) {
+  return av_call(AV_CLIPBOARD_READ, (uintptr_t)buffer, capacity, 0, 0);
+}
+static inline int mg_clipboard_write(const char *text, unsigned length) {
+  return av_call(AV_CLIPBOARD_WRITE, (uintptr_t)text, length, 0, 0);
 }
 static inline int mg_write(const char *text) {
   unsigned used = 0;

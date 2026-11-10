@@ -1,3 +1,4 @@
+#include "sandbox.h"
 #include "package.h"
 #include "../vendor/bearssl/bearssl.h"
 #include "ext4.h"
@@ -464,7 +465,7 @@ static int fetch(const char *host, const char *path) {
   record[n] = 0;
   memcpy(parsed, record, n + 1);
   char *name = NULL, *version = NULL, *dependency = NULL, *file = NULL,
-       *hash = NULL;
+       *hash = NULL, *capabilities = NULL;
   char *p = parsed;
   while (*p) {
     char *line = p;
@@ -483,6 +484,8 @@ static int fetch(const char *host, const char *path) {
       file = line;
     else if (str_eq(key, "sha256") && !hash)
       hash = line;
+    else if (str_eq(key, "capabilities") && !capabilities)
+      capabilities = line;
     else
       return -22;
   }
@@ -490,6 +493,12 @@ static int fetch(const char *host, const char *path) {
       !str_eq(name, file) || strlen(hash) != 64 || !strlen(version) ||
       strlen(version) > 31)
     return -22;
+  uint32_t capability_mask = AV_CAP_ALL;
+  if (capabilities) {
+    bool valid;
+    capability_mask = parse_uint(capabilities, &valid);
+    if (!valid || (capability_mask & ~AV_CAP_ALL)) return -22;
+  }
   if (!version_allowed(name, version))
     return -1;
   uint8_t expected[32], actual[32];
@@ -531,6 +540,10 @@ static int fetch(const char *host, const char *path) {
   for (unsigned i = 0; i < 32; i++)
     if (expected[i] != actual[i])
       return -74;
+  if (capabilities) {
+    int security = sandbox_profile(expected, capability_mask);
+    if (security < 0) return security;
+  }
   int old = fs_size(name);
   if (old >= 0 && fs_read(name, previous, sizeof(previous)) != old)
     return -5;

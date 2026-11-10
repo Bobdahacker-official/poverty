@@ -39,13 +39,30 @@ def elf(path):
     if int.from_bytes(data[16:18],'little')!=2:raise ValueError('Expected an ET_EXEC executable')
     if len(data)>65536:raise ValueError('Signed packages currently hold executables up to 65536 bytes')
     return data
+CAPABILITIES = {'read':1, 'write':2, 'network':4, 'exec':8, 'gui':16,
+                'audio':32, 'clipboard-read':64, 'clipboard-write':128,
+                'processes':256, 'admin':512, 'exec-memory':1024}
+def capability_mask(value):
+    if isinstance(value, int):
+        if value < 0 or value & ~2047: raise ValueError('Invalid capability mask')
+        return value
+    if value == "none": return 0
+    if value == "all": return 2047
+    values = value.split(',') if isinstance(value, str) else value
+    mask = 0
+    for item in values:
+        item = item.strip()
+        if not item: continue
+        if item not in CAPABILITIES: raise ValueError('Unknown capability: ' + item)
+        mask |= CAPABILITIES[item]
+    return mask
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='command',required=True)
     p=sub.add_parser('init');p.add_argument('directory',type=pathlib.Path)
     p=sub.add_parser('build');p.add_argument('project',type=pathlib.Path,nargs='?',default=pathlib.Path('.'))
     p=sub.add_parser('keygen');p.add_argument('--out',type=pathlib.Path,required=True);p.add_argument('--identity',required=True)
-    p=sub.add_parser('sign');p.add_argument('executable',type=pathlib.Path);p.add_argument('--key',type=pathlib.Path,required=True);p.add_argument('--certificate',type=pathlib.Path,required=True);p.add_argument('--version',default='1.0.0');p.add_argument('--depends',default='');p.add_argument('--out',type=pathlib.Path,required=True)
+    p=sub.add_parser('sign');p.add_argument('executable',type=pathlib.Path);p.add_argument('--key',type=pathlib.Path,required=True);p.add_argument('--certificate',type=pathlib.Path,required=True);p.add_argument('--version',default='1.0.0');p.add_argument('--capabilities');p.add_argument('--depends',default='');p.add_argument('--out',type=pathlib.Path,required=True)
     p=sub.add_parser('verify');p.add_argument('manifest',type=pathlib.Path);p.add_argument('--certificate',type=pathlib.Path,required=True)
     args=parser.parse_args()
     if args.command=='init':
@@ -63,7 +80,10 @@ def main():
             obj=output/f'{i}.o';run([os.environ.get('CC','gcc'),*flags,'-c',source,'-o',obj]);objects.append(obj)
         target=output/(app+'.mgnta')
         run([os.environ.get('LD','ld'),'-m','elf_x86_64','-T',RUNTIME/'linker.ld','-nostdlib','-o',target,*objects])
-        elf(target);print(target)
+        elf(target)
+        mask=capability_mask(config.get('capabilities', ['read','gui']))
+        target.with_suffix('.mgnta.capabilities').write_text(str(mask)+'\n')
+        print(target)
     elif args.command=='keygen':
         if any(c in args.identity for c in '/\r\n'):raise ValueError('Identity must be a single common name')
         args.out.mkdir(parents=True,exist_ok=True)
@@ -83,8 +103,10 @@ def main():
         args.out.mkdir(parents=True,exist_ok=True)
         target=args.out/executable.name
         if target.resolve()!=executable:shutil.copyfile(executable,target)
+        sidecar=executable.with_suffix('.mgnta.capabilities')
+        permissions=capability_mask(args.capabilities) if args.capabilities is not None else capability_mask(int(sidecar.read_text().strip())) if sidecar.exists() else capability_mask('read,gui')
         manifest=args.out/(executable.name+'.manifest')
-        manifest.write_text(f'name {executable.name}\nversion {args.version}\ndepends {args.depends}\nfile {executable.name}\nsha256 {hashlib.sha256(data).hexdigest()}\n')
+        manifest.write_text(f'name {executable.name}\nversion {args.version}\ndepends {args.depends}\nfile {executable.name}\nsha256 {hashlib.sha256(data).hexdigest()}\ncapabilities {permissions}\n')
         run(['openssl','dgst','-sha256','-sign',args.key,'-out',str(manifest)+'.sig',manifest])
         run(['openssl','x509','-in',args.certificate,'-outform','DER','-out',args.out/'trust.der'])
         bundle=args.out/(executable.name+'.zip')
@@ -98,6 +120,7 @@ def main():
             key,_,value=line.partition(' ')
             if key in lines:raise ValueError('Duplicate manifest field')
             lines[key]=value
+        if 'capabilities' in lines: capability_mask(int(lines['capabilities']))
         filename=lines.get('file','');app=filename.removesuffix('.mgnta');name(app)
         if filename!=app+'.mgnta' or lines.get('name')!=filename:raise ValueError('Invalid executable name')
         data=elf(manifest.parent/filename)

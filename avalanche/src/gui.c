@@ -1,4 +1,7 @@
 #include "client.h"
+#include "calculator.h"
+#include "filetypes.h"
+#include "nvme_health.h"
 #include "font.h"
 #include "gui_canvas.h"
 #include "gui_games.h"
@@ -22,6 +25,7 @@ enum {
   IMAGES,
   MUSIC,
   GAMES,
+  CALCULATOR,
   APP_COUNT
 };
 static struct nk_context ui;
@@ -32,7 +36,7 @@ static float native_scale = 1;
 static const char *app_names[APP_COUNT] = {
     "Terminal", "Files",    "Text editor", "System Monitor",
     "Network",  "Packages", "Settings",    "Browser",
-    "Images",   "Music",    "Games"};
+    "Images",   "Music",    "Games", "Calculator"};
 static const char *app_summaries[APP_COUNT] = {
     "Run programs and shell commands",
     "Browse your disks and documents",
@@ -44,7 +48,8 @@ static const char *app_summaries[APP_COUNT] = {
     "Read web pages and local documents",
     "View PNG, JPEG and BMP pictures",
     "Listen to music and WAV recordings",
-    "Play Minesweeper and 2048"};
+    "Play Minesweeper and 2048",
+    "Calculate expressions, recall answers and use memory"};
 static char music_path[256];
 static bool music_focus, music_play_requested;
 static int music_result;
@@ -79,6 +84,57 @@ static const struct palette {
                 {"Macchiato", 0x24273a, 0x1e2030, 0x363a4f, 0xcad3f5, 0xa5adcb},
                 {"Mocha", 0x1e1e2e, 0x181825, 0x313244, 0xcdd6f4, 0xa6adc8}};
 static char notification[256], clock_text[48], clipboard[65536];
+static bool clipboard_dirty, clipboard_saved;
+static uint32_t clipboard_last_attempt;
+static struct {
+  uint32_t magic, version, handlers[FILE_TYPE_COUNT], checksum;
+} file_defaults;
+static bool file_defaults_saved;
+static void browser_new_tab(const char *);
+static unsigned default_handler(enum file_type type) {
+  if (type == FILE_TEXT || type == FILE_HTML)
+    return file_defaults.handlers[type] == BROWSER ? BROWSER : EDITOR;
+  if (type == FILE_PNG || type == FILE_JPEG || type == FILE_BMP) return IMAGES;
+  if (type == FILE_WAV) return MUSIC;
+  return EDITOR;
+}
+static void defaults_reset(void) {
+  file_defaults_saved = false;
+  memset(&file_defaults, 0, sizeof(file_defaults));
+  file_defaults.magic = 0x4d464150;
+  file_defaults.version = 1;
+  file_defaults.handlers[FILE_TEXT] = EDITOR;
+  file_defaults.handlers[FILE_HTML] = BROWSER;
+}
+static void defaults_load(void) {
+  defaults_reset();
+  __typeof__(file_defaults) saved;
+  if (fs_read("magenta-filetypes", &saved, sizeof(saved)) == sizeof(saved) &&
+      saved.magic == file_defaults.magic && saved.version == 1 &&
+      saved.checksum == crc32(&saved, offsetof(__typeof__(saved), checksum)) &&
+      (saved.handlers[FILE_TEXT] == EDITOR || saved.handlers[FILE_TEXT] == BROWSER) &&
+      (saved.handlers[FILE_HTML] == EDITOR || saved.handlers[FILE_HTML] == BROWSER)) {
+    file_defaults = saved;
+    file_defaults_saved = true;
+  }
+}
+static void clipboard_save(void) {
+  if (!clipboard_dirty) return;
+  clipboard_last_attempt = clock_ticks();
+  int size = strlen(clipboard);
+  int result = fs_write("magenta-clipboard", clipboard, size);
+  if (result >= 0) {
+    clipboard_dirty = false;
+    clipboard_saved = true;
+  }
+}
+static void clipboard_load(void) {
+  int size = fs_read("magenta-clipboard", clipboard, sizeof(clipboard) - 1);
+  clipboard_saved = size >= 0;
+  if (size < 0) size = 0;
+  clipboard[size] = 0;
+  clipboard_dirty = false;
+}
 static uint32_t notification_until, last_status, last_save;
 static struct av_status system_status;
 static struct network_info network_status;
@@ -234,6 +290,125 @@ static void capture(const char *command, char *out, unsigned capacity) {
   copy(line, command, sizeof(line));
   kernel_capture(line, out, capacity);
 }
+#define WORKSPACE_MAX 16
+static struct workspace_settings {
+  uint32_t magic, version, count, current, homes[APP_COUNT];
+  char names[WORKSPACE_MAX][32];
+  uint32_t checksum;
+} workspaces;
+static unsigned client_workspace[GUI_CLIENTS];
+static bool workspace_hidden[APP_COUNT], client_workspace_hidden[GUI_CLIENTS];
+static bool app_close_requested[APP_COUNT];
+static int workspace_focus[WORKSPACE_MAX], workspace_pending = -1;
+static bool workspace_dirty;
+static uint32_t workspace_last_save;
+static void workspace_view(void);
+static void workspace_command(char *);
+static void workspace_request(unsigned target) {
+  if (target < workspaces.count) workspace_pending = target;
+}
+static void workspace_save(void) {
+  if (workspace_pending >= 0) return;
+  workspace_last_save = clock_ticks();
+  workspaces.checksum = crc32(&workspaces, offsetof(struct workspace_settings, checksum));
+  if (fs_write("magenta-workspaces", &workspaces, sizeof(workspaces)) >= 0)
+    workspace_dirty = false;
+}
+static void workspace_load(void) {
+  memset(&workspaces, 0, sizeof(workspaces));
+  workspaces.magic = 0x4d475753; workspaces.version = 1; workspaces.count = 4;
+  for (unsigned i = 0; i < WORKSPACE_MAX; i++) {
+    char n[32]; number(n, i + 1);
+    copy(workspaces.names[i], "Workspace ", 32); append(workspaces.names[i], n, 32);
+    workspace_focus[i] = -1;
+  }
+  struct workspace_settings saved;
+  if (fs_read("magenta-workspaces", &saved, sizeof(saved)) == sizeof(saved) &&
+      saved.magic == workspaces.magic && saved.version == 1 &&
+      saved.count && saved.count <= WORKSPACE_MAX && saved.current < saved.count &&
+      saved.checksum == crc32(&saved, offsetof(struct workspace_settings, checksum))) {
+    bool valid = true;
+    for (unsigned i = 0; i < APP_COUNT; i++) if (saved.homes[i] >= saved.count) valid = false;
+    for (unsigned i = 0; i < WORKSPACE_MAX; i++)
+      if (!saved.names[i][0] || !__builtin_memchr(saved.names[i], 0, 32)) valid = false;
+    if (valid) workspaces = saved;
+  }
+  memset(workspace_hidden, 0, sizeof(workspace_hidden));
+  memset(app_close_requested, 0, sizeof(app_close_requested));
+  memset(client_workspace_hidden, 0, sizeof(client_workspace_hidden));
+  memset(client_workspace, 0, sizeof(client_workspace));
+  workspace_pending = -1; workspace_dirty = false;
+}
+static void workspace_count(unsigned count) {
+  if (!count || count > WORKSPACE_MAX) return;
+  for (unsigned i = 0; i < APP_COUNT; i++)
+    if (workspaces.homes[i] >= count) workspaces.homes[i] = count - 1;
+  for (unsigned i = 0; i < GUI_CLIENTS; i++)
+    if (client_workspace[i] >= count) client_workspace[i] = count - 1;
+  workspaces.count = count;
+  if (workspaces.current >= count) workspace_pending = count - 1;
+  else if (workspace_pending >= (int)count) workspace_pending = -1;
+  workspace_dirty = true; gui_canvas_invalidate();
+}
+static void workspace_move(unsigned window, unsigned target) {
+  if (target >= workspaces.count) return;
+  if (window < APP_COUNT) workspaces.homes[window] = target;
+  else if (window - APP_COUNT < GUI_CLIENTS) client_workspace[window - APP_COUNT] = target;
+  else return;
+  if ((active_app >= 0 && (unsigned)active_app == window) ||
+      (focused_client >= 0 && window == APP_COUNT + (unsigned)focused_client)) {
+    if (focused_client >= 0 && client_mouse_buttons > 0)
+      client_event(focused_client, AV_GUI_MOUSE, client_mouse_x, client_mouse_y, 0);
+    client_mouse_buttons = -1;
+    active_app = -1; focused_client = -1;
+    nk_edit_unfocus(&ui);
+  }
+  workspace_dirty = true; gui_canvas_invalidate();
+}
+static bool workspace_window(const char *name, struct nk_rect bounds,
+                             unsigned home, bool *hidden) {
+  if (home != workspaces.current) {
+    struct nk_window *window = nk_window_find(&ui, name);
+    if (window) {
+      if (!(window->flags & (NK_WINDOW_CLOSED | NK_WINDOW_HIDDEN))) {
+        nk_window_show(&ui, name, NK_HIDDEN); *hidden = true;
+      }
+      nk_begin(&ui, name, bounds, NK_WINDOW_HIDDEN); nk_end(&ui);
+      for (struct nk_table *table = window->tables; table; table = table->next)
+        table->seq = ui.seq;
+    }
+    return false;
+  }
+  if (*hidden) { nk_window_show(&ui, name, NK_SHOWN); *hidden = false; }
+  return true;
+}
+static void workspace_apply(void) {
+  if (workspace_pending >= 0 && (unsigned)workspace_pending < workspaces.count &&
+      (unsigned)workspace_pending != workspaces.current) {
+    if (workspaces.current < WORKSPACE_MAX) {
+      if (focused_client >= 0 && client_workspace[focused_client] == workspaces.current)
+        workspace_focus[workspaces.current] = APP_COUNT + focused_client;
+      else if (active_app >= 0 && workspaces.homes[active_app] == workspaces.current)
+        workspace_focus[workspaces.current] = active_app;
+    }
+    if (focused_client >= 0 && client_mouse_buttons > 0)
+      client_event(focused_client, AV_GUI_MOUSE, client_mouse_x, client_mouse_y, 0);
+    client_mouse_buttons = -1;
+    workspaces.current = workspace_pending;
+    active_app = focused_client = -1; focus_request = client_focus_request = -1;
+    held_control_app = held_control = -1;
+    context_open = launcher = false;
+    nk_edit_unfocus(&ui);
+    int focus = workspace_focus[workspaces.current];
+    if (focus >= 0 && focus < APP_COUNT && apps[focus].visible && workspaces.homes[focus] == workspaces.current)
+      focus_request = focus;
+    else if (focus >= APP_COUNT && focus < APP_COUNT + GUI_CLIENTS &&
+             gui_clients[focus - APP_COUNT].pixels && client_workspace[focus - APP_COUNT] == workspaces.current)
+      client_focus_request = focus - APP_COUNT;
+    workspace_dirty = true; gui_canvas_invalidate();
+  }
+  workspace_pending = -1;
+}
 static void notify(const char *message) {
   copy(notification, message, sizeof(notification));
   notification_until = clock_ticks() + 400;
@@ -284,6 +459,8 @@ static void desktop_load(void) {
     desktop = saved;
 }
 static uint32_t *registry_slot(const char *key) {
+  if (str_eq(key, "workspace.count")) return &workspaces.count;
+  if (str_eq(key, "workspace.current")) return &workspaces.current;
   if (str_eq(key, "desktop.shortcuts"))
     return &desktop.shortcuts;
   if (str_eq(key, "desktop.top_bar"))
@@ -308,6 +485,14 @@ static bool registry_set(const char *key, const char *value) {
     if (*p < '0' || *p > '9' || number > 100000)
       return false;
     number = number * 10 + *p - '0';
+  }
+  if (slot == &workspaces.count) {
+    if (!number || number > WORKSPACE_MAX) return false;
+    workspace_count(number); return true;
+  }
+  if (slot == &workspaces.current) {
+    if (number >= workspaces.count) return false;
+    workspace_request(number); return true;
   }
   if ((slot == &desktop.top_bar || slot == &desktop.dock_bar ||
        slot == &desktop.desktop_icons) &&
@@ -477,6 +662,29 @@ static bool accent_button(const char *label) {
   nk_style_pop_style_item(&ui);
   return clicked;
 }
+int gui_clipboard_call(struct process *process, bool write, uint32_t address,
+                       uint32_t size) {
+  if (size > sizeof(clipboard)) return -22;
+  if (write) {
+    static char incoming[sizeof(clipboard)];
+    if (size >= sizeof(clipboard)) return -22;
+    if (size && !process_copyin(process, incoming, address, size)) return -14;
+    for (unsigned i = 0; i < size; i++)
+      if (!incoming[i]) return -22;
+    memcpy(clipboard, incoming, size);
+    clipboard[size] = 0;
+    clipboard_dirty = true;
+    return size;
+  }
+  unsigned length = strlen(clipboard);
+  if (!size) return length;
+  unsigned count = length < size - 1 ? length : size - 1;
+  if (!process_range(process, address, count + 1, true)) return -14;
+  if (count && !process_copyout(process, address, clipboard, count)) return -14;
+  const char zero = 0;
+  if (!process_copyout(process, address + count, &zero, 1)) return -14;
+  return count;
+}
 static void clipboard_copy(nk_handle handle, const char *text, int length) {
   (void)handle;
   if (length < 0)
@@ -486,6 +694,7 @@ static void clipboard_copy(nk_handle handle, const char *text, int length) {
     n = sizeof(clipboard) - 1;
   memcpy(clipboard, text, n);
   clipboard[n] = 0;
+  clipboard_dirty = true;
 }
 static void clipboard_paste(nk_handle handle, struct nk_text_edit *edit) {
   (void)handle;
@@ -494,6 +703,11 @@ static void clipboard_paste(nk_handle handle, struct nk_text_edit *edit) {
 static void open_app(unsigned id) {
   if (id >= APP_COUNT)
     return;
+  if (apps[id].visible) {
+    workspace_focus[workspaces.homes[id]] = id;
+    workspace_request(workspaces.homes[id]);
+  }
+  else { workspaces.homes[id] = workspaces.current; workspace_dirty = true; }
   focused_client = -1;
   if (id == IMAGES)
     picture_focus = true;
@@ -744,40 +958,32 @@ static void open_file(unsigned index) {
     browse(path);
     return;
   }
-  const char *extension = NULL;
-  for (const char *p = path; *p; p++)
-    if (*p == '.')
-      extension = p + 1;
-  if (extension) {
-    char suffix[8];
-    unsigned i = 0;
-    while (extension[i] && i + 1 < sizeof(suffix)) {
-      char c = extension[i];
-      suffix[i++] = (c >= 'A' && c <= 'Z') ? c + 32 : c;
-    }
-    suffix[i] = 0;
-    if (str_eq(suffix, "wav")) {
-      copy(music_path, path, sizeof(music_path));
-      music_result = audio_play(music_path);
-      open_app(MUSIC);
-      return;
-    }
-    if (str_eq(suffix, "png") || str_eq(suffix, "jpg") ||
-        str_eq(suffix, "jpeg") || str_eq(suffix, "bmp")) {
-      copy(picture_path, path, sizeof(picture_path));
-      image_load(&picture, picture_path);
-      open_app(IMAGES);
-      return;
-    }
-  }
-  /* Read the ELF ident first.  Programs can be much larger than an editor
-   * document, while the executable loader reads them directly from ext4. */
-  char ident[4];
+  unsigned char ident[64];
   int ident_size = fs_read_at(path, 0, ident, sizeof(ident));
-  if (ident_size == 4 && ident[0] == 0x7f && ident[1] == 'E' &&
-      ident[2] == 'L' && ident[3] == 'F') {
-    if (user_spawn(path, "", false) < 0)
-      notify("Program launch failed");
+  if (ident_size < 0) { notify("Could not read this file"); return; }
+  enum file_type type = file_type_detect(path, ident, ident_size);
+  if (type == FILE_EXECUTABLE) {
+    if (user_spawn(path, "", false) < 0) notify("Program launch failed");
+    return;
+  }
+  unsigned handler = default_handler(type);
+  if (handler == MUSIC) {
+    copy(music_path, path, sizeof(music_path));
+    music_play_requested = true;
+    open_app(MUSIC);
+    return;
+  }
+  if (handler == IMAGES) {
+    copy(picture_path, path, sizeof(picture_path));
+    picture_load_requested = true;
+    open_app(IMAGES);
+    return;
+  }
+  if (handler == BROWSER) {
+    char address[264] = "file:";
+    append(address, path, sizeof(address));
+    browser_new_tab(address);
+    open_app(BROWSER);
     return;
   }
   if (editor_dirty) {
@@ -882,13 +1088,45 @@ static void shell_start(void) {
   }
 }
 static void shell_submit(void) {
+  if (str_eq(terminal_line,"netdiag") || str_eq(terminal_line,"netprofile") ||
+      str_eq(terminal_line,"route") ||
+      (strlen(terminal_line)>=11 && !__builtin_memcmp(terminal_line,"netprofile ",11)) ||
+      (strlen(terminal_line)>=6 && !__builtin_memcmp(terminal_line,"route ",6))) {
+    static char output[8192];capture(terminal_line,output,sizeof(output));
+    terminal_append(output);terminal_line[0]=0;terminal_focus=1;return;
+  }
+  if (str_eq(terminal_line, "sandbox") ||
+      (strlen(terminal_line) >= 8 && !__builtin_memcmp(terminal_line, "sandbox ", 8))) {
+    static char output[8192]; capture(terminal_line, output, sizeof(output));
+    terminal_append(output); terminal_line[0] = 0; terminal_focus = 1; return;
+  }
+  if (str_eq(terminal_line, "nvmehealth") ||
+      (strlen(terminal_line) >= 11 && !__builtin_memcmp(terminal_line, "nvmehealth ", 11))) {
+    static char output[8192];
+    capture(terminal_line, output, sizeof(output));
+    terminal_append(output); terminal_line[0] = 0; terminal_focus = 1; return;
+  }
+  if (str_eq(terminal_line, "workspace") ||
+      (strlen(terminal_line) >= 10 && !__builtin_memcmp(terminal_line, "workspace ", 10))) {
+    workspace_command(terminal_line + (strlen(terminal_line) >= 10 ? 10 : 9));
+    terminal_line[0] = 0; terminal_focus = 1; return;
+  }
+  if (str_eq(terminal_line, "firewall") ||
+      (strlen(terminal_line) >= 9 && !__builtin_memcmp(terminal_line, "firewall ", 9))) {
+    static char output[8192];
+    capture(terminal_line, output, sizeof(output));
+    terminal_append(output);
+    terminal_line[0] = 0;
+    terminal_focus = 1;
+    return;
+  }
   if (str_eq(terminal_line, "reg list") ||
       str_eq(terminal_line, "registry list")) {
     static const char *keys[] = {"desktop.shortcuts",  "desktop.top_bar",
                                  "desktop.dock",       "desktop.icons",
                                  "desktop.icons_x",    "desktop.icons_y",
-                                 "desktop.dock_bottom"};
-    for (unsigned i = 0; i < 7; i++) {
+                                 "desktop.dock_bottom", "workspace.count", "workspace.current"};
+    for (unsigned i = 0; i < 9; i++) {
       char value[32];
       number(value, *registry_slot(keys[i]));
       terminal_append(keys[i]);
@@ -1628,7 +1866,7 @@ static void tasks_view(void) {
           if (nk_button_label(&ui, "Focus"))
             open_app(i);
           if (nk_button_label(&ui, "Close"))
-            nk_window_show(&ui, app_names[i], NK_HIDDEN);
+            app_close_requested[i] = true;
         }
       for (unsigned i = 0; i < GUI_CLIENTS; i++) {
         struct gui_client *c = &gui_clients[i];
@@ -1640,6 +1878,9 @@ static void tasks_view(void) {
         nk_label(&ui, c->title, NK_TEXT_LEFT);
         caption(nk_window_is_collapsed(&ui, name) ? "Minimized" : "Open");
         if (nk_button_label(&ui, "Focus")) {
+          workspace_focus[client_workspace[i]] = APP_COUNT + i;
+          workspace_request(client_workspace[i]);
+          client_focus_request = i;
           nk_window_collapse(&ui, name, NK_MAXIMIZED);
           nk_window_set_focus(&ui, name);
           focused_client = i;
@@ -2089,16 +2330,190 @@ static void appearance_view(void) {
                                        : "Saved on this disk")
               : "Default appearance");
 }
+static void workspace_view(void) {
+  heading("Workspaces");
+  nk_layout_row_dynamic(&ui, 32, 1);
+  int count = workspaces.count;
+  nk_property_int(&ui, "Workspaces", 1, &count, WORKSPACE_MAX, 1, 1);
+  if ((unsigned)count != workspaces.count) workspace_count(count);
+  for (unsigned i = 0; i < workspaces.count; i++) {
+    nk_layout_row_dynamic(&ui, 32, 2);
+    char old[32]; copy(old, workspaces.names[i], sizeof(old));
+    nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, workspaces.names[i], 32, nk_filter_default);
+    if (!str_eq(old, workspaces.names[i])) workspace_dirty = true;
+    if (!workspaces.names[i][0]) copy(workspaces.names[i], old, 32);
+    if (nk_button_label(&ui, workspaces.current == i ? "Current workspace" : "Switch")) workspace_request(i);
+  }
+  nk_layout_row_dynamic(&ui, 30, 1);
+  caption("Ctrl+Alt+Left/Right switches; add Shift to move the focused window.");
+  nk_layout_row_dynamic(&ui, 30, 1);
+  caption("WINDOW ASSIGNMENTS");
+  for (unsigned i = 0; i < APP_COUNT + GUI_CLIENTS; i++) {
+    bool client = i >= APP_COUNT;
+    unsigned slot = client ? i - APP_COUNT : i;
+    if (client ? (!gui_clients[slot].pixels || gui_clients[slot].closing) : !apps[slot].visible) continue;
+    unsigned home = client ? client_workspace[slot] : workspaces.homes[slot];
+    nk_layout_row_dynamic(&ui, 32, 2);
+    nk_label(&ui, client ? gui_clients[slot].title : app_names[slot], NK_TEXT_LEFT);
+    if (nk_combo_begin_label(&ui, workspaces.names[home], nk_vec2(220, 280))) {
+      nk_layout_row_dynamic(&ui, 28, 1);
+      for (unsigned target = 0; target < workspaces.count; target++)
+        if (nk_button_label(&ui, workspaces.names[target])) { workspace_move(i, target); nk_combo_close(&ui); break; }
+      nk_combo_end(&ui);
+    }
+  }
+  nk_layout_row_dynamic(&ui, 34, 1);
+  if (accent_button("Save workspace settings")) workspace_save();
+  nk_layout_row_dynamic(&ui, 28, 1);
+  caption(workspace_dirty ? "Changes waiting to save" : "Workspace settings saved");
+}
+static char *workspace_word(char **text) {
+  while (**text == ' ') (*text)++;
+  char *start = *text;
+  while (**text && **text != ' ') (*text)++;
+  if (**text) *(*text)++ = 0;
+  return start;
+}
+static void workspace_command(char *line) {
+  char *operation = workspace_word(&line);
+  if (!*operation || str_eq(operation, "list")) {
+    for (unsigned i = 0; i < workspaces.count; i++) {
+      char digits[32]; number(digits, i + 1);
+      terminal_append(digits); terminal_append(i == workspaces.current ? " * " : "   ");
+      terminal_append(workspaces.names[i]); terminal_append("\n");
+    }
+    return;
+  }
+  if (str_eq(operation, "save")) { workspace_save(); return; }
+  bool valid;
+  unsigned index = parse_uint(workspace_word(&line), &valid);
+  if (!valid) goto invalid;
+  if (str_eq(operation, "count")) {
+    if (!index || index > WORKSPACE_MAX) goto invalid;
+    workspace_count(index); return;
+  }
+  if (str_eq(operation, "switch")) {
+    if (!index || index > workspaces.count) goto invalid;
+    workspace_request(index - 1); return;
+  }
+  if (str_eq(operation, "rename")) {
+    while (*line == ' ') line++;
+    if (!index || index > workspaces.count || !*line || strlen(line) >= 32) goto invalid;
+    copy(workspaces.names[index - 1], line, 32); workspace_dirty = true; return;
+  }
+  if (str_eq(operation, "move") || str_eq(operation, "client")) {
+    unsigned target = parse_uint(workspace_word(&line), &valid);
+    if (!valid || !target || target > workspaces.count) goto invalid;
+    if (str_eq(operation, "move")) {
+      if (index >= APP_COUNT) goto invalid;
+      workspace_move(index, target - 1); return;
+    }
+    for (unsigned i = 0; i < GUI_CLIENTS; i++)
+      if (gui_clients[i].pixels && gui_clients[i].pid == (int)index) {
+        workspace_move(APP_COUNT + i, target - 1); return;
+      }
+  }
+invalid:
+  terminal_append("workspace list|save|count N|switch N|rename N NAME\n"
+                  "workspace move APP_INDEX N | workspace client PID N\n");
+}
+static void storage_health_view(void) {
+  static int selected = -1, result;
+  static struct nvme_health sample;
+  static bool loaded;
+  nk_layout_row_dynamic(&ui, 30, 1);
+  caption("NVME HEALTH");
+  bool found = false, refresh = false;
+  for (unsigned i = 0; i < disk_count(); i++) {
+    const struct block_device *disk = disk_get(i);
+    if (!disk || disk->backend != 3) continue;
+    found = true;
+    if (selected < 0) { selected = i; refresh = true; }
+    char label[96], index[32]; number(index, i);
+    copy(label, "Disk ", sizeof(label)); append(label, index, sizeof(label));
+    append(label, " - ", sizeof(label)); append(label, disk->model, sizeof(label));
+    nk_layout_row_dynamic(&ui, 32, 1);
+    nk_bool active = selected == (int)i;
+    if (nk_selectable_label(&ui, label, NK_TEXT_LEFT, &active)) {
+      selected = i; refresh = true;
+    }
+  }
+  if (!found) { nk_label(&ui, "No NVMe namespace detected", NK_TEXT_LEFT); return; }
+  nk_layout_row_dynamic(&ui, 34, 1);
+  if (nk_button_label(&ui, "Refresh controller health")) refresh = true;
+  const struct block_device *disk = disk_get(selected);
+  if (!disk || disk->backend != 3) { selected = -1; loaded = false; return; }
+  if (refresh || !loaded) {
+    result = nvme_health_read(disk->unit, &sample, refresh);
+    loaded = true;
+  }
+  if (result < 0) {
+    nk_layout_row_dynamic(&ui, 30, 1);
+    nk_label(&ui, result == -95 ? "Controller rejected the SMART/Health log request" :
+                    result == -16 ? "Controller health query is busy; refresh to retry" :
+                                    "Controller health query failed", NK_TEXT_LEFT);
+    return;
+  }
+  nk_layout_row_dynamic(&ui, 28, 2);
+  caption("Model"); nk_label(&ui, sample.model, NK_TEXT_LEFT);
+  caption("Serial"); nk_label(&ui, sample.serial, NK_TEXT_LEFT);
+  caption("Firmware"); nk_label(&ui, sample.firmware, NK_TEXT_LEFT);
+  caption("Health"); nk_label(&ui, sample.critical_warning ? "Controller warning" : "No critical warnings", NK_TEXT_LEFT);
+  static const char *warnings[] = {"Available spare is below threshold", "Temperature exceeds the controller threshold",
+    "NVM reliability is degraded", "Media is read-only", "Volatile memory backup has failed", "Persistent memory region is read-only"};
+  for (unsigned bit = 0; bit < 6; bit++) if (sample.critical_warning & (1u << bit)) {
+    nk_layout_row_dynamic(&ui, 36, 1); nk_label_wrap(&ui, warnings[bit]);
+  }
+  nk_layout_row_dynamic(&ui, 28, 2);
+  caption("Composite temperature");
+  if (sample.temperature_kelvin) {
+    char text[48], value[32]; int celsius = (int)sample.temperature_kelvin - 273;
+    text[0] = 0; if (celsius < 0) copy(text, "-", sizeof(text));
+    number(value, celsius < 0 ? -celsius : celsius); append(text, value, sizeof(text)); append(text, " C", sizeof(text));
+    nk_label(&ui, text, NK_TEXT_LEFT);
+  } else nk_label(&ui, "Not reported by controller", NK_TEXT_LEFT);
+  caption("Available spare"); label_value("", sample.available_spare, "%");
+  caption("Spare warning threshold"); label_value("", sample.spare_threshold, "%");
+  caption("Endurance used"); label_value("", sample.percentage_used, "%");
+  caption("Namespace ID"); label_value("", sample.namespace_id, "");
+  caption("Logical block bytes"); label_value("", sample.logical_block_size, "");
+  uint8_t blocks[16] = {0}; char value[40];
+  for (unsigned i = 0; i < 8; i++) blocks[i] = sample.namespace_blocks >> (8 * i);
+  nvme_counter_format(value, sizeof(value), blocks);
+  caption("Logical blocks"); nk_label(&ui, value, NK_TEXT_LEFT);
+  static const char *labels[NVME_HEALTH_COUNTERS] = {"Data units read", "Data units written", "Host reads", "Host writes", "Controller busy minutes",
+    "Power cycles", "Power-on hours", "Unsafe shutdowns", "Media integrity errors", "Error log entries"};
+  for (unsigned i = 0; i < NVME_HEALTH_COUNTERS; i++) {
+    nvme_counter_format(value, sizeof(value), sample.counters[i]);
+    caption(labels[i]); nk_label(&ui, value, NK_TEXT_LEFT);
+  }
+  caption("Warning temperature minutes"); label_value("", sample.warning_temperature_minutes, "");
+  caption("Critical temperature minutes"); label_value("", sample.critical_temperature_minutes, "");
+  for (unsigned i = 0; i < 8; i++) if (sample.temperature_sensors[i]) {
+    char sensor[48], n[32]; number(n, i + 1);
+    copy(sensor, "Temperature sensor ", sizeof(sensor)); append(sensor, n, sizeof(sensor));
+    caption(sensor); label_value("", sample.temperature_sensors[i], " K");
+  }
+  for (unsigned i = 0; i < 2; i++) {
+    caption(i ? "Thermal level 2 transitions" : "Thermal level 1 transitions");
+    label_value("", sample.thermal_transitions[i], "");
+    caption(i ? "Thermal level 2 seconds" : "Thermal level 1 seconds");
+    label_value("", sample.thermal_seconds[i], "");
+  }
+  caption("Sample age"); label_value("", (clock_ticks() - sample.sampled_ticks) / 100, " seconds");
+  nk_layout_row_dynamic(&ui, 48, 1);
+  nk_label_wrap(&ui, "Read/write data units are 512,000 bytes, rounded up by the controller. Endurance used may exceed 100%.");
+}
 static void settings_view(void) {
   float columns[] = {0.25f, 0.75f};
   float area = nk_window_get_content_region(&ui).h;
   nk_layout_row(&ui, NK_DYNAMIC, area, 2, columns);
-  if (nk_group_begin(&ui, "Settings navigation", NK_WINDOW_NO_SCROLLBAR)) {
+  if (nk_group_begin(&ui, "Settings navigation", 0)) {
     nk_layout_row_dynamic(&ui, 28, 1);
     caption("MAGENTA");
     const char *pages[] = {"Appearance", "System", "Storage",
-                           "Pointer",    "About",  "Registry"};
-    for (unsigned i = 0; i < 6; i++) {
+                           "Pointer",    "About",  "Registry", "Default apps", "Clipboard", "Workspaces"};
+    for (unsigned i = 0; i < 9; i++) {
       nk_layout_row_dynamic(&ui, 38, 1);
       nk_bool selected = settings_page == (int)i;
       if (nk_selectable_label(&ui, pages[i], NK_TEXT_LEFT, &selected))
@@ -2145,6 +2560,7 @@ static void settings_view(void) {
       }
       nk_layout_row_dynamic(&ui, 28, 1);
       label_value("Detected disks: ", system_status.disks, "");
+      storage_health_view();
     } else if (settings_page == 3) {
       heading("Pointer");
       nk_layout_row_dynamic(&ui, 50, 1);
@@ -2170,6 +2586,45 @@ static void settings_view(void) {
         mouse_configure(display_width, display_height, 100);
         preferences_dirty = true;
       }
+    } else if (settings_page == 8) {
+      workspace_view();
+    } else if (settings_page == 6) {
+      heading("Default applications");
+      nk_layout_row_dynamic(&ui, 38, 1);
+      caption("Choose how Files opens text and web documents.");
+      for (unsigned type = FILE_TEXT; type <= FILE_WAV; type++) {
+        nk_layout_row_dynamic(&ui, 32, 2);
+        nk_label(&ui, file_type_mime(type), NK_TEXT_LEFT);
+        if (type == FILE_TEXT || type == FILE_HTML) {
+          const char *options[] = {"Text editor", "Browser"};
+          int selected = default_handler(type) == BROWSER;
+          int choice = nk_combo(&ui, options, 2, selected, 30, nk_vec2(220, 100));
+          file_defaults.handlers[type] = choice ? BROWSER : EDITOR;
+        } else nk_label(&ui, app_names[default_handler(type)], NK_TEXT_LEFT);
+      }
+      nk_layout_row_dynamic(&ui, 36, 2);
+      if (accent_button("Save defaults")) {
+        file_defaults.checksum = crc32(&file_defaults, offsetof(__typeof__(file_defaults), checksum));
+        file_defaults_saved = fs_write("magenta-filetypes", &file_defaults, sizeof(file_defaults)) >= 0;
+      }
+      if (nk_button_label(&ui, "Reset defaults")) { defaults_reset(); file_defaults_saved = false; }
+      nk_layout_row_dynamic(&ui, 30, 1);
+      caption(file_defaults_saved ? "Saved on disk" : "Save to keep these defaults after reboot");
+    } else if (settings_page == 7) {
+      heading("Clipboard");
+      nk_layout_row_dynamic(&ui, 50, 1);
+      nk_label_wrap(&ui, "Text copied in the desktop is shared by its text fields, editor and terminal, and restored after reboot.");
+      nk_layout_row_dynamic(&ui, 160, 1);
+      nk_edit_string_zero_terminated(&ui, NK_EDIT_BOX | NK_EDIT_READ_ONLY, clipboard, sizeof(clipboard), nk_filter_default);
+      nk_layout_row_dynamic(&ui, 36, 2);
+      if (nk_button_label(&ui, "Clear clipboard")) {
+        clipboard[0] = 0;
+        clipboard_dirty = true;
+        clipboard_save();
+      }
+      if (nk_button_label(&ui, "Save clipboard")) clipboard_save();
+      nk_layout_row_dynamic(&ui, 30, 1);
+      caption(clipboard_dirty ? "Waiting to save to disk" : clipboard_saved ? "Saved on disk" : "Clipboard is empty");
     } else if (settings_page == 5) {
       heading("Registry editor");
       nk_layout_row_dynamic(&ui, 28, 1);
@@ -2177,8 +2632,8 @@ static void settings_view(void) {
       static const char *keys[] = {"desktop.shortcuts",  "desktop.top_bar",
                                    "desktop.dock",       "desktop.icons",
                                    "desktop.icons_x",    "desktop.icons_y",
-                                   "desktop.dock_bottom"};
-      for (unsigned i = 0; i < 7; i++) {
+                                   "desktop.dock_bottom", "workspace.count", "workspace.current"};
+      for (unsigned i = 0; i < 9; i++) {
         char label[96], value[32];
         number(value, *registry_slot(keys[i]));
         copy(label, keys[i], sizeof(label));
@@ -2259,6 +2714,7 @@ static int window_controls(unsigned id) {
     icon = id == BROWSER  ? 4
            : id == IMAGES ? 9
            : id == MUSIC  ? 10
+           : id == CALCULATOR ? 12
            : id == GAMES  ? 11
                           : id;
   } else {
@@ -2802,6 +3258,8 @@ static void client_windows(void) {
       nk_window_set_focus(&ui, name);
     bool first = client_seen[i] != c->pid;
     if (first) {
+      client_workspace[i] = workspaces.current;
+      client_workspace_hidden[i] = false;
       client_return_app[i] = active_app;
       float w = c->width + 32, h = c->height + 105;
       if (w > width - 48)
@@ -2812,6 +3270,8 @@ static void client_windows(void) {
       client_seen[i] = c->pid;
       client_maximized[i] = false;
     }
+    if (!workspace_window(name, client_bounds[i], client_workspace[i], &client_workspace_hidden[i]))
+      continue;
     nk_set_user_data(&ui, nk_handle_id(0));
     nk_flags flags = NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
                      NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR;
@@ -2891,8 +3351,115 @@ static void client_windows(void) {
     }
   }
 }
+static char calculator_expression[256], calculator_result[64] = "0";
+static char calculator_memory_text[64] = "0";
+static char calculator_history[16][256], calculator_values[16][64];
+static unsigned calculator_count;
+static double calculator_answer, calculator_memory;
+static bool calculator_focus, calculator_solve_requested;
+static const char *calculator_error;
+static void calculator_solve(void) {
+  double value;
+  if (!calculator_eval(calculator_expression, calculator_answer, &value,
+                       &calculator_error))
+    return;
+  calculator_answer = value;
+  calculator_format(calculator_result, sizeof(calculator_result), value);
+  if (calculator_count == 16) {
+    for (unsigned i = 1; i < 16; i++) {
+      copy(calculator_history[i - 1], calculator_history[i], 256);
+      copy(calculator_values[i - 1], calculator_values[i], 64);
+    }
+    calculator_count--;
+  }
+  copy(calculator_history[calculator_count], calculator_expression, 256);
+  copy(calculator_values[calculator_count++], calculator_result, 64);
+}
+static void calculator_view(void) {
+  heading("Calculator");
+  nk_layout_row_dynamic(&ui, 32, 1);
+  caption("Decimals, parentheses, + - * / and whole-number powers (^)");
+  nk_layout_row_dynamic(&ui, 40, 1);
+  if (calculator_focus) {
+    nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
+    calculator_focus = false;
+  }
+  nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, calculator_expression,
+                                 sizeof(calculator_expression), nk_filter_default);
+  if (calculator_solve_requested) {
+    calculator_solve_requested = false;
+    calculator_solve();
+  }
+  nk_layout_row_dynamic(&ui, 40, 1);
+  nk_style_push_font(&ui, &heading_font);
+  nk_label(&ui, calculator_result, NK_TEXT_RIGHT);
+  nk_style_pop_font(&ui);
+  nk_layout_row_dynamic(&ui, 26, 1);
+  caption(calculator_error ? calculator_error : "Enter calculates; ans recalls the last answer");
+  const char *keys[] = {"(", ")", "Clear", "Backspace", "7", "8", "9", "/",
+                        "4", "5", "6", "*", "1", "2", "3", "-",
+                        "0", ".", "ans", "+"};
+  nk_layout_row_dynamic(&ui, 32, 4);
+  for (unsigned i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+    if (nk_button_label(&ui, keys[i])) {
+      if (i == 2) calculator_expression[0] = 0;
+      else if (i == 3) {
+        size_t n = strlen(calculator_expression);
+        if (n) calculator_expression[n - 1] = 0;
+      } else append(calculator_expression, keys[i], sizeof(calculator_expression));
+      calculator_error = NULL;
+      calculator_focus = true;
+    }
+  nk_layout_row_dynamic(&ui, 34, 2);
+  if (accent_button("Calculate")) calculator_solve();
+  if (nk_button_label(&ui, "Copy result"))
+    clipboard_copy(nk_handle_ptr(NULL), calculator_result, strlen(calculator_result));
+  nk_layout_row_dynamic(&ui, 30, 4);
+  if (nk_button_label(&ui, "MC")) calculator_memory = 0;
+  if (nk_button_label(&ui, "MR")) {
+    calculator_format(calculator_memory_text, sizeof(calculator_memory_text), calculator_memory);
+    append(calculator_expression, "(", sizeof(calculator_expression));
+    append(calculator_expression, calculator_memory_text, sizeof(calculator_expression));
+    append(calculator_expression, ")", sizeof(calculator_expression));
+    calculator_focus = true;
+  }
+  if (nk_button_label(&ui, "M+")) {
+    double next = calculator_memory + calculator_answer;
+    if (__builtin_isfinite(next)) calculator_memory = next;
+    else calculator_error = "Memory value is out of range";
+  }
+  if (nk_button_label(&ui, "MS")) calculator_memory = calculator_answer;
+  nk_layout_row_dynamic(&ui, 24, 1);
+  calculator_format(calculator_memory_text, sizeof(calculator_memory_text), calculator_memory);
+  nk_label(&ui, calculator_memory_text, NK_TEXT_RIGHT);
+  nk_layout_row_dynamic(&ui, 28, 2);
+  caption("HISTORY - click an expression to use it again");
+  if (nk_button_label(&ui, "Clear history")) calculator_count = 0;
+  for (unsigned i = calculator_count; i > 0; i--) {
+    nk_layout_row_dynamic(&ui, 30, 2);
+    if (nk_button_label(&ui, calculator_history[i - 1])) {
+      copy(calculator_expression, calculator_history[i - 1], sizeof(calculator_expression));
+      calculator_focus = true;
+    }
+    nk_label(&ui, calculator_values[i - 1], NK_TEXT_RIGHT);
+  }
+}
 static void application(unsigned id) {
+  if (app_close_requested[id]) {
+    app_close_requested[id] = false;
+    if (id == EDITOR && editor_dirty) {
+      open_app(EDITOR); editor_discard = close_editor_after_discard = true;
+    } else {
+      apps[id].visible = false;
+      if (active_app == (int)id) active_app = -1;
+      nk_window_show(&ui, app_names[id], NK_HIDDEN);
+      if (id == GAMES) games_ui_save();
+      if (id == TERMINAL && terminal_pid) user_tty_input(3);
+    }
+  }
   if (!apps[id].visible)
+    return;
+  if (!workspace_window(app_names[id], apps[id].bounds, workspaces.homes[id], &workspace_hidden[id]))
     return;
   nk_set_user_data(&ui, nk_handle_id(id + 1));
   nk_flags flags = NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
@@ -2982,7 +3549,9 @@ static void application(unsigned id) {
         label_value("Playback error: ",
                     -(music_result < 0 ? music_result : status.error), "");
       }
-    } else if (id == IMAGES)
+    } else if (id == CALCULATOR)
+      calculator_view();
+    else if (id == IMAGES)
       images_view();
     else
       settings_view();
@@ -3001,6 +3570,7 @@ static void application(unsigned id) {
   if (nk_window_is_closed(&ui, app_names[id]) ||
       nk_window_is_hidden(&ui, app_names[id])) {
     apps[id].visible = false;
+    if (active_app == (int)id) active_app = -1;
     if (id == GAMES)
       games_ui_save();
     if (id == EDITOR && editor_dirty) {
@@ -3026,6 +3596,7 @@ static void top_panel(void) {
     nk_layout_row_template_push_static(&ui, 32);
     nk_layout_row_template_push_static(&ui, 132);
     nk_layout_row_template_push_dynamic(&ui);
+    nk_layout_row_template_push_static(&ui, width > 800 ? 140 : 128);
     nk_layout_row_template_push_static(&ui, 104);
     nk_layout_row_template_push_static(&ui, width > 800 ? 188 : 0);
     nk_layout_row_template_push_static(&ui, 32);
@@ -3037,6 +3608,13 @@ static void top_panel(void) {
     if (nk_button_label(&ui, "Applications"))
       launcher = !launcher;
     nk_spacer(&ui);
+    if (nk_combo_begin_label(&ui, workspaces.names[workspaces.current], nk_vec2(240, 340))) {
+      nk_layout_row_dynamic(&ui, 30, 1);
+      for (unsigned i = 0; i < workspaces.count; i++)
+        if (nk_button_label(&ui, workspaces.names[i])) { workspace_request(i); nk_combo_close(&ui); break; }
+      if (nk_button_label(&ui, "Manage workspaces")) { settings_page = 8; open_app(SETTINGS); }
+      nk_combo_end(&ui);
+    }
     if (nk_button_label(&ui, network_status.ip ? "Network" : "Offline"))
       open_app(NETWORK);
     if (width > 800)
@@ -3063,6 +3641,7 @@ static void app_badge(struct nk_command_buffer *canvas, struct nk_rect r,
                   : id == BROWSER ? 4
                   : id == IMAGES  ? 9
                   : id == MUSIC   ? 10
+                  : id == CALCULATOR ? 12
                   : id == GAMES   ? 11
                                   : (unsigned)id;
   struct nk_color base =
@@ -3097,7 +3676,7 @@ static bool desktop_pointer_free(void) {
       nk_input_is_mouse_hovering_rect(&ui.input, context_bounds))
     return false;
   for (unsigned i = 0; i < APP_COUNT; i++) {
-    if (!apps[i].visible)
+    if (!apps[i].visible || workspaces.homes[i] != workspaces.current)
       continue;
     struct nk_rect bounds = apps[i].bounds;
     if (nk_window_is_collapsed(&ui, app_names[i]))
@@ -3106,7 +3685,7 @@ static bool desktop_pointer_free(void) {
       return false;
   }
   for (unsigned i = 0; i < GUI_CLIENTS; i++) {
-    if (!gui_clients[i].pixels || gui_clients[i].closing)
+    if (!gui_clients[i].pixels || gui_clients[i].closing || client_workspace[i] != workspaces.current)
       continue;
     char name[96];
     client_name(i, name);
@@ -3281,7 +3860,8 @@ static void dock(void) {
     for (unsigned slot = 0; slot < APP_COUNT + 1; slot++) {
       int id = slot ? ((int)slot - 1) : -1;
       struct nk_rect bounds = nk_widget_bounds(&ui);
-      bool selected = id >= 0 && apps[id].visible && active_app == id;
+      bool selected = id >= 0 && apps[id].visible &&
+                      workspaces.homes[id] == workspaces.current && active_app == id;
       nk_style_push_style_item(
           &ui, &ui.style.button.normal,
           nk_style_item_color(selected ? alpha_color(accent(), 35)
@@ -3347,7 +3927,7 @@ static void launcher_view(void) {
     for (unsigned i = 0; i < APP_COUNT; i++)
       if ((launcher_category == 0 ||
            (launcher_category == 1 &&
-            (i == FILES || i == EDITOR || i == IMAGES)) ||
+            (i == FILES || i == EDITOR || i == IMAGES || i == CALCULATOR)) ||
            (launcher_category == 2 &&
             (i == TERMINAL || i == TASKS || i == SETTINGS)) ||
            (launcher_category == 3 &&
@@ -3605,6 +4185,10 @@ static void inputs(void) {
       open_file(selected_file);
       continue;
     }
+    if (active_app == CALCULATOR && c == '\n') {
+      calculator_solve_requested = true;
+      continue;
+    }
     if (active_app == GAMES && games_ui_key(c))
       continue;
     if (c == 7) {
@@ -3675,6 +4259,19 @@ static void inputs(void) {
     int key = graphics_key_event();
     if (!key)
       break;
+    if (key == 0x64b || key == 0x64d || key == 0x74b || key == 0x74d) {
+      unsigned base = workspace_pending >= 0 ? (unsigned)workspace_pending : workspaces.current;
+      unsigned target = (base + ((key & 255) == 0x4b ? workspaces.count - 1 : 1)) % workspaces.count;
+      if (key & 0x100) {
+        int moving = focused_client >= 0 ? APP_COUNT + focused_client : active_app;
+        if (moving >= 0) {
+          workspace_focus[target] = moving;
+          workspace_move(moving, target);
+        }
+      }
+      workspace_request(target);
+      continue;
+    }
     if (focused_client >= 0) {
       client_event(focused_client, AV_GUI_KEY, key, 0, 0);
       continue;
@@ -3755,6 +4352,9 @@ int gui_run(void) {
   height = display_height / native_scale;
   preference_load();
   desktop_load();
+  workspace_load();
+  defaults_load();
+  clipboard_load();
   memset(browser_tabs, 0, sizeof(browser_tabs));
   for (unsigned i = 0; i < WEB_TABS; i++)
     web_reset(i);
@@ -3795,13 +4395,13 @@ int gui_run(void) {
   music_focus = false;
   music_play_requested = false;
   music_result = 0;
-  clipboard[0] = 0;
   graphics_console_capture(terminal_character);
   mouse_interrupt_poll(true);
   user_tty_external(true);
   update_status();
   browse("/");
   refresh_packages();
+  calculator_focus = true;
   active_app = -1;
   focused_client = -1;
   client_enable(true);
@@ -3822,6 +4422,7 @@ int gui_run(void) {
       last_status = clock_ticks();
     }
     if ((uint32_t)(clock_ticks() - last_frame) >= 3) {
+      workspace_apply();
       inputs();
       if (browser_load_requested)
         browser_load();
@@ -3876,7 +4477,8 @@ int gui_run(void) {
       if (gui_canvas_changed(&ui, preferences.blur)) {
         gui_canvas_begin();
         for (unsigned i = 0; i < APP_COUNT; i++)
-          if (apps[i].visible && !nk_window_is_collapsed(&ui, app_names[i]))
+          if (apps[i].visible && workspaces.homes[i] == workspaces.current &&
+              !nk_window_is_collapsed(&ui, app_names[i]))
             gui_canvas_shadow(apps[i].bounds);
         gui_canvas_commands(&ui, preferences.blur);
       }
@@ -3894,6 +4496,10 @@ int gui_run(void) {
         music_play_requested = false;
         music_result = audio_play(music_path);
       }
+      if (clipboard_dirty && (uint32_t)(clock_ticks() - clipboard_last_attempt) >= 50)
+        clipboard_save();
+      if (workspace_dirty && (uint32_t)(clock_ticks() - workspace_last_save) >= 50)
+        workspace_save();
       last_frame = clock_ticks();
       if (preferences_dirty && !(buttons & 1) &&
           (uint32_t)(clock_ticks() - last_save) >= 50)
@@ -3906,6 +4512,8 @@ int gui_run(void) {
   poll_processes();
   client_enable(false);
   user_tty_external(false);
+  clipboard_save();
+  if (workspace_dirty) workspace_save();
   if (preferences_dirty)
     preference_save(false);
   graphics_console_capture(NULL);

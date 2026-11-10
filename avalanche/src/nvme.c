@@ -1,4 +1,5 @@
 #include "system.h"
+#include "nvme_health.h"
 /* NVM Express PCI transport: polled admin/I/O queues, 4 KiB DMA pages.
  * Register/command layout follows the NVM Express base and NVM command specs.
  */
@@ -19,6 +20,11 @@ struct nvme_queue {
 static struct nvme_queue queues[2] __attribute__((aligned(4096)));
 static uint8_t identify[4096] __attribute__((aligned(4096)));
 static uint8_t data_page[4096] __attribute__((aligned(4096)));
+static uint8_t health_page[4096] __attribute__((aligned(4096)));
+static char controller_model[41], controller_serial[21], controller_firmware[9];
+static struct nvme_health health_cache;
+static bool health_valid, health_busy;
+static uint32_t admin_status;
 static struct {
   uint32_t id;
   unsigned shift;
@@ -68,6 +74,7 @@ static bool submit(unsigned qid, struct nvme_command *command) {
     cpu_pause();
   }
   __asm__ volatile("lfence" ::: "memory");
+  if (!qid) admin_status = status >> 17;
   bool ok = (status & 65535u) == cid && !(status >> 17);
   q->head = (q->head + 1) % QUEUE_DEPTH;
   if (!q->head)
@@ -121,6 +128,11 @@ void nvme_init(void) {
   model[40] = 0;
   for (int i = 39; i >= 0 && model[i] == ' '; i--)
     model[i] = 0;
+  memcpy(controller_model, model, sizeof(model));
+  memcpy(controller_serial, identify + 4, 20); controller_serial[20] = 0;
+  memcpy(controller_firmware, identify + 64, 8); controller_firmware[8] = 0;
+  for (int i = 19; i >= 0 && controller_serial[i] == ' '; i--) controller_serial[i] = 0;
+  for (int i = 7; i >= 0 && controller_firmware[i] == ' '; i--) controller_firmware[i] = 0;
   struct nvme_command c = {{9}};
   c.word[10] = 7; /* One I/O queue pair. */
   if (!submit(0, &c))
@@ -197,4 +209,137 @@ bool nvme_flush(unsigned unit) {
     return false;
   struct nvme_command c = {{0, namespaces[unit].id}};
   return submit(1, &c);
+}
+
+static uint16_t health_u16(unsigned at) {
+  return (uint16_t)health_page[at] | (uint16_t)health_page[at + 1] << 8;
+}
+static uint32_t health_u32(unsigned at) {
+  return (uint32_t)health_u16(at) | (uint32_t)health_u16(at + 2) << 16;
+}
+int nvme_health_read(unsigned unit, struct nvme_health *out, bool refresh) {
+  if (!out) return -22;
+  if (!registers || !namespace_count || unit >= namespace_count) return -19;
+  if (dead) return -5;
+  if (health_busy) return -16;
+  if (refresh || !health_valid || (uint32_t)(clock_ticks() - health_cache.sampled_ticks) >= 500) {
+    health_busy = true;
+    memset(health_page, 0, sizeof(health_page));
+    struct nvme_command command = {{2, 0xffffffffu}};
+    /* Controller-wide SMART/Health log, retaining asynchronous events.
+       NUMD is a zero-based count of DWORDs: 512 bytes -> 127. */
+    command.word[10] = (127u << 16) | (1u << 15) | 2;
+    buffer_command(&command, health_page);
+    bool success = submit(0, &command);
+    if (!success && !dead && (admin_status & 0x7ff) == 2) {
+      /* Older controllers reserve RAE. No asynchronous events are armed by
+         this driver, so retrying without retention does not lose a consumer. */
+      command.word[10] &= ~(1u << 15);
+      success = submit(0, &command);
+    }
+    if (!success) {
+      health_busy = false;
+      return !dead && ((admin_status & 255) == 1 || (admin_status & 255) == 2) ? -95 : -5;
+    }
+    struct nvme_health sample;
+    memset(&sample, 0, sizeof(sample));
+    sample.version = 1;
+    sample.sampled_ticks = clock_ticks();
+    memcpy(sample.model, controller_model, sizeof(sample.model));
+    memcpy(sample.serial, controller_serial, sizeof(sample.serial));
+    memcpy(sample.firmware, controller_firmware, sizeof(sample.firmware));
+    sample.critical_warning = health_page[0];
+    sample.temperature_kelvin = health_u16(1);
+    sample.available_spare = health_page[3];
+    sample.spare_threshold = health_page[4];
+    sample.percentage_used = health_page[5];
+    memcpy(sample.counters, health_page + 32, sizeof(sample.counters));
+    sample.warning_temperature_minutes = health_u32(192);
+    sample.critical_temperature_minutes = health_u32(196);
+    for (unsigned i = 0; i < 8; i++) sample.temperature_sensors[i] = health_u16(200 + i * 2);
+    for (unsigned i = 0; i < 2; i++) {
+      sample.thermal_transitions[i] = health_u32(216 + i * 4);
+      sample.thermal_seconds[i] = health_u32(224 + i * 4);
+    }
+    health_cache = sample;
+    health_valid = true;
+    health_busy = false;
+  }
+  *out = health_cache;
+  out->namespace_id = namespaces[unit].id;
+  out->namespace_blocks = namespaces[unit].blocks;
+  out->logical_block_size = 1u << namespaces[unit].shift;
+  return 0;
+}
+void nvme_counter_format(char *out, unsigned capacity, const uint8_t *counter) {
+  uint8_t value[16]; char reversed[40]; unsigned count = 0;
+  memcpy(value, counter, sizeof(value));
+  for (;;) {
+    unsigned remainder = 0; bool nonzero = false;
+    for (int i = 15; i >= 0; i--) {
+      unsigned word = (remainder << 8) | value[i];
+      value[i] = word / 10; remainder = word % 10;
+      nonzero |= value[i] != 0;
+    }
+    reversed[count++] = '0' + remainder;
+    if (!nonzero) break;
+  }
+  if (!capacity) return;
+  unsigned used = 0;
+  while (count && used + 1 < capacity) out[used++] = reversed[--count];
+  out[used] = 0;
+}
+static void health_number(const char *label, uint64_t value) {
+  uint8_t bytes[16] = {0}; char number[40];
+  for (unsigned i = 0; i < 8; i++) { bytes[i] = value; value >>= 8; }
+  nvme_counter_format(number, sizeof(number), bytes);
+  console_write(label); console_write(number); console_putc('\n');
+}
+void nvme_health_command(char *arguments) {
+  while (*arguments == ' ') arguments++;
+  bool all = !*arguments, valid = false;
+  unsigned selected = all ? 0 : parse_uint(arguments, &valid);
+  if (!all && !valid) { console_write("nvmehealth [DISK_INDEX]\n"); return; }
+  bool found = false;
+  for (unsigned index = 0; index < disk_count(); index++) {
+    const struct block_device *disk = disk_get(index);
+    if ((!all && index != selected) || !disk || disk->backend != 3) continue;
+    found = true; health_number("Disk: ", index);
+    struct nvme_health sample;
+    int result = nvme_health_read(disk->unit, &sample, !all || !health_valid);
+    if (result < 0) { console_write("Health log error: "); print_uint(-result); console_putc('\n'); continue; }
+    console_write(sample.model); console_putc('\n');
+    console_write("Serial: "); console_write(sample.serial); console_putc('\n');
+    console_write("Firmware: "); console_write(sample.firmware); console_putc('\n');
+    health_number("Namespace: ", sample.namespace_id);
+    health_number("Logical blocks: ", sample.namespace_blocks);
+    health_number("Logical block bytes: ", sample.logical_block_size);
+    health_number("Critical warning bits: ", sample.critical_warning);
+    if (sample.temperature_kelvin) {
+      int celsius = (int)sample.temperature_kelvin - 273;
+      console_write("Temperature C: ");
+      if (celsius < 0) console_putc('-');
+      health_number("", celsius < 0 ? -celsius : celsius);
+    } else console_write("Temperature: not reported by controller\n");
+    health_number("Available spare percent: ", sample.available_spare);
+    health_number("Spare threshold percent: ", sample.spare_threshold);
+    health_number("Endurance used percent: ", sample.percentage_used);
+    static const char *labels[NVME_HEALTH_COUNTERS] = {"Data units read", "Data units written", "Host reads", "Host writes", "Controller busy minutes", "Power cycles", "Power-on hours", "Unsafe shutdowns", "Media integrity errors", "Error log entries"};
+    for (unsigned i = 0; i < NVME_HEALTH_COUNTERS; i++) {
+      char number[40]; nvme_counter_format(number, sizeof(number), sample.counters[i]);
+      console_write(labels[i]); console_write(": "); console_write(number); console_putc('\n');
+    }
+    console_write("Data units are 512,000 bytes, rounded up by the controller.\n");
+    health_number("Warning temperature minutes: ", sample.warning_temperature_minutes);
+    health_number("Critical temperature minutes: ", sample.critical_temperature_minutes);
+    for (unsigned i = 0; i < 8; i++) if (sample.temperature_sensors[i]) {
+      health_number("Sensor index: ", i + 1); health_number("Sensor Kelvin: ", sample.temperature_sensors[i]);
+    }
+    for (unsigned i = 0; i < 2; i++) {
+      health_number("Thermal management level: ", i + 1);
+      health_number("Transitions: ", sample.thermal_transitions[i]);
+      health_number("Total seconds: ", sample.thermal_seconds[i]);
+    }
+  }
+  if (!found) console_write("No NVMe namespace matches this selection\n");
 }

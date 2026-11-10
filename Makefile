@@ -4,7 +4,7 @@ MEMORY ?= 256
 EXT4_DISK ?= avalanche/build/ext4.img
 comma := ,
 EXT4_DRIVE = $(if $(EXT4_DISK),-drive file=$(EXT4_DISK)$(comma)format=raw$(comma)if=ide)
-.PHONY: all run ext4-image ext4-check test packages package sdk netsurf test-netsurf classicube test-classicube
+.PHONY: all run ext4-image ext4-check test packages package sdk netsurf test-netsurf classicube test-classicube test-performance test-calculator test-network-core
 netsurf: all
 	python3 ports/netsurf/build.py
 classicube: all
@@ -36,7 +36,30 @@ package:
 	$(MAKE) -C sdk
 	$(MAKE) classicube
 	sha256sum Images/avalanche.iso Images/magenta.iso Images/avalanche-data.img Images/magenta-data.img Images/magenta-sdk.tar.gz Images/netsurf-data.img.gz Images/classicube-data.img.gz > Images/SHA256SUMS
+test-network-core:
+	mkdir -p avalanche/build
+	$(CC) -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/tools/test-tcp.c -o avalanche/build/test-tcp
+	avalanche/build/test-tcp
+	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-ip-fragments.c -o avalanche/build/test-ip-fragments
+	avalanche/build/test-ip-fragments
+	$(CC) -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/tools/test-ip-stack.c avalanche/src/route.c avalanche/src/ip_fragment.c -o avalanche/build/test-ip-stack
+	avalanche/build/test-ip-stack
+test-calculator:
+	mkdir -p avalanche/build
+	$(CC) -O2 -Wall -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/src/calculator.c avalanche/vendor/printf/printf.c avalanche/tools/test-calculator.c -o avalanche/build/test-calculator
+	avalanche/build/test-calculator
+test-performance:
+	mkdir -p avalanche/build
+	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-client.c -o avalanche/build/test-client
+	avalanche/build/test-client
+	$(CC) -O2 -Wall -Wextra -Werror -Iavalanche/include avalanche/tools/test-block-cache.c -o avalanche/build/test-block-cache
+	avalanche/build/test-block-cache
+	$(CC) -O2 -ffunction-sections -fdata-sections -Wl,--gc-sections -Iavalanche/include avalanche/tools/test-canvas-present.c -o avalanche/build/test-canvas-present
+	avalanche/build/test-canvas-present
 test:
+	$(MAKE) test-network-core
+	$(MAKE) test-calculator
+	$(MAKE) test-performance
 	$(MAKE) package
 	$(CC) -Iavalanche/include avalanche/src/sha256.c avalanche/tools/test-sha256.c -o avalanche/build/test-sha256
 	avalanche/build/test-sha256

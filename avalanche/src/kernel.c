@@ -1,4 +1,8 @@
 #include "ext4.h"
+#include "firewall.h"
+#include "sandbox.h"
+#include "net_service.h"
+#include "nvme_health.h"
 #include "package.h"
 #include "system.h"
 #define PAGES PHYSICAL_PAGES
@@ -385,7 +389,7 @@ static bool keyboard_scancode(uint8_t *scancode) {
   return present;
 }
 char console_getchar(void) {
-  static bool left_shift, right_shift, left_ctrl, right_ctrl, caps, extended;
+  static bool left_shift, right_shift, left_ctrl, right_ctrl, left_alt, right_alt, caps, extended;
   for (;;) {
     if (serial && (inb(0x3fd) & 1)) {
       char c = inb(0x3f8);
@@ -406,6 +410,12 @@ char console_getchar(void) {
     }
     if (extended) {
       extended = false;
+      if (s == 56 || s == 184) { right_alt = s == 56; continue; }
+      if (console_observer && (left_ctrl || right_ctrl) && (left_alt || right_alt) &&
+          (s == 0x4b || s == 0x4d)) {
+        graphics_queue_key(0x600 | ((left_shift || right_shift) ? 0x100 : 0) | s);
+        continue;
+      }
       if (console_observer && !(s & 128) &&
           (s == 0x4b || s == 0x4d || s == 0x48 || s == 0x50 || s == 0x47 ||
            s == 0x4f || s == 0x53))
@@ -414,6 +424,7 @@ char console_getchar(void) {
         right_ctrl = s == 29;
       continue;
     }
+    if (s == 56 || s == 184) { left_alt = s == 56; continue; }
     if (s == 29 || s == 157) {
       left_ctrl = s == 29;
       continue;
@@ -547,6 +558,12 @@ static void command(char *line) {
   char *rest = line, *cmd = token(&rest);
   if (!*cmd)
     return;
+  if(eq(cmd,"netdiag")) {net_diagnostics();return;}
+  if(eq(cmd,"netprofile")) {net_service_command(rest);return;}
+  if(eq(cmd,"route")) {route_command(rest);return;}
+  if(eq(cmd,"sandbox")) {sandbox_command(rest);return;}
+  if(eq(cmd,"nvmehealth")) {nvme_health_command(rest);return;}
+  if(eq(cmd,"firewall")) {firewall_command(rest);return;}
   if(eq(cmd,"linuxtrace")) {linux_trace_set(eq(token(&rest),"on"));return;}
   if (eq(cmd, "audio")) {
     audio_info();
@@ -678,7 +695,7 @@ static void command(char *line) {
   if (eq(cmd, "help"))
     console_write(
         "help version clear echo mem ticks date beep mouse devices display ps\n"
-        "audio play PATH.wav stopaudio diskcrc DISK SECTOR\n"
+        "audio play PATH.wav stopaudio diskcrc DISK SECTOR firewall nvmehealth [DISK] sandbox\n"
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
         "ext4ls DISK /PATH  ext4cat DISK /PATH\n"
         "ext4read DISK /PATH OFFSET COUNT  - up to 4096 bytes\n"
@@ -1083,6 +1100,10 @@ void kernel_main(uint32_t magic, uint32_t mbi) {
   devices_init();
   net_init();
   fs_init();
+  sandbox_init();
+  firewall_init();
+  net_service_init();
+  route_init();
   char recovery_command[] = "recover";
   package_command(recovery_command);
   console_write("AVALANCHE KERNEL 0.4.0\n");

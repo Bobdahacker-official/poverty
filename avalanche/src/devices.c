@@ -48,7 +48,31 @@ void pci_write(const struct pci_device *d, uint8_t r, uint32_t v) {
                       ((uintptr_t)d->function << 8) | (r & 0xfc));
   io_out32(0xcfc, v);
 }
+static void pci_wake(const struct pci_device *d) {
+  if (!(pci_read(d,4) & (1u<<20))) return;
+  unsigned pointer=pci_read(d,0x34)&0xfc;
+  uint64_t seen=0;
+  for(unsigned entries=0;entries<48 && pointer>=0x40 && pointer<=0xfc;entries++) {
+    unsigned bit=pointer/4-16;
+    if(seen&(UINT64_C(1)<<bit)) return;
+    seen|=UINT64_C(1)<<bit;
+    uint32_t capability=pci_read(d,pointer);
+    if((capability&255)==1 && pointer<=0xf8) {
+      uint32_t control=pci_read(d,pointer+4);
+      if(!(control&3)) return;
+      /* Enter D0 without acknowledging the PME-status W1C bit. D3hot
+         recovery needs at least 10 ms before register accesses resume. */
+      pci_write(d,pointer+4,control&~0x8003u);
+      uint32_t start=clock_ticks();
+      for(unsigned spin=0;spin<4000000 && (uint32_t)(clock_ticks()-start)<2;spin++)cpu_pause();
+      return;
+    }
+    pointer=(capability>>8)&0xfc;
+  }
+}
 void pci_enable(const struct pci_device *d, uint16_t flags) {
+  if (!d) return;
+  pci_wake(d);
   uint32_t old =
       pci_read(d, 4); /* Do not write ones into PCI status W1C bits. */
   pci_write(d, 4, (old & 65535u) | flags);
@@ -677,3 +701,6 @@ void devices_display(void) {
     console_putc('\n');
   }
 }
+
+unsigned pci_count_devices(void) { return pci_count; }
+const struct pci_device *pci_device_at(unsigned index) { return index < pci_count ? &pci[index] : NULL; }

@@ -1,3 +1,4 @@
+#include "sandbox.h"
 #include "ext4.h"
 #include "system.h"
 static bool mounted_ext4;
@@ -315,6 +316,7 @@ int fs_read(const char *name, void *buffer, uint32_t capacity) {
   return size;
 }
 int fs_write(const char *name, const void *data, uint32_t size) {
+  if (!sandbox_write_allowed(name)) return -13;
   if (!mounted_ext4)
     while (*name == '/')
       name++;
@@ -390,9 +392,11 @@ int fs_write(const char *name, const void *data, uint32_t size) {
   return commit(candidate) ? (int)size : -3;
 }
 int fs_mkdir(const char *path) {
+  if (!sandbox_write_allowed(path)) return -13;
   return mounted_ext4 ? ext4_mkdir(&root_ext4, path) : -30;
 }
 int fs_copy(const char *source, const char *target) {
+  if (!sandbox_has(process_current(), AV_CAP_READ) || !sandbox_write_allowed(target)) return -13;
   if (mounted_ext4)
     return ext4_copy(&root_ext4, source, target);
   if (fs_size(target) >= 0)
@@ -405,6 +409,7 @@ int fs_copy(const char *source, const char *target) {
   return r < 0 ? r : 0;
 }
 int fs_rename(const char *old_path, const char *new_path) {
+  if (!sandbox_write_allowed(old_path) || !sandbox_write_allowed(new_path)) return -13;
   if (mounted_ext4)
     return ext4_rename(&root_ext4, old_path, new_path);
   static char rename_buffer[FS_MAX_FILE];
@@ -416,6 +421,7 @@ int fs_rename(const char *old_path, const char *new_path) {
   return fs_remove(old_path);
 }
 int fs_remove(const char *name) {
+  if (!sandbox_write_allowed(name)) return -13;
   if (!mounted_ext4)
     while (*name == '/')
       name++;
@@ -561,4 +567,18 @@ int fs_browse(const char *path, unsigned index, char name[256], uint64_t *size,
     }
   }
   return -2;
+}
+
+int fs_appdata_prepare(const char *path) {
+  if (!mounted_ext4) return -30;
+  if (strlen(path) != 73 || __builtin_memcmp(path, "/appdata/", 9)) return -22;
+  for (unsigned i=9;i<73;i++) if (!((path[i]>='0' && path[i]<='9') || (path[i]>='a' && path[i]<='f'))) return -22;
+  const char *directories[] = {"/appdata", path};
+  for (unsigned i=0;i<2;i++) {
+    struct ext4_inode inode;
+    int result=ext4_lookup(&root_ext4,directories[i],&inode);
+    if (!result) { if ((inode.mode&0xf000)!=0x4000) return -20; }
+    else { result=ext4_mkdir(&root_ext4,directories[i]); if(result<0)return result; }
+  }
+  return 0;
 }

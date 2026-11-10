@@ -35,6 +35,8 @@ struct process {
   unsigned table_count, pages;
   struct trap_frame *frame;
   int pid, parent, status, signal;
+  uint32_t capabilities;
+  uint8_t executable_sha256[32];
   enum process_state state;
   bool linux_abi, linux64, foreground, yield, read_linux;
   uint32_t cpu_ticks, wake, read_address, read_capacity, read_count;
@@ -59,6 +61,7 @@ struct process {
   unsigned argc, envc;
   bool exec_vectors;
 };
+int linux_socket_service(struct process *, unsigned, uint32_t, uint32_t, uint32_t);
 struct process *process_current(void);
 bool process_range(struct process *, uint32_t, uint32_t, bool);
 bool process_copyin(struct process *, void *, uint32_t, uint32_t);

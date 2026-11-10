@@ -1,5 +1,8 @@
 #include "abi.h"
+#include "sandbox.h"
 #include "client.h"
+#include "firewall.h"
+#include "nvme_health.h"
 #include "ext4.h"
 #include "package.h"
 #include "process.h"
@@ -399,6 +402,7 @@ static void initialize(struct process *t) {
     t->pdpt[i] = i < PROCESS_DIRECTORY_ENTRIES / 512
                      ? page_physical(&t->directory[i * 512]) | 7
                      : page_physical(&kernel_directory[i * 512]) | 3;
+  t->capabilities = current < 0 ? AV_CAP_ALL : tasks[current].capabilities;
   t->pid = next_pid++;
   t->parent = current < 0 ? 0 : tasks[current].pid;
   t->state = TASK_EMPTY;
@@ -513,6 +517,7 @@ static uint32_t linux_stack(struct process *t, const struct elf_header *h,
 }
 static int load(struct process *t, const void *image, uint32_t size,
                 const char *name, const char *args) {
+  t->capabilities &= sandbox_image(image, size, t->executable_sha256);
   if (size < sizeof(struct elf_header))
     return -8;
   struct elf_header normalized;
@@ -575,6 +580,7 @@ static int load(struct process *t, const void *image, uint32_t size,
       return -8;
     if (!p->memsz)
       continue;
+    if (t->capabilities != AV_CAP_ALL && (p->flags & 3) == 3) return -13;
     if (p->vaddr > UINT32_MAX || p->memsz > UINT32_MAX ||
         !process_address(p->vaddr, p->memsz) || p->vaddr >= 0xbfc00000u ||
         p->memsz > PROCESS_PAGE_LIMIT * 4096u - stack_size ||
@@ -589,14 +595,20 @@ static int load(struct process *t, const void *image, uint32_t size,
       entry = true;
     if (h->phoff >= p->offset && h->phoff - p->offset < p->filesz)
       phdr = p->vaddr + h->phoff - p->offset;
-    for (unsigned j = 0; j < i; j++)
-      if (ph[j].type == 1 && ph[j].memsz &&
-          p->vaddr < ph[j].vaddr + ph[j].memsz &&
-          ph[j].vaddr < p->vaddr + p->memsz)
-        return -8;
+    for (unsigned j = 0; j < i; j++) {
+      if (ph[j].type != 1 || !ph[j].memsz) continue;
+      if (p->vaddr < ph[j].vaddr + ph[j].memsz && ph[j].vaddr < p->vaddr + p->memsz) return -8;
+      if (t->capabilities != AV_CAP_ALL && ((p->flags ^ ph[j].flags) & 3) &&
+          (p->vaddr & ~UINT64_C(4095)) < ((ph[j].vaddr + ph[j].memsz + 4095) & ~UINT64_C(4095)) &&
+          (ph[j].vaddr & ~UINT64_C(4095)) < ((p->vaddr + p->memsz + 4095) & ~UINT64_C(4095))) return -13;
+    }
   }
   if (!entry)
     return -8;
+  if (sandbox_has(t, AV_CAP_WRITE) && !sandbox_has(t, AV_CAP_ADMIN)) {
+    char root[80]; sandbox_root(t->executable_sha256, root);
+    fs_appdata_prepare(root);
+  }
   t->linux_abi = !native;
   t->linux64 = !native && !compat;
   set_name(t->name, name, sizeof(t->name));
@@ -690,11 +702,12 @@ static int load_name(struct process *t, const char *name, const char *args) {
                   (uintptr_t)(builtins[i].end - builtins[i].start), name, args);
   return -2;
 }
-int user_spawn(const char *name, const char *args, bool foreground) {
+int user_spawn_sandbox(const char *name, const char *args, bool foreground, uint32_t capabilities) {
   struct process *t = empty();
   if (!t)
     return -11;
   initialize(t);
+  t->capabilities &= capabilities;
   t->foreground = foreground;
   int result = load_name(t, name, args);
   if (result < 0) {
@@ -703,6 +716,9 @@ int user_spawn(const char *name, const char *args, bool foreground) {
     t->state = TASK_EMPTY;
   }
   return result;
+}
+int user_spawn(const char *name, const char *args, bool foreground) {
+  return user_spawn_sandbox(name, args, foreground, AV_CAP_ALL);
 }
 int user_run(const void *image, uint32_t size, const char *args) {
   struct process *t = empty();
@@ -1105,11 +1121,35 @@ void user_list(void) {
     console_putc('\n');
   }
 }
+void user_sandbox_report(void) {
+  if (!sandbox_has(process_current(), AV_CAP_ADMIN)) return;
+  const char digits[] = "0123456789abcdef";
+  for (unsigned i = 0; i < PROCESS_MAX; i++) {
+    struct process *t = &tasks[i];
+    if (t->state == TASK_EMPTY || t->state == TASK_ZOMBIE) continue;
+    print_uint(t->pid); console_putc(' '); print_uint(t->capabilities); console_putc(' ');
+    for (unsigned j = 0; j < 32; j++) {
+      console_putc(digits[t->executable_sha256[j] >> 4]);
+      console_putc(digits[t->executable_sha256[j] & 15]);
+    }
+    console_putc('\n');
+  }
+}
+int user_sandbox_limit(int pid, uint32_t capabilities) {
+  if (!sandbox_has(process_current(), AV_CAP_ADMIN)) return -13;
+  struct process *t = find(pid);
+  if (!t) return -3;
+  if ((capabilities & ~AV_CAP_ALL) || (capabilities & ~t->capabilities)) return -13;
+  t->capabilities = capabilities;
+  return 0;
+}
 int process_fork(struct trap_frame *f) {
   struct process *p = process_current(), *c = empty();
   if (!p || !c)
     return -11;
   initialize(c);
+  c->capabilities = p->capabilities;
+  memcpy(c->executable_sha256, p->executable_sha256, 32);
   c->linux_abi = p->linux_abi;
   c->linux64 = p->linux64;
   c->fs_base = p->fs_base;
@@ -1262,10 +1302,54 @@ void user_syscall(struct trap_frame *f) {
     f->eax = (uint32_t)-14;
     return;
   }
+  if (!sandbox_native(t, f->eax)) { f->eax = (uint32_t)-13; return; }
+  if (f->eax == AV_REPORT &&
+      ((f->ebx == AV_REPORT_FILESYSTEM && !sandbox_has(t, AV_CAP_READ)) ||
+       (f->ebx == AV_REPORT_PROCESSES && !sandbox_has(t, AV_CAP_PROCESSES)))) {
+    f->eax = (uint32_t)-13; return;
+  }
   uint32_t n = f->ecx;
   char name[256];
   int result = -1;
   switch (f->eax) {
+  case AV_SOCKET:
+    result=linux_socket_service(t,f->ebx,f->ecx,f->edx,f->esi);
+    break;
+  case AV_SANDBOX_INFO: {
+    struct av_sandbox_info info;
+    memset(&info, 0, sizeof(info)); info.version = 1; info.capabilities = t->capabilities;
+    memcpy(info.executable_sha256, t->executable_sha256, 32);
+    sandbox_root(t->executable_sha256, info.private_directory);
+    result = process_copyout(t, f->ebx, &info, sizeof(info)) ? 0 : -14;
+    break;
+  }
+  case AV_SANDBOX_LIMIT:
+    if ((f->ebx & ~AV_CAP_ALL) || (f->ebx & ~t->capabilities)) result = -13;
+    else { t->capabilities = f->ebx; result = 0; }
+    break;
+  case AV_DISK_HEALTH: {
+    struct nvme_health sample;
+    const struct block_device *disk = disk_get(f->ebx);
+    if (!disk) result = -19;
+    else if (disk->backend != 3) result = -95;
+    else if (f->edx < sizeof(sample) || f->esi > 1) result = -22;
+    else if (!process_range(t, f->ecx, sizeof(sample), true)) result = -14;
+    else {
+      result = nvme_health_read(disk->unit, &sample, f->esi != 0);
+      if (!result && !process_copyout(t, f->ecx, &sample, sizeof(sample))) result = -14;
+    }
+    break;
+  }
+  case AV_FIREWALL: {
+    char line[512];
+    if (!user_string(f->ebx, line, sizeof(line))) result = -14;
+    else { firewall_command(line); result = 0; }
+    break;
+  }
+  case AV_CLIPBOARD_READ:
+  case AV_CLIPBOARD_WRITE:
+    result = gui_clipboard_call(t, f->eax == AV_CLIPBOARD_WRITE, f->ebx, n);
+    break;
   case AV_GUI_OPEN:
   case AV_GUI_DRAW:
   case AV_GUI_EVENT:
@@ -1356,12 +1440,12 @@ void user_syscall(struct trap_frame *f) {
     }
     break;
   case AV_UDP_SEND:
-    if (f->esi <= 1472 && range(f->edx, f->esi, false))
+    if (f->esi <= 65507 && range(f->edx, f->esi, false))
       result = net_udp_send(f->ebx, (uint16_t)(f->ecx >> 16), (uint16_t)f->ecx,
                             (void *)(uintptr_t)f->edx, f->esi);
     break;
   case AV_UDP_RECV:
-    if (f->edx <= 1472 && range(f->ecx, f->edx, true)) {
+    if (f->edx <= 65507 && range(f->ecx, f->edx, true)) {
       uint32_t source = 0;
       uint16_t port = 0;
       result = net_udp_recv((uint16_t)f->ebx, (void *)(uintptr_t)f->ecx, f->edx,
