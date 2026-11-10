@@ -28,6 +28,12 @@ For the latest build, use the files in [Images](Images/). Releases mark version 
 
 ## Run it in VirtualBox
 
+Magenta's boot menu defaults to **Compact window** in VirtualBox. This guest
+mode requests a 640×480 framebuffer so the dock stays visible in a maximized
+window at 200% host scaling. Choose **Widescreen** in the boot menu when the
+window has enough room for a larger guest display. Compact desktop windows
+allow scrolling to reach controls below the fold.
+
 Create a 64-bit Other/Unknown VM with 256 MiB of RAM. Attach `magenta.iso` as an IDE optical drive and `magenta-data.img` as a hard disk. For networking, choose Intel PRO/1000 MT Desktop (`82540EM`) with NAT.
 
 You can also create the VM with:

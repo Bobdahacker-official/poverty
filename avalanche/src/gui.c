@@ -4508,7 +4508,9 @@ static void application(unsigned id) {
     return;
   nk_set_user_data(&ui, nk_handle_id(id + 1));
   nk_flags flags = NK_WINDOW_BORDER | NK_WINDOW_MOVABLE | NK_WINDOW_SCALABLE |
-                   NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR;
+                   NK_WINDOW_TITLE;
+  if (height >= 600)
+    flags |= NK_WINDOW_NO_SCROLLBAR;
   bool control_press = false;
   for (unsigned control = 0; control < 3; control++)
     if (nk_input_is_mouse_pressed(&ui.input, NK_BUTTON_LEFT) &&

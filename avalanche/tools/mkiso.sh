@@ -26,8 +26,8 @@ search --no-floppy --file --set=root /boot/avalanche.elf
 set prefix=($root)/boot/grub
 configfile /boot/grub/grub.cfg
 CFG
-grub-mkimage -d "$GRUB_LIB/i386-pc" -O i386-pc-eltorito -p /boot/grub -c "$iso_root/early.cfg" -o "$iso_root/boot/grub/i386-pc/eltorito.img" biosdisk iso9660 normal configfile search search_fs_file multiboot2 all_video gfxterm
-grub-mkimage -d "$GRUB_LIB/x86_64-efi" -O x86_64-efi -p /boot/grub -c "$iso_root/early.cfg" -o "$iso_root/EFI/BOOT/BOOTX64.EFI" part_gpt part_msdos fat iso9660 normal configfile search search_fs_file multiboot2 all_video gfxterm
+grub-mkimage -d "$GRUB_LIB/i386-pc" -O i386-pc-eltorito -p /boot/grub -c "$iso_root/early.cfg" -o "$iso_root/boot/grub/i386-pc/eltorito.img" biosdisk iso9660 normal configfile search search_fs_file multiboot2 all_video gfxterm smbios
+grub-mkimage -d "$GRUB_LIB/x86_64-efi" -O x86_64-efi -p /boot/grub -c "$iso_root/early.cfg" -o "$iso_root/EFI/BOOT/BOOTX64.EFI" part_gpt part_msdos fat iso9660 normal configfile search search_fs_file multiboot2 all_video gfxterm smbios
 mformat -C -f 2880 -i "$iso_root/efi.img" ::
 mcopy -s -i "$iso_root/efi.img" "$iso_root/EFI" ::/
 xorriso -as mkisofs -R -J -V "$label" -o "$output" \
