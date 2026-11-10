@@ -25,6 +25,7 @@ struct device {
   uint8_t old_keys[6], modifiers;
   unsigned slot, port, speed, packet, hid, hid_ep, hid_packet;
   unsigned route, depth, tt_slot, tt_port;
+  unsigned hub_ports, hub_connected;
   bool used, hid_pending;
 };
 static struct device devices[SLOTS];
@@ -43,6 +44,8 @@ static unsigned context_bytes, event_head, event_cycle, ports;
 static uint64_t awaited;
 static unsigned command_code, command_slot;
 static bool running, polling, command_done;
+static bool port_present[64], port_pending[64];
+static uint32_t port_changed[64];
 static uint32_t read_reg(volatile uint32_t *base, unsigned offset) {
   return base[offset / 4];
 }
@@ -293,6 +296,36 @@ static bool descriptor(struct device *device, unsigned kind, unsigned size) {
                       size);
 }
 static bool enumerate(unsigned port, unsigned speed, unsigned route,
+                      unsigned depth, unsigned tt_slot, unsigned tt_port);
+static bool hub_child_start(struct device *hub, unsigned child) {
+  unsigned slot = hub->slot;
+  unsigned route = hub->route | (child << (hub->depth * 4));
+  for (unsigned i = 0; i < SLOTS; i++)
+    if (devices[i].used && devices[i].port == hub->port &&
+        devices[i].route == route && devices[i].depth == hub->depth + 1)
+      return false;
+  if (!xhci_control(slot, 0x23, 3, 4, child, NULL, 0))
+    return false;
+  for (unsigned tries = 0; tries < 20; tries++) {
+    sleep_ticks(1);
+    if (!xhci_control(slot, 0xa3, 0, 0, child, hub->descriptor, 4))
+      return false;
+    if ((hub->descriptor[0] & 3) != 3 || (hub->descriptor[0] & 16))
+      continue;
+    unsigned speed = hub->speed >= 4 ? 4
+                     : (hub->descriptor[1] & 4) ? 3
+                     : (hub->descriptor[1] & 2) ? 2 : 1;
+    (void)xhci_control(slot, 0x23, 1, 20, child, NULL, 0);
+    unsigned tt_slot = hub->tt_slot, tt_port = hub->tt_port;
+    if (hub->speed == 3 && speed <= 2) {
+      tt_slot = slot;
+      tt_port = child;
+    }
+    return enumerate(hub->port, speed, route, hub->depth + 1, tt_slot, tt_port);
+  }
+  return false;
+}
+static bool enumerate(unsigned port, unsigned speed, unsigned route,
                       unsigned depth, unsigned tt_slot, unsigned tt_port) {
   struct device *device = NULL;
   for (unsigned i = 0; i < SLOTS; i++)
@@ -442,37 +475,15 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
     for (unsigned child = 1; child <= children; child++)
       (void)xhci_control(slot, 0x23, 3, 8, child, NULL, 0);
     sleep_ticks((power_delay + 4) / 5 + 2);
+    device->hub_ports = children;
     console_write("xHCI USB hub ready\n");
     for (unsigned child = 1; child <= children; child++) {
       if (!xhci_control(slot, 0xa3, 0, 0, child, device->descriptor, 4) ||
           !(device->descriptor[0] & 1))
         continue;
-      if (!xhci_control(slot, 0x23, 3, 4, child, NULL, 0))
-        continue;
-      bool ready = false;
-      for (unsigned tries = 0; tries < 20; tries++) {
-        sleep_ticks(1);
-        if (!xhci_control(slot, 0xa3, 0, 0, child, device->descriptor, 4))
-          break;
-        if ((device->descriptor[0] & 3) == 3 && !(device->descriptor[0] & 16)) {
-          ready = true;
-          break;
-        }
-      }
-      if (!ready)
-        continue;
-      (void)xhci_control(slot, 0x23, 1, 20, child, NULL, 0);
-      unsigned child_speed = speed >= 4                    ? 4
-                             : (device->descriptor[1] & 4) ? 3
-                             : (device->descriptor[1] & 2) ? 2
-                                                           : 1;
-      unsigned hub_tt = tt_slot, hub_port = tt_port;
-      if (speed == 3 && child_speed <= 2) {
-        hub_tt = slot;
-        hub_port = child;
-      }
-      (void)enumerate(port, child_speed, route | (child << (depth * 4)),
-                      depth + 1, hub_tt, hub_port);
+      device->hub_connected |= 1u << child;
+      (void)xhci_control(slot, 0x23, 1, 16, child, NULL, 0);
+      (void)hub_child_start(device, child);
     }
   } else if (kind == 8) {
     if (!usb_storage_attach(128 + slot, device->packet, interface, in, out,
@@ -490,9 +501,93 @@ static bool enumerate(unsigned port, unsigned speed, unsigned route,
   }
   return true;
 failed:
-  (void)command(0, (10u << 10) | (slot << 24));
-  device->used = false;
+  if (command(0, (10u << 10) | (slot << 24))) {
+    dcbaa[slot] = 0;
+    device->used = false;
+  }
   return false;
+}
+static bool start_port(unsigned port, uint32_t status) {
+  unsigned offset = 0x400 + (port - 1) * 16;
+  if (!(status & 1)) return false;
+  if (!(status & 2)) {
+    write_reg(op, offset, (status & 0x0e00c200u) | (1u << 9) | 16);
+    if (!wait_bits(op, offset, 16, 0, 100)) return false;
+    status = read_reg(op, offset);
+  }
+  return (status & 3) == 3 &&
+         enumerate(port, (status >> 10) & 15, 0, 0, 0, 0);
+}
+static void detach_branch(unsigned port, unsigned route, unsigned depth) {
+  unsigned route_mask = (1u << (depth * 4)) - 1;
+  for (int level = 5; level >= (int)depth; level--)
+    for (unsigned i = 0; i < SLOTS; i++) {
+      struct device *device = &devices[i];
+      if (!device->used || device->port != port ||
+          device->depth != (unsigned)level ||
+          (device->route & route_mask) != route)
+        continue;
+      device->hid_pending = false;
+      device->hub_ports = 0;
+      usb_storage_detach(128 + device->slot);
+      if (command(0, (10u << 10) | (device->slot << 24))) {
+        dcbaa[device->slot] = 0;
+        device->used = false;
+      }
+    }
+}
+static void service_hubs(void) {
+  static uint32_t last_poll;
+  uint32_t now = clock_ticks();
+  if ((uint32_t)(now - last_poll) < 25) return;
+  last_poll = now;
+  for (unsigned i = 0; i < SLOTS; i++) {
+    struct device *hub = &devices[i];
+    if (!hub->used || !hub->hub_ports) continue;
+    for (unsigned child = 1; child <= hub->hub_ports; child++) {
+      if (!xhci_control(hub->slot, 0xa3, 0, 0, child, hub->descriptor, 4))
+        break;
+      unsigned bit = 1u << child;
+      bool connected = hub->descriptor[0] & 1;
+      bool was_connected = (hub->hub_connected & bit) != 0;
+      bool changed = hub->descriptor[2] & 1;
+      if (!changed && connected == was_connected) continue;
+      if (changed) (void)xhci_control(hub->slot, 0x23, 1, 16, child, NULL, 0);
+      unsigned route = hub->route | (child << (hub->depth * 4));
+      if (was_connected) detach_branch(hub->port, route, hub->depth + 1);
+      hub->hub_connected &= ~bit;
+      if (connected) {
+        hub->hub_connected |= bit;
+        (void)hub_child_start(hub, child);
+      }
+    }
+  }
+}
+void xhci_service_ports(void) {
+  if (!running || polling) return;
+  for (unsigned port = 1; port <= ports; port++) {
+    unsigned index = port - 1, offset = 0x400 + index * 16;
+    uint32_t status = read_reg(op, offset);
+    bool connected = status & 1;
+    if (connected != port_present[index] || (status & (1u << 17))) {
+      if (status & (1u << 17))
+        write_reg(op, offset, (status & 0x0e00c200u) | (1u << 17));
+      if (port_present[index]) detach_branch(port, 0, 0);
+      port_present[index] = connected;
+      port_pending[index] = connected;
+      port_changed[index] = clock_ticks();
+      continue;
+    }
+    if (port_pending[index] &&
+        (uint32_t)(clock_ticks() - port_changed[index]) >= 10) {
+      port_pending[index] = false;
+      bool occupied = false;
+      for (unsigned i = 0; i < SLOTS; i++)
+        occupied |= devices[i].used && devices[i].port == port;
+      if (!occupied) (void)start_port(port, status);
+    }
+  }
+  service_hubs();
 }
 void xhci_init(void) {
   const struct pci_device *pci = pci_find_class(12, 3, 0x30);
@@ -564,15 +659,13 @@ void xhci_init(void) {
   for (unsigned port = 1; port <= ports; port++) {
     unsigned offset = 0x400 + (port - 1) * 16;
     uint32_t status = read_reg(op, offset);
-    if (!(status & 1))
-      continue;
-    if (!(status & 2)) {
-      write_reg(op, offset, (status & ~0x80ff0010u) | (1u << 9) | 16);
-      if (!wait_bits(op, offset, 16, 0, 100))
-        continue;
+    if ((hcc & 8) && !(status & (1u << 9))) {
+      write_reg(op, offset, (status & 0x0e00c200u) | (1u << 9));
       status = read_reg(op, offset);
     }
-    if (status & 2)
-      (void)enumerate(port, (status >> 10) & 15, 0, 0, 0, 0);
+    port_present[port - 1] = status & 1;
+    if (status & (1u << 17))
+      write_reg(op, offset, (status & 0x0e00c200u) | (1u << 17));
+    if (status & 1) (void)start_port(port, status);
   }
 }

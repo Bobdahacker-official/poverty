@@ -23,6 +23,15 @@ struct handle {
   char name[256];
 };
 static struct handle handles[HANDLES];
+bool linux_disk_busy(unsigned disk) {
+  for (unsigned i = 0; i < HANDLES; i++) {
+    unsigned volume;
+    if (handles[i].refs && (handles[i].kind == H_FILE || handles[i].kind == H_DIR) &&
+        fs_secondary_path(handles[i].name, &volume, NULL) && volume == disk)
+      return true;
+  }
+  return false;
+}
 static bool trace_enabled;
 static unsigned trace_count;
 void linux_trace_set(bool enabled) {
@@ -1658,7 +1667,14 @@ void linux_syscall64(struct trap_frame *f) {
       result = -9;
     else {
       int disk = fs_mounted_disk();
-      result = disk < 0 || disk_flush(disk) ? 0 : -5;
+      struct handle *h = get_handle(t, a);
+      unsigned secondary;
+      if (h && (h->kind == H_FILE || h->kind == H_DIR) &&
+          fs_secondary_path(h->name, &secondary, NULL)) {
+        int state = fs_secondary_state(secondary);
+        result = state < 1 ? -19 : state == 1 || disk_flush(secondary) ? 0 : -5;
+      } else
+        result = disk < 0 || disk_flush(disk) ? 0 : -5;
     }
     break;
   case 79:

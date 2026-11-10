@@ -7,10 +7,9 @@ struct storage {
   uint8_t cbw[31] __attribute__((aligned(16)));
   uint8_t csw[13] __attribute__((aligned(16)));
   uint8_t data[4096] __attribute__((aligned(16)));
-  bool ready;
+  bool ready, registered;
 };
 static struct storage units[USB_DISKS];
-static unsigned unit_count;
 static void little32(uint8_t *p, uint32_t value) {
   for (unsigned i = 0; i < 4; i++)
     p[i] = value >> (i * 8);
@@ -80,10 +79,13 @@ failed:
 bool usb_storage_attach(unsigned address, unsigned packet, unsigned interface,
                         unsigned input, unsigned output, unsigned input_packet,
                         unsigned output_packet) {
-  if (unit_count == USB_DISKS || input_packet > 1024 || output_packet > 1024 ||
+  if (input_packet > 1024 || output_packet > 1024 ||
       !input_packet || !output_packet)
     return false;
-  struct storage *s = &units[unit_count];
+  unsigned unit = 0;
+  while (unit < USB_DISKS && units[unit].registered) unit++;
+  if (unit == USB_DISKS) return false;
+  struct storage *s = &units[unit];
   memset(s, 0, sizeof(*s));
   s->address = address;
   s->control_packet = packet;
@@ -129,7 +131,7 @@ bool usb_storage_attach(unsigned address, unsigned packet, unsigned interface,
   uint64_t sectors = (uint64_t)s->blocks * (bytes / 512);
   struct block_device disk = {.backend = 4,
                               .logical_sector_size = bytes,
-                              .unit = unit_count,
+                              .unit = unit,
                               .sectors =
                                   sectors > UINT32_MAX ? UINT32_MAX : sectors};
   memcpy(disk.model, model, sizeof(model));
@@ -137,13 +139,20 @@ bool usb_storage_attach(unsigned address, unsigned packet, unsigned interface,
     s->ready = false;
     return false;
   }
-  unit_count++;
+  s->registered = true;
   console_write("USB mass-storage ready\n");
   return true;
 }
+void usb_storage_detach(unsigned address) {
+  for (unsigned unit = 0; unit < USB_DISKS; unit++)
+    if (units[unit].registered && units[unit].address == address) {
+      disk_detach_usb(unit);
+      units[unit].ready = units[unit].registered = false;
+    }
+}
 bool usb_storage_transfer(unsigned unit, uint32_t sector, void *data,
                           bool write) {
-  if (unit >= unit_count || !units[unit].ready)
+  if (unit >= USB_DISKS || !units[unit].ready)
     return false;
   struct storage *s = &units[unit];
   unsigned ratio = s->block_size / 512, offset = (sector % ratio) * 512;
@@ -164,7 +173,7 @@ bool usb_storage_transfer(unsigned unit, uint32_t sector, void *data,
   return command(s, cdb, sizeof(cdb), s->block_size, false) == 0;
 }
 bool usb_storage_flush(unsigned unit) {
-  if (unit >= unit_count || !units[unit].ready)
+  if (unit >= USB_DISKS || !units[unit].ready)
     return false;
   uint8_t cdb[10] = {0x35};
   return command(&units[unit], cdb, sizeof(cdb), 0, false) == 0;

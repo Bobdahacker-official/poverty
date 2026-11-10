@@ -12,6 +12,11 @@ static struct cache_entry {
   uint8_t data[512];
 } cache[CACHE_SLOTS];
 static unsigned cursors[CACHE_SETS];
+void disk_cache_forget(unsigned disk) {
+  for (unsigned i = 0; i < CACHE_SLOTS; i++)
+    if (cache[i].valid && cache[i].disk == disk)
+      cache[i].valid = cache[i].dirty = false;
+}
 static unsigned cache_set(unsigned disk, uint32_t sector) {
   uint32_t hash = sector ^ (sector >> 8) ^ (sector >> 16) ^ (disk * 2654435761u);
   return hash & (CACHE_SETS - 1);

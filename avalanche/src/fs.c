@@ -3,6 +3,44 @@
 #include "system.h"
 static bool mounted_ext4;
 static struct ext4_volume root_ext4;
+#define SECONDARY_LIMIT 64
+static struct {
+  struct ext4_volume volume;
+  bool mounted, writable;
+} secondary[SECONDARY_LIMIT];
+static const char secondary_prefix[] = ".magenta-drive-";
+bool fs_secondary_path(const char *path, unsigned *disk, const char **relative) {
+  while (*path == '/') path++;
+  for (unsigned i = 0; secondary_prefix[i]; i++)
+    if (*path++ != secondary_prefix[i]) return false;
+  unsigned id = 0;
+  if (*path < '0' || *path > '9') return false;
+  do {
+    id = id * 10 + (*path++ - '0');
+    if (id >= SECONDARY_LIMIT) return false;
+  } while (*path >= '0' && *path <= '9');
+  if (*path && *path != '/') return false;
+  *disk = id;
+  if (relative) *relative = *path ? path : "/";
+  return true;
+}
+static struct ext4_volume *volume_for(const char **path, bool write, int *error) {
+  unsigned disk;
+  const char *relative;
+  *error = 0;
+  if (!fs_secondary_path(*path, &disk, &relative))
+    return mounted_ext4 ? &root_ext4 : NULL;
+  if (!secondary[disk].mounted || !disk_get(disk)) {
+    *error = -19;
+    return NULL;
+  }
+  if (write && !secondary[disk].writable) {
+    *error = -30;
+    return NULL;
+  }
+  *path = relative;
+  return &secondary[disk].volume;
+}
 #define FILE_COUNT 32u
 #define DATA_START 10u
 #define VOLUME_SECTORS (DATA_START + FILE_COUNT * 256u)
@@ -107,6 +145,8 @@ static bool bank_valid(unsigned d, unsigned bank) {
   return true;
 }
 int fs_mount(unsigned disk) {
+  if (disk < SECONDARY_LIMIT && secondary[disk].mounted)
+    return -16;
   struct ext4_volume candidate;
   if (!ext4_discover(&candidate, disk)) {
     root_ext4 = candidate;
@@ -160,6 +200,8 @@ static bool commit(const struct record *records) {
   return true;
 }
 int fs_format(unsigned disk) {
+  if (disk < SECONDARY_LIMIT && secondary[disk].mounted)
+    return -16;
   const struct block_device *dev = disk_get(disk);
   if (!dev || dev->sectors < 2048 + VOLUME_SECTORS)
     return -1;
@@ -207,14 +249,17 @@ void fs_init(void) {
       return;
 }
 int fs_size(const char *name) {
+  int error;
+  struct ext4_volume *volume = volume_for(&name, false, &error);
+  if (error) return error;
+  if (volume) {
+    struct ext4_inode inode;
+    int r = ext4_lookup(volume, name, &inode);
+    return r ? r : inode.size > INT32_MAX ? -27 : (int)inode.size;
+  }
   if (!mounted_ext4)
     while (*name == '/')
       name++;
-  if (mounted_ext4) {
-    struct ext4_inode inode;
-    int r = ext4_lookup(&root_ext4, name, &inode);
-    return r ? r : inode.size > INT32_MAX ? -27 : (int)inode.size;
-  }
   if (mounted >= 0) {
     int i = find_record(name);
     return i < 0 ? -1 : (int)directory[i].size;
@@ -224,9 +269,12 @@ int fs_size(const char *name) {
 }
 int fs_metadata(const char *name, struct file_metadata *out) {
   memset(out, 0, sizeof(*out));
-  if (mounted_ext4) {
+  int error;
+  struct ext4_volume *volume = volume_for(&name, false, &error);
+  if (error) return error;
+  if (volume) {
     struct ext4_inode inode;
-    int r = ext4_lookup(&root_ext4, name, &inode);
+    int r = ext4_lookup(volume, name, &inode);
     if (r) return r;
     *out = (struct file_metadata){inode.size, inode.blocks, inode.number,
       inode.mode, inode.uid, inode.gid, inode.links, inode.atime, inode.mtime,
@@ -250,14 +298,17 @@ int fs_metadata(const char *name, struct file_metadata *out) {
   return 0;
 }
 int fs_read_at(const char *name,uint64_t offset,void *buffer,uint32_t capacity) {
-  if (mounted_ext4) {
+  int error;
+  struct ext4_volume *volume = volume_for(&name, false, &error);
+  if (error) return error;
+  if (volume) {
     struct ext4_inode inode;
-    int r=ext4_lookup(&root_ext4,name,&inode);
+    int r=ext4_lookup(volume,name,&inode);
     if (r) return r;
     if ((inode.mode&0xf000)!=0x8000) return -21;
     if (offset>=inode.size) return 0;
     if (capacity>inode.size-offset) capacity=inode.size-offset;
-    return ext4_read(&root_ext4,&inode,offset,buffer,capacity);
+    return ext4_read(volume,&inode,offset,buffer,capacity);
   }
   static uint8_t data[FS_MAX_FILE];
   int count=fs_read(name,data,sizeof(data));
@@ -269,20 +320,21 @@ int fs_read_at(const char *name,uint64_t offset,void *buffer,uint32_t capacity) 
   return length;
 }
 int fs_read(const char *name, void *buffer, uint32_t capacity) {
-  if (!mounted_ext4)
-    while (*name == '/')
-      name++;
-  if (mounted_ext4) {
+  int error;
+  struct ext4_volume *volume = volume_for(&name, false, &error);
+  if (error) return error;
+  if (volume) {
     struct ext4_inode inode;
-    int r = ext4_lookup(&root_ext4, name, &inode);
+    int r = ext4_lookup(volume, name, &inode);
     if (r)
       return r;
     if ((inode.mode & 0xf000) != 0x8000)
       return -21;
     if (inode.size > capacity)
       return -27;
-    return ext4_read(&root_ext4, &inode, 0, buffer, inode.size);
+    return ext4_read(volume, &inode, 0, buffer, inode.size);
   }
+  while (*name == '/') name++;
   int size = fs_size(name);
   if (size < 0)
     return -1;
@@ -317,11 +369,11 @@ int fs_read(const char *name, void *buffer, uint32_t capacity) {
 }
 int fs_write(const char *name, const void *data, uint32_t size) {
   if (!sandbox_write_allowed(name)) return -13;
-  if (!mounted_ext4)
-    while (*name == '/')
-      name++;
-  if (mounted_ext4)
-    return ext4_replace(&root_ext4, name, data, size);
+  int error;
+  struct ext4_volume *volume = volume_for(&name, true, &error);
+  if (error) return error;
+  if (volume) return ext4_replace(volume, name, data, size);
+  while (*name == '/') name++;
   if (!valid_name(name) || size > FS_MAX_FILE)
     return -1;
   if (mounted < 0) {
@@ -393,12 +445,19 @@ int fs_write(const char *name, const void *data, uint32_t size) {
 }
 int fs_mkdir(const char *path) {
   if (!sandbox_write_allowed(path)) return -13;
-  return mounted_ext4 ? ext4_mkdir(&root_ext4, path) : -30;
+  int error;
+  struct ext4_volume *volume = volume_for(&path, true, &error);
+  return volume ? ext4_mkdir(volume, path) : error ? error : -30;
 }
 int fs_copy(const char *source, const char *target) {
   if (!sandbox_has(process_current(), AV_CAP_READ) || !sandbox_write_allowed(target)) return -13;
-  if (mounted_ext4)
-    return ext4_copy(&root_ext4, source, target);
+  const char *from = source, *to = target;
+  int error;
+  struct ext4_volume *src = volume_for(&from, false, &error);
+  if (error) return error;
+  struct ext4_volume *dst = volume_for(&to, true, &error);
+  if (error) return error;
+  if (src && dst) return ext4_copy_between(src, from, dst, to);
   if (fs_size(target) >= 0)
     return -17;
   static uint8_t copy_buffer[FS_MAX_FILE];
@@ -410,8 +469,13 @@ int fs_copy(const char *source, const char *target) {
 }
 int fs_rename(const char *old_path, const char *new_path) {
   if (!sandbox_write_allowed(old_path) || !sandbox_write_allowed(new_path)) return -13;
-  if (mounted_ext4)
-    return ext4_rename(&root_ext4, old_path, new_path);
+  int error;
+  struct ext4_volume *src = volume_for(&old_path, true, &error);
+  if (error) return error;
+  struct ext4_volume *dst = volume_for(&new_path, true, &error);
+  if (error) return error;
+  if (src != dst) return -18;
+  if (src) return ext4_rename(src, old_path, new_path);
   static char rename_buffer[FS_MAX_FILE];
   int n = fs_read(old_path, rename_buffer, sizeof(rename_buffer));
   if (n < 0 || fs_size(new_path) >= 0)
@@ -422,11 +486,11 @@ int fs_rename(const char *old_path, const char *new_path) {
 }
 int fs_remove(const char *name) {
   if (!sandbox_write_allowed(name)) return -13;
-  if (!mounted_ext4)
-    while (*name == '/')
-      name++;
-  if (mounted_ext4)
-    return ext4_remove(&root_ext4, name);
+  int error;
+  struct ext4_volume *volume = volume_for(&name, true, &error);
+  if (error) return error;
+  if (volume) return ext4_remove(volume, name);
+  while (*name == '/') name++;
   if (mounted < 0) {
     int i = find_ram(name);
     if (i < 0)
@@ -521,22 +585,58 @@ bool fs_entry(unsigned i, char *name, uint32_t *size) {
 }
 
 int fs_mounted_disk(void) { return mounted; }
+int fs_secondary_state(unsigned disk) {
+  if (disk >= SECONDARY_LIMIT || !disk_get(disk)) return -19;
+  if ((int)disk == mounted) return -16;
+  return secondary[disk].mounted ? secondary[disk].writable ? 2 : 1 : 0;
+}
+int fs_secondary_mount(unsigned disk, bool writable) {
+  int state = fs_secondary_state(disk);
+  if (state < 0) return state;
+  if (writable && disk_get(disk)->read_only) return -30;
+  if (!state) {
+    int result = ext4_discover_clean(&secondary[disk].volume, disk);
+    if (result < 0) return result;
+    secondary[disk].mounted = true;
+  }
+  secondary[disk].writable = secondary[disk].writable || writable;
+  return 0;
+}
+int fs_secondary_eject(unsigned disk) {
+  int state = fs_secondary_state(disk);
+  if (state <= 0) return state ? state : -19;
+  if (linux_disk_busy(disk)) return -16;
+  if (secondary[disk].writable && !disk_flush(disk)) return -5;
+  secondary[disk].mounted = secondary[disk].writable = false;
+  disk_cache_forget(disk);
+  return 0;
+}
+void fs_secondary_detach(unsigned disk) {
+  if (disk < SECONDARY_LIMIT)
+    secondary[disk].mounted = secondary[disk].writable = false;
+}
 bool fs_writable(void) {
   const struct block_device *d =
       mounted < 0 ? NULL : disk_get((unsigned)mounted);
   return mounted < 0 || (d && !d->read_only);
 }
 int fs_directory(const char *path) {
-  if (!mounted_ext4)
+  int error;
+  struct ext4_volume *volume = volume_for(&path, false, &error);
+  if (error) return error;
+  if (!volume)
     return str_eq(path, "/") ? 0 : -2;
   struct ext4_inode inode;
-  int r = ext4_lookup(&root_ext4, path, &inode);
+  int r = ext4_lookup(volume, path, &inode);
   return r ? r : ((inode.mode & 0xf000) == 0x4000 ? 0 : -20);
 }
 int fs_browse(const char *path, unsigned index, char name[256], uint64_t *size,
               bool *directory) {
-  if (mounted_ext4) {
-    int r = ext4_entry(&root_ext4, path, index, name, size);
+  int error;
+  struct ext4_volume *volume = volume_for(&path, false, &error);
+  if (error) return error;
+  if (volume) {
+    int r = ext4_entry(volume, path, index, name, size);
     if (r)
       return r;
     char full[1024];
@@ -548,7 +648,7 @@ int fs_browse(const char *path, unsigned index, char name[256], uint64_t *size,
       full[length++] = '/';
     memcpy(full + length, name, count + 1);
     struct ext4_inode inode;
-    r = ext4_lookup(&root_ext4, full, &inode);
+    r = ext4_lookup(volume, full, &inode);
     if (r)
       return r;
     *directory = (inode.mode & 0xf000) == 0x4000;

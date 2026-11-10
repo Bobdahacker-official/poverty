@@ -48,7 +48,8 @@ static int bytes(struct ext4_volume *v, uint64_t offset, void *out,
   }
   return 0;
 }
-static int mount_range(struct ext4_volume *v, unsigned disk, uint32_t start, uint32_t sectors) {
+static int mount_range(struct ext4_volume *v, unsigned disk, uint32_t start,
+                       uint32_t sectors, bool replay) {
   uint8_t super[1024];
   memset(v, 0, sizeof(*v));
   v->disk = disk;
@@ -78,23 +79,31 @@ static int mount_range(struct ext4_volume *v, unsigned disk, uint32_t start, uin
       v->inode_size > 4096 || 4096 % v->inode_size || v->descriptor_size < 32 ||
       v->descriptor_size > 4096 || 4096 % v->descriptor_size)
     return -22;
-  return incompatible & 4 ? journal_replay(v) : 0;
+  return incompatible & 4 ? (replay ? journal_replay(v) : -117) : 0;
 }
 int ext4_mount(struct ext4_volume *v,unsigned disk,uint32_t start) {
   const struct block_device *d=disk_get(disk);
   if (!d || start>=d->sectors) return -22;
-  return mount_range(v,disk,start,d->sectors-start);
+  return mount_range(v,disk,start,d->sectors-start,true);
 }
-int ext4_discover(struct ext4_volume *v,unsigned disk) {
-  int result=ext4_mount(v,disk,0);
+static int discover(struct ext4_volume *v, unsigned disk, bool replay) {
+  const struct block_device *d = disk_get(disk);
+  if (!d) return -19;
+  int result=mount_range(v,disk,0,d->sectors,replay);
   if (!result) return 0;
   struct disk_partition parts[16];
   int count=partition_linux(disk,parts,16);
   for (int i=0;i<count;i++) {
-    result=mount_range(v,disk,parts[i].start,parts[i].sectors);
+    result=mount_range(v,disk,parts[i].start,parts[i].sectors,replay);
     if (!result) return 0;
   }
   return result;
+}
+int ext4_discover(struct ext4_volume *v, unsigned disk) {
+  return discover(v, disk, true);
+}
+int ext4_discover_clean(struct ext4_volume *v, unsigned disk) {
+  return discover(v, disk, false);
 }
 int ext4_inode_read(struct ext4_volume *v, uint32_t ino,
                     struct ext4_inode *out) {
@@ -1416,9 +1425,10 @@ int ext4_rename(struct ext4_volume *v, const char *old_path,
   }
   return commit_transaction(v);
 }
-int ext4_copy(struct ext4_volume *v, const char *source, const char *target) {
+int ext4_copy_between(struct ext4_volume *source_volume, const char *source,
+                      struct ext4_volume *v, const char *target) {
   struct ext4_inode src, dst;
-  int r = ext4_lookup(v, source, &src);
+  int r = ext4_lookup(source_volume, source, &src);
   if (r)
     return r;
   if ((src.mode & 0xf000) != 0x8000)
@@ -1431,7 +1441,7 @@ int ext4_copy(struct ext4_volume *v, const char *source, const char *target) {
   for (uint64_t offset = 0; offset < src.size;) {
     unsigned count = src.size - offset > sizeof(buffer)
                          ? sizeof(buffer) : (unsigned)(src.size - offset);
-    r = ext4_read(v, &src, offset, buffer, count);
+    r = ext4_read(source_volume, &src, offset, buffer, count);
     if (r != (int)count) {
       if (r >= 0)
         r = -5;
@@ -1464,6 +1474,9 @@ int ext4_copy(struct ext4_volume *v, const char *source, const char *target) {
 failed_copy:
   ext4_remove(v, target);
   return r;
+}
+int ext4_copy(struct ext4_volume *v, const char *source, const char *target) {
+  return ext4_copy_between(v, source, v, target);
 }
 int ext4_remove(struct ext4_volume *v, const char *path) {
   struct ext4_inode old, parent;

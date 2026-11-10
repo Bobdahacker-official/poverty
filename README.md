@@ -8,7 +8,7 @@ In the browser desktop, Upload app opens the signed-bundle uploader. It verifies
 
 System Monitor has an Applications view for built-in desktop windows and a Processes view for ring-3 programs. Applications can be focused or closed from the live window list. The compositor copies changed framebuffer regions, and extended keyboard events use a queue so fast game input is retained.
 
-Terminal includes `ps`, `uname`, `pwd`, `clear`, `date`, `free`, `uptime`, `mkdir`, `cp`, `mv`, `wc`, `head`, and `grep`, alongside the existing shell commands. These run on Avalanche's native API.
+Terminal includes `ps`, `uname`, `pwd`, `clear`, `date`, `free`, `uptime`, `mkdir`, `cp`, `mv`, `wc`, `head`, and `grep`, alongside the existing shell commands. The desktop Terminal can pass up to 64 KiB of text between supported commands, such as `ps | grep worker` or `grep error /log | head`. Use `>` to replace a file with the output or `>>` to append to it. Pipelines support the built-in `ps`, `echo`, `cat`, `head`, `grep`, and `wc` commands.
 *This OS and kernel is not made for experimenting, learning, educational purpouses, and is not a hobby project. It is an indie OS designed to be run in both VMs and real hardware, though advanced hardware support is in the works!*
 Magenta is an x86-64 operating system written in C and assembly, built on [Avalanche Kernel](avalanche/). It has a desktop, a shell, files and folders, networking, and a package manager.
 
@@ -43,7 +43,7 @@ The dock opens Terminal, Files, Text editor, Tasks, Network, Packages, Settings,
 
 Images opens PNG, JPEG, and BMP pictures from Files or a typed path. Ctrl-U opens the viewer. Images retain their aspect ratio and fit the available window space. The decoder uses runtime-sized memory buffers, accepts files up to 16 MiB, and keeps the current picture open if another file fails to decode. Ext4 reads can span larger files through the offset-based file API.
 
-Music opens PCM16 WAV files from Files or a typed path. Ctrl-D opens the player. Play and Stop control the HDA stream; progress, duration, sample rate, and channel count come from the running playback state. Other windows and processes keep running during playback. `run aplay /PATH.wav` plays a file from the console, and `aplay /PATH.wav` works in Terminal. Native programs have `av_audio_play`, `av_audio_status`, and `av_audio_stop` SDK calls.
+Music opens PCM16 WAV files from Files or a typed path. Ctrl-D opens the player. Play, Pause, Resume, and Stop control the HDA stream. Use the progress slider to seek within the track. Other windows and processes keep running during playback. `run aplay /PATH.wav` plays a file from the console, and `aplay /PATH.wav` works in Terminal. Native programs have `av_audio_play`, `av_audio_status`, and `av_audio_stop` SDK calls.
 
 ![Music player](Images/music.png)
 
@@ -59,7 +59,11 @@ Right-click the desktop for file creation, Files, Terminal, appearance settings,
 
 Files has back/forward navigation, a location field, name search with an optional Subfolders search, folder icons, readable sizes, and selected-item details. Double-click an item or select it and press Enter to open it. Copy, cut, and paste work for files and folders; ext4 file copies stream in blocks and are not limited to the editor's 64 KiB document size. Moving an ext4 folder updates its parent in one filesystem transaction. Pasting a copy beside an existing item chooses an unused `-copy-N` name; moving never overwrites an existing item. Right-click the list for file actions. Use Ctrl+L for the location, Ctrl+F for search, Ctrl+C/X/V for file operations when not editing text, F2 to rename, and Delete to request deletion. Search scans up to 32,768 entries and 16 nested levels and reports when that limit is reached.
 
-Folder creation uses ext4; folders must be empty before deletion. The editor saves text files and asks before discarding changes.
+On ext4, Delete moves the selection to Trash on the same volume, including nonempty folders. Open Trash in Files to restore an item, choose another name when the original is occupied, or confirm permanent removal with Empty Trash.
+
+Open **Drives** in Files to browse a second clean ext4 volume without replacing the system volume. Volumes open read-only unless you choose **Enable writes**. Eject unmounts the volume and flushes writable storage. Close files or stop playback if the drive is busy. Magenta detects xHCI USB insertion and removal while the desktop is running, including through xHCI hubs. Use Eject before unplugging a writable drive.
+
+The editor supports Save As, Find Next, and Go to Line. It periodically saves a recovery draft for unsaved edits and offers to recover it after reopening the desktop. The original file is written when you choose Save.
 
 ![Files](Images/files.png)
 

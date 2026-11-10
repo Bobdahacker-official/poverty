@@ -11,6 +11,7 @@
 #include "process.h"
 #include "system.h"
 #include "tls.h"
+#include "usb.h"
 #include "web.h"
 
 enum {
@@ -147,6 +148,15 @@ static unsigned history_count, history_cursor;
 static char editor[FS_MAX_FILE + 1], editor_path[256] = "/notes";
 static char editor_copy_path[256];
 static bool editor_save_as;
+static char editor_find[128], editor_last_find[128];
+static int editor_line = 1, editor_match_end;
+static uint32_t editor_draft_tick, editor_draft_crc;
+static bool editor_draft_available, editor_draft_written;
+#define EDITOR_DRAFT_PATH "/.magenta-editor-recovery"
+static struct {
+  char path[256];
+  char text[FS_MAX_FILE + 1];
+} editor_draft;
 static bool editor_dirty, editor_discard;
 static char browser_path[256] = "/", browser_address[256] = "/",
             file_filter[64], new_name[256];
@@ -159,6 +169,8 @@ static unsigned file_count, file_page;
 static int selected_file = -1;
 static bool file_more, creating_file, deleting_file;
 static bool emptying_trash;
+static bool showing_drives;
+static char restore_name[256], restore_entry[256];
 static struct task_info task_items[256];
 static unsigned task_slots;
 static int focused_client = -1;
@@ -1023,6 +1035,9 @@ static void save_editor(void) {
   int n = fs_write(editor_path, editor, strlen(editor));
   if (n >= 0) {
     editor_dirty = false;
+    if (editor_draft_written && !editor_draft_available &&
+        fs_remove(EDITOR_DRAFT_PATH) == 0)
+      editor_draft_written = false;
     notify("File saved");
     refresh_files();
   } else
@@ -1092,7 +1107,161 @@ static void shell_start(void) {
     terminal_append("Could not start the shell.\n");
   }
 }
+static char *terminal_trim(char *text) {
+  while (*text == ' ' || *text == '\t') text++;
+  unsigned length = strlen(text);
+  while (length && (text[length - 1] == ' ' || text[length - 1] == '\t'))
+    text[--length] = 0;
+  return text;
+}
+static int terminal_text_stage(char *stage, char *input, unsigned length,
+                               bool piped, char *out) {
+  char *args = stage;
+  while (*args && *args != ' ' && *args != '\t') args++;
+  if (*args) *args++ = 0;
+  args = terminal_trim(args);
+  if (!piped && str_eq(stage, "ps") && !*args) {
+    capture("ps", out, FS_MAX_FILE + 1);
+    return strlen(out);
+  }
+  if (!piped && str_eq(stage, "echo")) {
+    unsigned n = strlen(args);
+    memcpy(out, args, n);
+    out[n++] = '\n';
+    return n;
+  }
+  bool cat = str_eq(stage, "cat"), head = str_eq(stage, "head"),
+       grep = str_eq(stage, "grep"), wc = str_eq(stage, "wc");
+  if (!cat && !head && !grep && !wc) return -95;
+  char *pattern = NULL;
+  if (grep) {
+    pattern = args;
+    while (*args && *args != ' ' && *args != '\t') args++;
+    if (*args) *args++ = 0;
+    args = terminal_trim(args);
+    if (!*pattern) return -22;
+  }
+  if (*args) {
+    int bytes = fs_read(args, input, FS_MAX_FILE);
+    if (bytes < 0) return bytes;
+    length = bytes;
+  } else if (!piped)
+    return -22;
+  if (cat) {
+    memcpy(out, input, length);
+    return length;
+  }
+  if (wc) {
+    unsigned lines = 0, words = 0;
+    bool in_word = false;
+    for (unsigned i = 0; i < length; i++) {
+      char c = input[i];
+      lines += c == '\n';
+      bool word = c != ' ' && c != '\t' && c != '\r' && c != '\n';
+      words += word && !in_word;
+      in_word = word;
+    }
+    char value[32];
+    number(out, lines);
+    append(out, " lines ", FS_MAX_FILE + 1);
+    number(value, words);
+    append(out, value, FS_MAX_FILE + 1);
+    append(out, " words ", FS_MAX_FILE + 1);
+    number(value, length);
+    append(out, value, FS_MAX_FILE + 1);
+    append(out, " bytes\n", FS_MAX_FILE + 1);
+    return strlen(out);
+  }
+  unsigned used = 0, lines = 0, pattern_length = pattern ? strlen(pattern) : 0;
+  for (unsigned start = 0; start < length;) {
+    unsigned end = start;
+    while (end < length && input[end] != '\n') end++;
+    bool match = head;
+    for (unsigned i = start; !match && pattern_length <= end - i; i++)
+      match = !__builtin_memcmp(input + i, pattern, pattern_length);
+    if (end < length) end++;
+    if (match) {
+      memcpy(out + used, input + start, end - start);
+      used += end - start;
+      if (head && ++lines == 10) break;
+    }
+    start = end;
+  }
+  return used;
+}
+static bool terminal_pipeline(const char *command) {
+  bool operators = false;
+  for (const char *p = command; *p; p++)
+    operators |= *p == '|' || *p == '>';
+  if (!operators) return false;
+  char line[sizeof(terminal_line)];
+  copy(line, command, sizeof(line));
+  static char buffers[2][FS_MAX_FILE + 1];
+  unsigned side = 0, length = 0;
+  bool piped = false;
+  for (char *stage = line;;) {
+    char *end = stage;
+    while (*end && *end != '|' && *end != '>') end++;
+    char op = *end;
+    *end = 0;
+    int n = terminal_text_stage(terminal_trim(stage), buffers[side], length,
+                                piped, buffers[side ^ 1]);
+    if (n < 0) {
+      terminal_append(n == -95
+          ? "Pipes support ps, echo, cat, head, grep and wc.\n"
+          : "Pipeline command failed.\n");
+      return true;
+    }
+    side ^= 1;
+    length = n;
+    buffers[side][length] = 0;
+    if (op == '|') {
+      stage = end + 1;
+      piped = true;
+      continue;
+    }
+    if (!op) {
+      terminal_append(buffers[side]);
+      return true;
+    }
+    bool append_output = end[1] == '>';
+    char *target = terminal_trim(end + (append_output ? 2 : 1));
+    for (const char *p = target; *p; p++)
+      if (*p == '|' || *p == '>') {
+        terminal_append("Redirection must come last.\n");
+        return true;
+      }
+    if (!*target) {
+      terminal_append("Enter an output filename.\n");
+      return true;
+    }
+    char *output = buffers[side];
+    if (append_output) {
+      struct file_metadata metadata;
+      int stat = fs_metadata(target, &metadata);
+      int previous = stat == -2 ? 0 :
+          fs_read(target, buffers[side ^ 1], FS_MAX_FILE - length);
+      if (previous < 0) {
+        terminal_append("Could not read the append destination.\n");
+        return true;
+      }
+      output = buffers[side ^ 1];
+      memcpy(output + previous, buffers[side], length);
+      length += previous;
+    }
+    if (fs_write(target, output, length) < 0)
+      terminal_append("Could not write redirected output.\n");
+    else
+      refresh_files();
+    return true;
+  }
+}
 static void shell_submit(void) {
+  if (terminal_pipeline(terminal_line)) {
+    terminal_line[0] = 0;
+    terminal_focus = 1;
+    return;
+  }
   if (str_eq(terminal_line,"netdiag") || str_eq(terminal_line,"netprofile") ||
       str_eq(terminal_line,"route") ||
       (strlen(terminal_line)>=11 && !__builtin_memcmp(terminal_line,"netprofile ",11)) ||
@@ -1253,7 +1422,8 @@ static void file_error(const char *action, int error) {
   append(message,
          error == -17   ? ": an item with that name already exists"
          : error == -28 ? ": the disk or directory is full"
-         : error == -30 ? ": this storage does not support folders"
+         : error == -30 ? ": the volume is read-only or lacks folder support"
+         : error == -18 ? ": use Copy to transfer files between volumes"
          : error == -27 ? ": the filesystem's size limit was reached"
          : error == -39 ? ": the folder is not empty"
          : error == -95 ? ": unsupported file type or filesystem feature"
@@ -1280,8 +1450,11 @@ static void file_begin_delete(void) {
   if (selected_file < 0 || (unsigned)selected_file >= file_count)
     return;
   copy(deleting_path, file_items[selected_file].path, sizeof(deleting_path));
-  if (str_eq(deleting_path, "/.magenta-trash") ||
-      starts_with(deleting_path, "/.magenta-trash/")) {
+  unsigned disk;
+  const char *relative = deleting_path;
+  (void)fs_secondary_path(deleting_path, &disk, &relative);
+  if (str_eq(relative, "/") || str_eq(relative, "/.magenta-trash") ||
+      starts_with(relative, "/.magenta-trash/")) {
     notify("Select an item outside Trash to move it to Trash.");
     return;
   }
@@ -1325,12 +1498,31 @@ struct trash_record {
   char original[256];
   uint32_t days, seconds;
 };
+static void drive_path(char out[256], unsigned disk) {
+  char id[32];
+  number(id, disk);
+  copy(out, "/.magenta-drive-", 256);
+  append(out, id, 256);
+}
+static void trash_path(char out[256], const char *path) {
+  unsigned disk;
+  if (fs_secondary_path(path, &disk, NULL)) {
+    drive_path(out, disk);
+    append(out, TRASH_PATH, 256);
+  } else
+    copy(out, TRASH_PATH, 256);
+}
 static int move_to_trash(const char *path) {
-  int r = fs_directory(TRASH_PATH);
-  if (r && (r = fs_mkdir(TRASH_PATH)) < 0)
+  char trash[256];
+  trash_path(trash, path);
+  int r = fs_directory(trash);
+  if (r && (r = fs_mkdir(trash)) < 0)
     return r;
   struct trash_record record = {0};
-  copy(record.original, path, sizeof(record.original));
+  unsigned disk;
+  const char *relative = path;
+  (void)fs_secondary_path(path, &disk, &relative);
+  copy(record.original, relative, sizeof(record.original));
   (void)rtc_time(&record.days, &record.seconds);
   char entry[256], metadata[256], payload[256];
   const char *name = path;
@@ -1342,7 +1534,7 @@ static int move_to_trash(const char *path) {
     copy(label, id, sizeof(label));
     append(label, "-", sizeof(label));
     append(label, name, sizeof(label));
-    if (!join_path(entry, TRASH_PATH, label) ||
+    if (!join_path(entry, trash, label) ||
         !join_path(metadata, entry, "original") ||
         !join_path(payload, entry, "item"))
       return -36;
@@ -1359,7 +1551,7 @@ static int move_to_trash(const char *path) {
   }
   return -17;
 }
-static int restore_trash(const char *entry) {
+static int restore_trash(const char *entry, const char *name) {
   char metadata[256], payload[256];
   if (!join_path(metadata, entry, "original") ||
       !join_path(payload, entry, "item"))
@@ -1369,22 +1561,39 @@ static int restore_trash(const char *entry) {
       record.original[0] != '/' || record.original[255] ||
       starts_with(record.original, TRASH_PATH))
     return -22;
-  int r = fs_rename(payload, record.original);
+  if (name && *name) {
+    if (!valid_item_name(name)) return -22;
+    char parent[256];
+    copy(parent, record.original, sizeof(parent));
+    unsigned split = strlen(parent);
+    while (split && parent[split - 1] != '/') split--;
+    if (!split) return -22;
+    parent[split - 1] = 0;
+    if (!join_path(record.original, parent, name)) return -36;
+  }
+  char destination[256] = "";
+  unsigned disk;
+  if (fs_secondary_path(entry, &disk, NULL))
+    drive_path(destination, disk);
+  if (strlen(destination) + strlen(record.original) >= sizeof(destination))
+    return -36;
+  append(destination, record.original, sizeof(destination));
+  int r = fs_rename(payload, destination);
   if (r < 0) return r;
   (void)fs_remove(metadata);
   (void)fs_remove(entry);
   return 0;
 }
-static int empty_trash(void) {
+static int empty_trash(const char *trash) {
   for (;;) {
     char name[256], entry[256], metadata[256], payload[256];
     struct trash_record record;
     uint64_t size;
     bool directory;
-    int r = fs_browse(TRASH_PATH, 0, name, &size, &directory);
+    int r = fs_browse(trash, 0, name, &size, &directory);
     if (r == -2) return 0;
     if (r < 0) return r;
-    if (!directory || !join_path(entry, TRASH_PATH, name) ||
+    if (!directory || !join_path(entry, trash, name) ||
         !join_path(metadata, entry, "original") ||
         !join_path(payload, entry, "item") ||
         fs_read(metadata, &record, sizeof(record)) != (int)sizeof(record) ||
@@ -1542,7 +1751,71 @@ static void file_context_menu(struct nk_rect bounds) {
     nk_contextual_end(&ui);
   }
 }
+static bool desktop_drive_busy(unsigned disk) {
+  unsigned volume;
+  if (editor_dirty && fs_secondary_path(editor_path, &volume, NULL) &&
+      volume == disk)
+    return true;
+  struct av_audio_status audio;
+  audio_snapshot(&audio);
+  return (audio.playing || audio_paused()) &&
+         fs_secondary_path(audio.path, &volume, NULL) && volume == disk;
+}
+static void files_drives_view(void) {
+  heading("Drives");
+  nk_layout_row_dynamic(&ui, 32, 1);
+  if (nk_button_label(&ui, "Back to Files")) {
+    showing_drives = false;
+    return;
+  }
+  for (unsigned disk = 0; disk < disk_count(); disk++) {
+    int state = fs_secondary_state(disk);
+    const struct block_device *device = disk_get(disk);
+    if (!device || state == -19) continue;
+    nk_layout_row_dynamic(&ui, 30, 1);
+    nk_label(&ui, device->model, NK_TEXT_LEFT);
+    if (state < 0) {
+      caption("System volume");
+      continue;
+    }
+    nk_layout_row_dynamic(&ui, 32, 3);
+    if (nk_button_label(&ui, state ? "Open" : "Open read-only")) {
+      int r = state ? 0 : fs_secondary_mount(disk, false);
+      if (r < 0)
+        notify("Could not open a clean ext4 volume on this drive");
+      else {
+        char path[256];
+        drive_path(path, disk);
+        file_filter[0] = 0;
+        browse(path);
+        showing_drives = false;
+        return;
+      }
+    }
+    if (quiet_button("Enable writes", "Allow changes on this ext4 volume",
+                     state == 1 && !device->read_only)) {
+      int r = fs_secondary_mount(disk, true);
+      notify(r < 0 ? "Could not enable writes" : "Drive is writable");
+    }
+    if (quiet_button("Eject", "Unmount and flush the drive", state > 0)) {
+      int r = desktop_drive_busy(disk) ? -16 : fs_secondary_eject(disk);
+      if (r < 0)
+        notify(r == -16 ? "Drive is busy" : "Could not safely eject the drive");
+      else {
+        unsigned current;
+        if (fs_secondary_path(browser_path, &current, NULL) && current == disk)
+          browse("/");
+        notify(device->backend == 4 ? "Drive unmounted. Safe to remove."
+                                    : "Drive unmounted.");
+      }
+    }
+  }
+}
 static void file_contents_view(void) {
+  if (showing_drives) {
+    files_drives_view();
+    return;
+  }
   files_editing = false;
   const float toolbar[] = {0.09f, 0.09f, 0.09f, 0.60f, 0.13f};
   nk_layout_row(&ui, NK_DYNAMIC, 36, 5, toolbar);
@@ -1596,19 +1869,29 @@ static void file_contents_view(void) {
     refresh_files();
 
   bool selected = selected_file >= 0 && (unsigned)selected_file < file_count;
-  bool in_trash = str_eq(browser_path, TRASH_PATH);
-  nk_layout_row_dynamic(&ui, 32, 3);
+  char trash[256];
+  trash_path(trash, browser_path);
+  bool in_trash = str_eq(browser_path, trash);
+  nk_layout_row_dynamic(&ui, 32, 4);
+  if (nk_button_label(&ui, "Drives")) {
+    showing_drives = true;
+    return;
+  }
   if (quiet_button("Trash", "Show items moved to Trash", !in_trash)) {
-    if (fs_directory(TRASH_PATH) == 0) {
+    if (fs_directory(trash) == 0) {
       file_filter[0] = 0;
-      browse(TRASH_PATH);
+      browse(trash);
       return;
     }
     notify("Trash is empty");
   }
   if (quiet_button("Restore", "Restore the selected item", in_trash && selected)) {
-    int r = restore_trash(file_items[selected_file].path);
-    if (r < 0) file_error("Restore failed", r);
+    int r = restore_trash(file_items[selected_file].path, NULL);
+    if (r == -17) {
+      copy(restore_entry, file_items[selected_file].path, sizeof(restore_entry));
+      restore_name[0] = 0;
+      notify("The original name is in use. Choose a new name.");
+    } else if (r < 0) file_error("Restore failed", r);
     else notify("Item restored");
     refresh_files();
     return;
@@ -1616,6 +1899,23 @@ static void file_contents_view(void) {
   if (quiet_button("Empty Trash", "Permanently remove items in Trash", in_trash)) {
     emptying_trash = true;
     deleting_file = true;
+  }
+  if (in_trash && *restore_entry) {
+    nk_layout_row_dynamic(&ui, 32, 3);
+    nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, restore_name,
+                                   sizeof(restore_name), nk_filter_default);
+    if (quiet_button("Restore as", "Restore under a new name",
+                     valid_item_name(restore_name))) {
+      int r = restore_trash(restore_entry, restore_name);
+      if (r < 0) file_error("Restore failed", r);
+      else {
+        restore_entry[0] = 0;
+        refresh_files();
+        notify("Item restored");
+        return;
+      }
+    }
+    if (nk_button_label(&ui, "Cancel")) restore_entry[0] = 0;
   }
   nk_layout_row_dynamic(&ui, 32, 5);
   if (quiet_button("Open", "Open the selected item", selected))
@@ -1833,6 +2133,25 @@ static void files_view(void) {
     nk_group_end(&ui);
   }
 }
+static void editor_recovery_poll(void) {
+  if (!editor_dirty || editor_draft_available || !fs_writable())
+    return;
+  uint32_t now = clock_ticks();
+  if ((uint32_t)(now - editor_draft_tick) < 200)
+    return;
+  editor_draft_tick = now;
+  unsigned length = strlen(editor);
+  uint32_t checksum = crc32(editor, length) ^ crc32(editor_path, strlen(editor_path));
+  if (editor_draft_written && editor_draft_crc == checksum)
+    return;
+  copy(editor_draft.path, editor_path, sizeof(editor_draft.path));
+  memcpy(editor_draft.text, editor, length + 1);
+  if (fs_write(EDITOR_DRAFT_PATH, &editor_draft, sizeof(editor_draft.path) +
+                                                    length + 1) >= 0) {
+    editor_draft_written = true;
+    editor_draft_crc = checksum;
+  }
+}
 static void editor_view(void) {
   float row[] = {0.49f, 0.17f, 0.17f, 0.17f};
   nk_layout_row(&ui, NK_DYNAMIC, 34, 4, row);
@@ -1867,18 +2186,75 @@ static void editor_view(void) {
       else {
         copy(editor_path, editor_copy_path, sizeof(editor_path));
         editor_dirty = editor_save_as = false;
+        if (editor_draft_written && !editor_draft_available &&
+            fs_remove(EDITOR_DRAFT_PATH) == 0)
+          editor_draft_written = false;
         refresh_files();
         notify("Copy saved");
       }
     }
   }
-  float area = nk_window_get_content_region(&ui).h - (editor_save_as ? 116 : 82);
+  if (editor_draft_available) {
+    nk_layout_row_dynamic(&ui, 30, 2);
+    if (quiet_button("Recover draft", "Open the recovered document", !editor_dirty)) {
+      copy(editor_path, editor_draft.path, sizeof(editor_path));
+      copy(editor, editor_draft.text, sizeof(editor));
+      editor_dirty = true;
+      editor_draft_available = false;
+    }
+    if (nk_button_label(&ui, "Discard draft") &&
+        fs_remove(EDITOR_DRAFT_PATH) == 0)
+      editor_draft_available = editor_draft_written = false;
+  }
+  int selection = -1, selection_end = -1;
+  nk_layout_row_dynamic(&ui, 30, 4);
+  nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, editor_find,
+                                 sizeof(editor_find), nk_filter_default);
+  if (quiet_button("Find next", "Select the next matching text", *editor_find)) {
+    unsigned length = strlen(editor), query_length = strlen(editor_find);
+    unsigned start = str_eq(editor_last_find, editor_find) &&
+                             (unsigned)editor_match_end < length
+                         ? (unsigned)editor_match_end : 0;
+    for (unsigned i = 0; i < length; i++) {
+      unsigned at = (start + i) % length;
+      if (query_length <= length - at &&
+          !__builtin_memcmp(editor + at, editor_find, query_length)) {
+        selection = at;
+        selection_end = editor_match_end = at + query_length;
+        break;
+      }
+    }
+    copy(editor_last_find, editor_find, sizeof(editor_last_find));
+    if (selection < 0) notify("Text not found");
+  }
+  nk_property_int(&ui, "Line", 1, &editor_line, FS_MAX_FILE + 1, 1, 1);
+  if (nk_button_label(&ui, "Go to line")) {
+    int line = 1;
+    unsigned at = 0;
+    while (editor[at] && line < editor_line)
+      if (editor[at++] == '\n') line++;
+    if (line == editor_line) selection = selection_end = at;
+    else notify("Line is outside the document");
+  }
+  float area = nk_window_get_content_region(&ui).h - 112
+               - (editor_save_as ? 34 : 0) - (editor_draft_available ? 30 : 0);
   if (area < 70)
     area = 70;
   nk_layout_row_dynamic(&ui, area, 1);
-  if (editor_focus) {
+  if (editor_focus || selection >= 0) {
     nk_edit_focus(&ui, NK_EDIT_ALWAYS_INSERT_MODE);
     editor_focus = 0;
+  }
+  if (selection >= 0) {
+    struct nk_window *window = ui.current;
+    window->edit.cursor = nk_utf_len(editor, selection_end);
+    window->edit.sel_start = nk_utf_len(editor, selection);
+    window->edit.sel_end = window->edit.cursor;
+    unsigned row = 0;
+    for (int i = 0; i < selection; i++)
+      row += editor[i] == '\n';
+    window->edit.scrollbar.y =
+        (nk_uint)(row * (ui.style.font->height + ui.style.edit.row_padding));
   }
   uint32_t before = crc32(editor, strlen(editor));
   nk_edit_string_zero_terminated(&ui, NK_EDIT_BOX, editor, sizeof(editor),
@@ -4210,6 +4586,9 @@ static void modal_dialogs(void) {
       }
       if (nk_button_label(&ui, "Discard")) {
         editor_dirty = false;
+        if (editor_draft_written && !editor_draft_available &&
+            fs_remove(EDITOR_DRAFT_PATH) == 0)
+          editor_draft_written = false;
         finish = true;
       }
       if (finish) {
@@ -4228,7 +4607,9 @@ static void modal_dialogs(void) {
       }
     } else if (accent_button("Confirm")) {
       if (deleting_file && (emptying_trash || *deleting_path)) {
-        int r = emptying_trash ? empty_trash()
+        char trash[256];
+        trash_path(trash, browser_path);
+        int r = emptying_trash ? empty_trash(trash)
                               : move_to_trash(deleting_path);
         if (r < 0)
           file_error("Deletion failed", r);
@@ -4543,6 +4924,13 @@ int gui_run(void) {
   editor_dirty = false;
   editor[0] = 0;
   copy(editor_path, "/notes", sizeof(editor_path));
+  int draft_bytes = fs_read(EDITOR_DRAFT_PATH, &editor_draft, sizeof(editor_draft));
+  editor_draft_available = draft_bytes > (int)sizeof(editor_draft.path) &&
+      editor_draft.path[0] == '/' && !editor_draft.path[255] &&
+      !editor_draft.text[draft_bytes - sizeof(editor_draft.path) - 1];
+  editor_draft_written = editor_draft_available;
+  editor_draft_tick = clock_ticks();
+  editor_draft_crc = 0;
   launcher = power_dialog = deleting_file = ending_task = removing_package =
       editor_discard = false;
   close_editor_after_discard = exit_after_discard = false;
@@ -4570,6 +4958,13 @@ int gui_run(void) {
   while (running) {
     for (unsigned i = 0; i < 4; i++)
       devices_poll();
+    xhci_service_ports();
+    unsigned current_disk;
+    if (fs_secondary_path(browser_path, &current_disk, NULL) &&
+        fs_secondary_state(current_disk) < 1) {
+      browse("/");
+      notify("Drive disconnected");
+    }
     net_poll();
     user_poll();
     user_yield_kernel();
@@ -4631,6 +5026,7 @@ int gui_run(void) {
         save_editor();
         save_requested = false;
       }
+      editor_recovery_poll();
       if (gui_canvas_changed(&ui, preferences.blur)) {
         gui_canvas_begin();
         for (unsigned i = 0; i < APP_COUNT; i++)

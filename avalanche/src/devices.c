@@ -182,7 +182,15 @@ static void ata_init(void) {
 }
 unsigned disk_count(void) { return ndisks; }
 const struct block_device *disk_get(unsigned n) {
-  return n < ndisks ? &disks[n] : NULL;
+  return n < ndisks && disks[n].sectors ? &disks[n] : NULL;
+}
+void disk_detach_usb(unsigned unit) {
+  for (unsigned n = 0; n < ndisks; n++)
+    if (disks[n].sectors && disks[n].backend == 4 && disks[n].unit == unit) {
+      fs_secondary_detach(n);
+      disk_cache_forget(n);
+      disks[n].sectors = 0;
+    }
 }
 static bool ata_select(unsigned n, uint32_t lba) {
   if (n >= ndisks || lba >= disks[n].sectors)
@@ -252,6 +260,8 @@ bool disk_raw_write(unsigned n, uint32_t lba, const void *buf) {
   return ata_wait(d, false);
 }
 bool disk_raw_flush(unsigned n) {
+  if (!disk_get(n))
+    return false;
   if (n < ndisks && disks[n].backend == 4)
     return usb_storage_flush(disks[n].unit);
   if (n < ndisks && disks[n].backend == 3)
@@ -665,6 +675,7 @@ void devices_list(void) {
     console_putc('\n');
   }
   for (unsigned i = 0; i < ndisks; i++) {
+    if (!disk_get(i)) continue;
     console_write(disks[i].backend == 4   ? "USB disk "
                   : disks[i].backend == 3 ? "NVMe disk "
                   : disks[i].backend == 2 ? "VirtIO disk "

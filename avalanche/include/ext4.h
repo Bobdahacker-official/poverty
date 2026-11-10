@@ -17,6 +17,7 @@ struct ext4_inode {
 };
 int ext4_mount(struct ext4_volume *, unsigned, uint32_t);
 int ext4_discover(struct ext4_volume *, unsigned);
+int ext4_discover_clean(struct ext4_volume *, unsigned);
 int ext4_inode_read(struct ext4_volume *, uint32_t, struct ext4_inode *);
 int ext4_read(struct ext4_volume *, const struct ext4_inode *, uint64_t, void *,
               uint32_t);
@@ -29,6 +30,8 @@ int ext4_replace(struct ext4_volume *, const char *, const void *, uint32_t);
 int ext4_mkdir(struct ext4_volume *, const char *);
 int ext4_rename(struct ext4_volume *, const char *, const char *);
 int ext4_copy(struct ext4_volume *, const char *, const char *);
+int ext4_copy_between(struct ext4_volume *, const char *, struct ext4_volume *,
+                      const char *);
 int ext4_remove(struct ext4_volume *, const char *);
 int ext4_entry(struct ext4_volume *, const char *, unsigned, char[256],
                uint64_t *);
