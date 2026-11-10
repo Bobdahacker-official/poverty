@@ -10,7 +10,7 @@ static struct {
   unsigned offset, size, loaded, played, previous, deadline, rate, channels;
   uint32_t start, last_poll;
   int result;
-  bool active, pumping;
+  bool active, pumping, paused;
 } playback;
 static struct {
   uint64_t address;
@@ -203,7 +203,7 @@ static uint32_t le32(const uint8_t *p) {
          (uint32_t)p[3] << 24;
 }
 static uint16_t le16(const uint8_t *p) { return p[0] | (unsigned)p[1] << 8; }
-int audio_play(const char *name) {
+static int audio_play_from(const char *name, unsigned frame) {
   if (!available)
     return -19;
   if (playback.active)
@@ -242,6 +242,8 @@ int audio_play(const char *name) {
   }
   if (!data_start || !data_size || (channels != 1 && channels != 2) ||
       align != channels * 2 || data_size % align)
+    return -22;
+  if (frame >= data_size / align)
     return -22;
   unsigned format = 0x10 | (channels - 1), rate_bit;
   switch (rate) {
@@ -294,7 +296,7 @@ int audio_play(const char *name) {
   set32(sd, 0);
   if (!wait_mask(sd, 1, 0, 20))
     return -5;
-  unsigned loaded = 0;
+  unsigned loaded = frame * align;
   for (unsigned i = 0; i < AUDIO_SEGMENTS; i++) {
     memset(pcm[i], 0, AUDIO_CHUNK);
     unsigned n = data_size - loaded;
@@ -324,14 +326,45 @@ int audio_play(const char *name) {
   playback.offset = data_start;
   playback.size = data_size;
   playback.loaded = loaded;
+  playback.played = frame * align;
   playback.rate = rate;
   playback.channels = channels;
   playback.start = clock_ticks();
-  playback.deadline = data_size / (rate * align) * 100 + 500;
+  playback.deadline = (data_size - playback.played) / (rate * align) * 100 + 500;
   playback.last_poll = playback.start;
   playback.active = true;
   set32(sd, (stream << 20) | 2);
   return 0;
+}
+int audio_play(const char *name) { return audio_play_from(name, 0); }
+bool audio_paused(void) { return playback.paused; }
+int audio_pause(void) {
+  audio_poll();
+  if (!playback.active)
+    return -22;
+  audio_stop();
+  playback.paused = true;
+  return 0;
+}
+int audio_seek(unsigned frame) {
+  if (!playback.channels || frame >= playback.size / (playback.channels * 2))
+    return -22;
+  if (!playback.active) {
+    playback.played = frame * playback.channels * 2;
+    playback.paused = true;
+    return 0;
+  }
+  char name[sizeof(playback.path)];
+  memcpy(name, playback.path, sizeof(name));
+  audio_stop();
+  return audio_play_from(name, frame);
+}
+int audio_resume(void) {
+  if (!playback.paused || !playback.channels)
+    return -22;
+  char name[sizeof(playback.path)];
+  memcpy(name, playback.path, sizeof(name));
+  return audio_play_from(name, playback.played / (playback.channels * 2));
 }
 int audio_status(void) { return playback.active ? 1 : playback.result; }
 void audio_snapshot(struct av_audio_status *out) {
@@ -350,6 +383,7 @@ void audio_snapshot(struct av_audio_status *out) {
   memcpy(out->path, playback.path, sizeof(out->path));
 }
 void audio_stop(void) {
+  playback.paused = false;
   if (!playback.active)
     return;
   playback.active = false;

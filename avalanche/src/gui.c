@@ -145,6 +145,8 @@ static int terminal_pid;
 static char history[16][256];
 static unsigned history_count, history_cursor;
 static char editor[FS_MAX_FILE + 1], editor_path[256] = "/notes";
+static char editor_copy_path[256];
+static bool editor_save_as;
 static bool editor_dirty, editor_discard;
 static char browser_path[256] = "/", browser_address[256] = "/",
             file_filter[64], new_name[256];
@@ -156,6 +158,7 @@ static struct file_item {
 static unsigned file_count, file_page;
 static int selected_file = -1;
 static bool file_more, creating_file, deleting_file;
+static bool emptying_trash;
 static struct task_info task_items[256];
 static unsigned task_slots;
 static int focused_client = -1;
@@ -873,6 +876,7 @@ static void refresh_files(void) {
   file_more = search_limited = false;
   selected_file = file_last_click = -1;
   deleting_file = renaming_file = false;
+  emptying_trash = false;
   scan_files(browser_path, 0);
   for (unsigned i = 1; i < file_count; i++) {
     struct file_item item = file_items[i];
@@ -1011,6 +1015,7 @@ static void open_file(unsigned index) {
   contents[n] = 0;
   memcpy(editor, contents, n + 1);
   copy(editor_path, path, sizeof(editor_path));
+  editor_save_as = false;
   editor_dirty = false;
   open_app(EDITOR);
 }
@@ -1275,6 +1280,12 @@ static void file_begin_delete(void) {
   if (selected_file < 0 || (unsigned)selected_file >= file_count)
     return;
   copy(deleting_path, file_items[selected_file].path, sizeof(deleting_path));
+  if (str_eq(deleting_path, "/.magenta-trash") ||
+      starts_with(deleting_path, "/.magenta-trash/")) {
+    notify("Select an item outside Trash to move it to Trash.");
+    return;
+  }
+  emptying_trash = false;
   deleting_file = true;
 }
 static void file_copy_selection(bool cut) {
@@ -1308,6 +1319,84 @@ static int remove_copy_tree(const char *path, unsigned depth) {
     }
   }
   return fs_remove(path);
+}
+#define TRASH_PATH "/.magenta-trash"
+struct trash_record {
+  char original[256];
+  uint32_t days, seconds;
+};
+static int move_to_trash(const char *path) {
+  int r = fs_directory(TRASH_PATH);
+  if (r && (r = fs_mkdir(TRASH_PATH)) < 0)
+    return r;
+  struct trash_record record = {0};
+  copy(record.original, path, sizeof(record.original));
+  (void)rtc_time(&record.days, &record.seconds);
+  char entry[256], metadata[256], payload[256];
+  const char *name = path;
+  for (const char *p = path; *p; p++)
+    if (*p == '/') name = p + 1;
+  for (unsigned i = 0; i < 1024; i++) {
+    char id[32], label[210];
+    number(id, (uint64_t)record.days * 86400 + record.seconds + i);
+    copy(label, id, sizeof(label));
+    append(label, "-", sizeof(label));
+    append(label, name, sizeof(label));
+    if (!join_path(entry, TRASH_PATH, label) ||
+        !join_path(metadata, entry, "original") ||
+        !join_path(payload, entry, "item"))
+      return -36;
+    r = fs_mkdir(entry);
+    if (r == -17) continue;
+    if (r < 0) return r;
+    r = fs_write(metadata, (const char *)&record, sizeof(record));
+    if (r >= 0) r = fs_rename(path, payload);
+    if (r < 0) {
+      (void)fs_remove(metadata);
+      (void)fs_remove(entry);
+    }
+    return r;
+  }
+  return -17;
+}
+static int restore_trash(const char *entry) {
+  char metadata[256], payload[256];
+  if (!join_path(metadata, entry, "original") ||
+      !join_path(payload, entry, "item"))
+    return -36;
+  struct trash_record record;
+  if (fs_read(metadata, (char *)&record, sizeof(record)) != (int)sizeof(record) ||
+      record.original[0] != '/' || record.original[255] ||
+      starts_with(record.original, TRASH_PATH))
+    return -22;
+  int r = fs_rename(payload, record.original);
+  if (r < 0) return r;
+  (void)fs_remove(metadata);
+  (void)fs_remove(entry);
+  return 0;
+}
+static int empty_trash(void) {
+  for (;;) {
+    char name[256], entry[256], metadata[256], payload[256];
+    struct trash_record record;
+    uint64_t size;
+    bool directory;
+    int r = fs_browse(TRASH_PATH, 0, name, &size, &directory);
+    if (r == -2) return 0;
+    if (r < 0) return r;
+    if (!directory || !join_path(entry, TRASH_PATH, name) ||
+        !join_path(metadata, entry, "original") ||
+        !join_path(payload, entry, "item") ||
+        fs_read(metadata, &record, sizeof(record)) != (int)sizeof(record) ||
+        record.original[0] != '/' || record.original[255])
+      return -22;
+    r = remove_copy_tree(payload, 0);
+    if (r < 0 && r != -2) return r;
+    r = fs_remove(metadata);
+    if (r < 0) return r;
+    r = fs_remove(entry);
+    if (r < 0) return r;
+  }
 }
 static int copy_tree(const char *source, const char *target, unsigned depth) {
   if (depth > 16)
@@ -1507,6 +1596,27 @@ static void file_contents_view(void) {
     refresh_files();
 
   bool selected = selected_file >= 0 && (unsigned)selected_file < file_count;
+  bool in_trash = str_eq(browser_path, TRASH_PATH);
+  nk_layout_row_dynamic(&ui, 32, 3);
+  if (quiet_button("Trash", "Show items moved to Trash", !in_trash)) {
+    if (fs_directory(TRASH_PATH) == 0) {
+      file_filter[0] = 0;
+      browse(TRASH_PATH);
+      return;
+    }
+    notify("Trash is empty");
+  }
+  if (quiet_button("Restore", "Restore the selected item", in_trash && selected)) {
+    int r = restore_trash(file_items[selected_file].path);
+    if (r < 0) file_error("Restore failed", r);
+    else notify("Item restored");
+    refresh_files();
+    return;
+  }
+  if (quiet_button("Empty Trash", "Permanently remove items in Trash", in_trash)) {
+    emptying_trash = true;
+    deleting_file = true;
+  }
   nk_layout_row_dynamic(&ui, 32, 5);
   if (quiet_button("Open", "Open the selected item", selected))
     open_file(selected_file);
@@ -1724,17 +1834,17 @@ static void files_view(void) {
   }
 }
 static void editor_view(void) {
-  float row[] = {0.64f, 0.18f, 0.18f};
-  nk_layout_row(&ui, NK_DYNAMIC, 34, 3, row);
-  char previous[256];
-  copy(previous, editor_path, sizeof(previous));
-  nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, editor_path,
-                                 sizeof(editor_path), nk_filter_default);
-  if (!str_eq(previous, editor_path))
-    editor_dirty = true;
+  float row[] = {0.49f, 0.17f, 0.17f, 0.17f};
+  nk_layout_row(&ui, NK_DYNAMIC, 34, 4, row);
+  nk_label(&ui, editor_path, NK_TEXT_LEFT);
   if (accent_button("Save"))
     save_requested = true;
+  if (nk_button_label(&ui, "Save As")) {
+    editor_save_as = !editor_save_as;
+    copy(editor_copy_path, editor_path, sizeof(editor_copy_path));
+  }
   if (nk_button_label(&ui, "New")) {
+    editor_save_as = false;
     if (editor_dirty)
       editor_discard = true;
     else {
@@ -1743,7 +1853,26 @@ static void editor_view(void) {
       editor_focus = 1;
     }
   }
-  float area = nk_window_get_content_region(&ui).h - 82;
+  if (editor_save_as) {
+    nk_layout_row_dynamic(&ui, 34, 2);
+    nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, editor_copy_path,
+                                   sizeof(editor_copy_path), nk_filter_default);
+    if (nk_button_label(&ui, "Save copy")) {
+      if (editor_copy_path[0] != '/')
+        notify("Enter an absolute path for the copy");
+      else if (fs_metadata(editor_copy_path, &(struct file_metadata){0}) != -2)
+        notify("Choose an unused path for the copy");
+      else if (fs_write(editor_copy_path, editor, strlen(editor)) < 0)
+        notify("Could not save the copy");
+      else {
+        copy(editor_path, editor_copy_path, sizeof(editor_path));
+        editor_dirty = editor_save_as = false;
+        refresh_files();
+        notify("Copy saved");
+      }
+    }
+  }
+  float area = nk_window_get_content_region(&ui).h - (editor_save_as ? 116 : 82);
   if (area < 70)
     area = 70;
   nk_layout_row_dynamic(&ui, area, 1);
@@ -3514,8 +3643,19 @@ static void application(unsigned id) {
       nk_edit_string_zero_terminated(&ui, NK_EDIT_FIELD, music_path,
                                      sizeof(music_path), nk_filter_default);
       nk_layout_row_dynamic(&ui, 38, 2);
-      if (accent_button("Play"))
-        music_result = audio_play(music_path);
+      bool same_track = str_eq(status.path, music_path);
+      bool paused = same_track && audio_paused();
+      bool playing = same_track && status.playing;
+      if (accent_button(playing ? "Pause" : paused ? "Resume" : "Play")) {
+        if (playing)
+          music_result = audio_pause();
+        else if (paused)
+          music_result = audio_resume();
+        else {
+          audio_stop();
+          music_result = audio_play(music_path);
+        }
+      }
       if (nk_button_label(&ui, "Stop")) {
         audio_stop();
         music_result = 0;
@@ -3524,6 +3664,7 @@ static void application(unsigned id) {
       nk_label_wrap(&ui, !status.available
                              ? "No compatible audio output detected."
                          : status.playing ? "Playing"
+                         : audio_paused() ? "Paused"
                          : status.frames_total &&
                                  status.frames_played >= status.frames_total
                              ? "Playback finished"
@@ -3532,11 +3673,18 @@ static void application(unsigned id) {
         nk_layout_row_dynamic(&ui, 42, 1);
         nk_label_wrap(&ui, status.path);
       }
-      nk_size progress = status.frames_total ? (uint64_t)status.frames_played *
-                                                   1000 / status.frames_total
-                                             : 0;
       nk_layout_row_dynamic(&ui, 18, 1);
-      nk_progress(&ui, &progress, 1000, NK_FIXED);
+      if (same_track && status.frames_total > 1) {
+        unsigned last_frame = status.frames_total - 1;
+        unsigned frame = status.frames_played < last_frame
+                             ? status.frames_played : last_frame;
+        int position = (uint64_t)frame * 1000 / last_frame;
+        if (nk_slider_int(&ui, 0, &position, 1000, 1))
+          music_result = audio_seek((uint64_t)position * last_frame / 1000);
+      } else {
+        nk_size progress = 0;
+        nk_progress(&ui, &progress, 1000, NK_FIXED);
+      }
       nk_layout_row_dynamic(&ui, 26, 2);
       label_value("Sample rate: ", status.rate, " Hz");
       label_value("Channels: ", status.channels, "");
@@ -4005,7 +4153,7 @@ static void launcher_view(void) {
 }
 static void modal_dialogs(void) {
   const char *name = power_dialog       ? "Session"
-                     : deleting_file    ? "Delete item"
+                     : deleting_file    ? (emptying_trash ? "Empty Trash" : "Move to Trash")
                      : ending_task      ? "End process"
                      : removing_package ? "Remove package"
                      : editor_discard   ? "Discard edits"
@@ -4017,10 +4165,13 @@ static void modal_dialogs(void) {
                NK_WINDOW_BORDER | NK_WINDOW_TITLE | NK_WINDOW_NO_SCROLLBAR)) {
     nk_layout_row_dynamic(&ui, 140, 1);
     char confirmation[384];
-    if (deleting_file) {
-      copy(confirmation, "Delete ", sizeof(confirmation));
+    if (deleting_file && emptying_trash) {
+      copy(confirmation, "Permanently remove all items in Trash?",
+           sizeof(confirmation));
+    } else if (deleting_file) {
+      copy(confirmation, "Move ", sizeof(confirmation));
       append(confirmation, deleting_path, sizeof(confirmation));
-      append(confirmation, "? This cannot be undone. Folders must be empty.",
+      append(confirmation, " to Trash?",
              sizeof(confirmation));
     } else if (ending_task) {
       char pid[32];
@@ -4076,12 +4227,16 @@ static void modal_dialogs(void) {
             false;
       }
     } else if (accent_button("Confirm")) {
-      if (deleting_file && *deleting_path) {
-        int r = fs_remove(deleting_path);
+      if (deleting_file && (emptying_trash || *deleting_path)) {
+        int r = emptying_trash ? empty_trash()
+                              : move_to_trash(deleting_path);
         if (r < 0)
           file_error("Deletion failed", r);
         else
-          notify("Item deleted");
+          notify(emptying_trash ? "Trash emptied" : "Item moved to Trash");
+        if (emptying_trash && r >= 0)
+          browse("/");
+        emptying_trash = false;
         refresh_files();
       }
       if (ending_task && ending_pid > 0) {
@@ -4093,10 +4248,12 @@ static void modal_dialogs(void) {
         package_action("remove");
       deleting_file = ending_task = removing_package = editor_discard = false;
     }
-    if (nk_button_label(&ui, "Cancel"))
+    if (nk_button_label(&ui, "Cancel")) {
+      emptying_trash = false;
       power_dialog = deleting_file = ending_task = removing_package =
           editor_discard = close_editor_after_discard = exit_after_discard =
               false;
+    }
   }
   nk_end(&ui);
 }
