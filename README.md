@@ -98,6 +98,15 @@ System Monitor has live process and performance views, per-process CPU samples, 
 
 ## Networking
 
+`wifi status` reports attached RTL8811CU/RTL8821CU USB devices. `wifi init`
+requests the native MAC power sequence, reads the adapter's factory MAC and
+calibration map, and uploads the bundled RTL8821C firmware through USB and
+DDMA. `wifi off` powers the adapter down. `netdiag` includes the initialization
+stage and failing register. Radio configuration, scanning, association and
+WPA2 are still required before these adapters can carry network traffic.
+See [driver provenance](avalanche/vendor/rtw88/UPSTREAM.md) for the implementation
+and firmware redistribution terms.
+
 Network can switch to a compatible USB CDC-ECM Ethernet adapter or tethering device connected through xHCI. Switching adapters starts a fresh IPv4 DHCP lease. USB tethering supplies Ethernet frames to Magenta and does not configure the tethering device's Wi-Fi.
 
 **Network → Bluetooth** lists nearby LE advertisements and supports outbound Classic Secure Simple Pairing with a compatible USB HCI controller. Put the peer in pairing mode and enter its Classic address, then respond to the confirmation prompt. Keys are retained for the current boot. **Music → Bluetooth Audio** streams pre-encoded, constant-format SBC files to a paired A2DP sink. The Bluetooth audio path does not encode WAV to SBC or implement headset microphone profiles.

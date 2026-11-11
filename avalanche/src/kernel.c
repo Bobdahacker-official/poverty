@@ -4,6 +4,7 @@
 #include "net_service.h"
 #include "nvme_health.h"
 #include "package.h"
+#include "rtw8821cu.h"
 #include "system.h"
 #define PAGES PHYSICAL_PAGES
 #define PAGE 4096u
@@ -559,6 +560,7 @@ static void command(char *line) {
   if (!*cmd)
     return;
   if(eq(cmd,"netdiag")) {net_diagnostics();return;}
+  if(eq(cmd,"wifi")) {rtw8821cu_command(rest);return;}
   if(eq(cmd,"netprofile")) {net_service_command(rest);return;}
   if(eq(cmd,"route")) {route_command(rest);return;}
   if(eq(cmd,"sandbox")) {sandbox_command(rest);return;}
@@ -696,6 +698,7 @@ static void command(char *line) {
     console_write(
         "help version clear echo mem ticks date beep mouse devices display ps\n"
         "audio play PATH.wav stopaudio diskcrc DISK SECTOR firewall nvmehealth [DISK] sandbox\n"
+        "wifi status | wifi init | wifi off\n"
         "ls cat NAME write NAME TEXT rm NAME fs mount DISK\n"
         "ext4ls DISK /PATH  ext4cat DISK /PATH\n"
         "ext4read DISK /PATH OFFSET COUNT  - up to 4096 bytes\n"

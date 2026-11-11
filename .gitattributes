@@ -1,2 +1,3 @@
 *.sh text eol=lf
+avalanche/vendor/rtw88/rtw8821c_fw.bin -text
 **/boot/**/grub.cfg text eol=lf

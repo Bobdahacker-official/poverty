@@ -72,6 +72,7 @@ bool rtw8821cu_usb_parse(const uint8_t *data, unsigned length,
 static struct {
   unsigned slot, vendor, product;
   struct rtw8821cu_usb_config config;
+  struct rtw8821cu_hw hw;
   uint32_t silicon;
   bool silicon_read;
 } adapter[8];
@@ -122,6 +123,50 @@ void rtw8821cu_usb_info(void) {
       print_uint((adapter[i].silicon >> 12) & 15);
     } else
       console_write("; silicon register unavailable");
-    console_write("; radio inactive\n");
+    if (adapter[i].hw.stage) {
+      console_write("; ");
+      console_write(adapter[i].hw.stage);
+      if (adapter[i].hw.error) {
+        console_write("; failed at register ");
+        print_hex(adapter[i].hw.error_register);
+      }
+      if (adapter[i].hw.efuse_valid) {
+        static const char hex[] = "0123456789abcdef";
+        console_write("; factory MAC ");
+        for (unsigned n = 0; n < 6; n++) {
+          unsigned byte = adapter[i].hw.efuse[0x107 + n];
+          if (n) console_putc(':');
+          console_putc(hex[byte >> 4]);
+          console_putc(hex[byte & 15]);
+        }
+        console_write("; RFE ");
+        print_uint(adapter[i].hw.efuse[0xca] & 31);
+        console_write("; channel plan ");
+        print_hex(adapter[i].hw.efuse[0xb8]);
+      }
+      if (adapter[i].hw.firmware_running) {
+        console_write("; firmware version ");
+        print_uint(adapter[i].hw.firmware_version);
+      }
+    } else console_write("; hardware initialization not requested");
+    console_putc('\n');
   }
+}
+void rtw8821cu_command(const char *operation) {
+  while (*operation == ' ') operation++;
+  bool start = str_eq(operation, "init"), stop = str_eq(operation, "off");
+  if (!start && !stop && !str_eq(operation, "status") && *operation) {
+    console_write("wifi status | wifi init | wifi off\n");
+    return;
+  }
+  unsigned count = 0;
+  for (unsigned i = 0; i < sizeof(adapter) / sizeof(adapter[0]); i++) {
+    if (!adapter[i].slot) continue;
+    count++;
+    if (start) rtw8821cu_hw_start(adapter[i].slot, &adapter[i].config,
+                                 &adapter[i].hw);
+    if (stop) rtw8821cu_hw_stop(&adapter[i].hw);
+  }
+  if (!count) console_write("No RTL8811CU/RTL8821CU USB adapter attached.\n");
+  else rtw8821cu_usb_info();
 }
